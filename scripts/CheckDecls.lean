@@ -60,11 +60,20 @@ def isNativeAxiom (env : Environment) (n : Name) : Bool :=
 /-- The module that defines `n`. -/
 def moduleOf? (env : Environment) (n : Name) : Option Name := do
   let idx ← env.getModuleIdxFor? n
-  env.header.moduleNames[idx.toNat]?
+  return (← env.header.modules[idx.toNat]?).module
 
-/-- Whether `n` is defined in a module under `scope`. -/
-def inScope (env : Environment) (scope : Name) (n : Name) : Bool :=
-  (moduleOf? env n).any scope.isPrefixOf
+/-- The indices of modules under `scope`, computed once per imported environment. -/
+def scopeModules (env : Environment) (scope : Name) : Std.HashSet ModuleIdx := Id.run do
+  let names := env.header.moduleNames
+  let mut indices := {}
+  for h : i in [:names.size] do
+    if scope.isPrefixOf names[i] then
+      indices := indices.insert i
+  return indices
+
+/-- Whether `n` is defined in one of the selected modules. -/
+def inScope (env : Environment) (scope : Std.HashSet ModuleIdx) (n : Name) : Bool :=
+  (env.getModuleIdxFor? n).any scope.contains
 
 /-- Whether `n` is defined in a proof module, one with a `Proofs` component in its name. -/
 def inProofs (env : Environment) (n : Name) : Bool :=
@@ -178,7 +187,7 @@ def csimpTheorems (env : Environment) : List (Name × Option Name) :=
   state.thmNames.toList.map fun thm => (thm, replaces.find? thm)
 
 /-- The members of `s` that no in-scope child of `c` already carries. -/
-def frontier (env : Environment) (scope : Name) (memo : NameMap NameSet)
+def frontier (env : Environment) (scope : Std.HashSet ModuleIdx) (memo : NameMap NameSet)
     (children : Array Name) (s : NameSet) : List Name :=
   let inherited := children.foldl (init := ({} : NameSet)) fun acc child =>
     if inScope env scope child && !(env.find? child |>.any (· matches .axiomInfo _)) then
@@ -188,14 +197,14 @@ def frontier (env : Environment) (scope : Name) (memo : NameMap NameSet)
 
 /-- The inductive type in scope that `n` belongs to, if any: `n` itself, or the nearest prefix of its name.
 A constructor, a recursor and the lemmas generated for them, such as `Foo.mk.inj`, all belong to `Foo`. -/
-def inductiveOwner? (env : Environment) (scope : Name) : Name → Option Name
+def inductiveOwner? (env : Environment) (scope : Std.HashSet ModuleIdx) : Name → Option Name
   | .anonymous => none
   | n@(.num p _) | n@(.str p _) =>
     if (env.find? n).any (· matches .inductInfo _) && inScope env scope n then some n
     else inductiveOwner? env scope p
 
 /-- Check every declaration in a module under `scope`. -/
-def check (env : Environment) (scope : Name) : Array Finding := Id.run do
+def check (env : Environment) (scope : Std.HashSet ModuleIdx) : Array Finding := Id.run do
   let decls := env.constants.toList.filter fun (n, _) => inScope env scope n
   let mut out : Array Finding := #[]
   for (n, c) in decls do
@@ -312,7 +321,8 @@ unsafe def run (args : List String) : IO UInt32 := do
     IO.eprintln "check-decls: no @[csimp] theorems visible, so the extensions did not load"
     return 3
   let baseline ← readBaseline baselinePath
-  let findings := check env scope
+  let indices := scopeModules env scope
+  let findings := check env indices
   let isListed (f : Finding) := baseline.contains (f.kind, f.decl)
   let fresh := findings.filter (!isListed ·)
   for f in fresh do
@@ -320,7 +330,7 @@ unsafe def run (args : List String) : IO UInt32 := do
   let stale := baseline.filter fun (kind, decl) => !findings.any (fun f => f.kind == kind && f.decl == decl)
   for (kind, decl) in stale do
     IO.println s!"stale baseline entry, no longer found: {kind} {decl}"
-  let nDecls := env.constants.toList.countP fun (n, _) => inScope env scope n
+  let nDecls := env.constants.toList.countP fun (n, _) => inScope env indices n
   IO.println s!"check-decls: {nDecls} declarations under {scope}, {findings.size} findings, {findings.size - fresh.size} in the baseline, {fresh.size} new, {stale.length} stale"
   return if fresh.isEmpty && stale.isEmpty then 0 else 1
 
