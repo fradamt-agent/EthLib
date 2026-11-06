@@ -126,6 +126,27 @@ theorem initializeBeaconStateFromEth1_pending_empty {eth1BlockHash : Hash32}
   exact ⟨congrArg (·.data) pending.current, congrArg (·.data) pending.previous,
     frame.currentJustified.trans frame.previousJustified.symm⟩
 
+/-- Genesis initialization sets every justification bit to false.
+
+Neither deposits nor activation at genesis can introduce justification evidence. -/
+theorem initializeBeaconStateFromEth1_bits {eth1BlockHash : Hash32}
+    {eth1Timestamp : UInt64} {deposits : Array Deposit}
+    (before : fork < .altair)
+    (computed : initializeBeaconStateFromEth1 config checks eth1BlockHash eth1Timestamp deposits =
+      .ok after) (index : Fin 4) : after.justificationBits.bits[index] = false := by
+  unfold initializeBeaconStateFromEth1 at computed
+  split at computed
+  · cases computed
+  simp only [bind_ok_iff, ensure_ok_iff, liftSsz_ok, pure, Except.pure,
+    Except.ok.injEq] at computed
+  obtain ⟨_, _, _, _, _, _, deposited, depositedOk, activated, activatedOk, root, _, rfl⟩ :=
+    computed
+  have frame := (Frame.foldlM (fun _ _ _ ok => frame_genesisDeposit before ok) depositedOk).trans
+    (Frame.foldlM (fun _ _ _ ok => frame_activateAtGenesis ok) activatedOk)
+  change activated.justificationBits.bits[index] = false
+  rw [frame.justificationBits]
+  simp [emptyGenesisState]
+
 /-- Genesis initialization satisfies the source condition without any pending attestations. -/
 theorem initializeBeaconStateFromEth1_pending_sources {eth1BlockHash : Hash32}
     {eth1Timestamp : UInt64} {deposits : Array Deposit}
@@ -703,6 +724,44 @@ theorem previousJustification_authenticated_at_cached_slot
     exact (getMatchingTargetAttestations_slot_epoch epochs matching pendingMember).1
   · rw [data]
     exact rootEq
+
+/-- A true bit on an initialized chain has an actual threshold computation behind it.
+
+Genesis has no true bits, so an inherited bit cannot be the end of the search.
+
+The block prefix and slot offset locate the original computation in the concrete execution. -/
+theorem justificationBit_origin_of_initialized_chain
+    {engine : ExecutionEngine preset .phase0}
+    {genesis after : BeaconState preset .phase0}
+    {eth1BlockHash : Hash32} {eth1Timestamp : UInt64} {deposits : Array Deposit}
+    {blocks : List (SignedBeaconBlock preset .phase0)} {index : Fin 4}
+    (initialized : initializeBeaconStateFromEth1 config checks eth1BlockHash eth1Timestamp
+      deposits = .ok genesis)
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block true) genesis =
+        .ok after)
+    (bit : after.justificationBits.bits[index] = true) :
+    ∃ earlier block later atBlock offset atStep next cached epoched justified total previous,
+      ∃ current, ∃ origin : Fin 4,
+      blocks = earlier ++ block :: later ∧
+      earlier.foldlM
+        (fun state block => stateTransition config checks engine state block true)
+          genesis = .ok atBlock ∧
+      offset < block.message.slot.toNat - atBlock.slot.toNat ∧ origin.val ≤ index.val ∧
+      advanceSlots config offset atBlock = .ok atStep ∧
+      advanceSlot config atStep = .ok next ∧
+      processSlot atStep = .ok cached ∧ processEpoch config cached = .ok epoched ∧
+      processJustificationAndFinalization cached = .ok justified ∧
+      weighJustificationAndFinalization cached total previous current = .ok justified ∧
+      ((origin.val = 0 ∧ 2 * total.toNat ≤ 3 * current.toNat) ∨
+        (origin.val = 1 ∧ 2 * total.toNat ≤ 3 * previous.toNat ∧
+          cached.justificationBits.bits[0] = false)) := by
+  rcases stateTransition_chain_bit_origin (by decide) computed bit with inherited | originated
+  · obtain ⟨earlier, _, earlierBit⟩ := inherited
+    have cleared := initializeBeaconStateFromEth1_bits (by decide) initialized earlier
+    rw [cleared] at earlierBit
+    cases earlierBit
+  · exact originated
 
 /-- Every Phase 0 state reached from initialized genesis keeps the effective-balance cap.
 

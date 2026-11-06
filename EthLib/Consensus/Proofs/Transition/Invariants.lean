@@ -2564,6 +2564,94 @@ theorem advanceSlot_finalized_origin (before : fork < .altair)
     subst epochedOk
     exact (changed cachedFrame.finalized).elim
 
+/-- A true bit after one slot is inherited or comes from a threshold at that slot.
+
+Inherited bits keep their index outside epoch processing and shift by one inside it.
+
+The witness retains the actual root caching and epoch processing calls. -/
+theorem advanceSlot_bit_origin (before : fork < .altair) {index : Fin 4}
+    (computed : advanceSlot config state = .ok after)
+    (bit : after.justificationBits.bits[index] = true) :
+    (∃ earlier : Fin 4,
+      (index.val = earlier.val ∨ index.val = earlier.val + 1) ∧
+        state.justificationBits.bits[earlier] = true) ∨
+    ∃ cached epoched justified total previous current,
+      processSlot state = .ok cached ∧ processEpoch config cached = .ok epoched ∧
+      processJustificationAndFinalization cached = .ok justified ∧
+      weighJustificationAndFinalization cached total previous current = .ok justified ∧
+      ((index.val = 0 ∧ 2 * total.toNat ≤ 3 * current.toNat) ∨
+        (index.val = 1 ∧ 2 * total.toNat ≤ 3 * previous.toNat ∧
+          cached.justificationBits.bits[0] = false)) := by
+  simp only [advanceSlot, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+    Except.ok.injEq] at computed
+  obtain ⟨next, _, cached, cachedOk, epoched, epochedOk, rfl⟩ := computed
+  have frame := frame_processSlot cachedOk
+  unfold epochIfLast at epochedOk
+  split at epochedOk
+  · obtain ⟨justified, justifiedOk, bits, _⟩ :=
+      processEpoch_justification before epochedOk
+    change epoched.justificationBits.bits[index] = true at bit
+    rw [bits] at bit
+    rcases processJustificationAndFinalization_ok justifiedOk with same |
+        ⟨total, previous, current, weighed⟩
+    · subst justified
+      exact .inl ⟨index, .inl rfl, frame.justificationBits ▸ bit⟩
+    · rcases weighJustificationAndFinalization_bit_origin weighed bit with now | prior | inherited
+      · exact .inr ⟨cached, epoched, justified, total, previous, current,
+          cachedOk, epochedOk, justifiedOk, weighed, .inl now⟩
+      · exact .inr ⟨cached, epoched, justified, total, previous, current,
+          cachedOk, epochedOk, justifiedOk, weighed, .inr prior⟩
+      · obtain ⟨earlier, shifted, earlierBit⟩ := inherited
+        exact .inl ⟨earlier, .inr shifted, frame.justificationBits ▸ earlierBit⟩
+  · cases epochedOk
+    exact .inl ⟨index, .inl rfl, frame.justificationBits ▸ bit⟩
+
+/-- Every true bit in a slot run was already true or came from a concrete weighing call.
+
+The offset locates the call in the successful run, including runs with empty slots.
+
+The index at that call cannot exceed the terminal index, because later calls only shift bits. -/
+theorem advanceSlots_bit_origin (before : fork < .altair) {count : Nat} {index : Fin 4}
+    (computed : advanceSlots config count state = .ok after)
+    (bit : after.justificationBits.bits[index] = true) :
+    (∃ earlier : Fin 4, earlier.val ≤ index.val ∧
+      state.justificationBits.bits[earlier] = true) ∨
+    ∃ offset atStep next cached epoched justified total previous current, ∃ origin : Fin 4,
+      offset < count ∧ origin.val ≤ index.val ∧
+      advanceSlots config offset state = .ok atStep ∧
+      advanceSlot config atStep = .ok next ∧
+      processSlot atStep = .ok cached ∧ processEpoch config cached = .ok epoched ∧
+      processJustificationAndFinalization cached = .ok justified ∧
+      weighJustificationAndFinalization cached total previous current = .ok justified ∧
+      ((origin.val = 0 ∧ 2 * total.toNat ≤ 3 * current.toNat) ∨
+        (origin.val = 1 ∧ 2 * total.toNat ≤ 3 * previous.toNat ∧
+          cached.justificationBits.bits[0] = false)) := by
+  induction count generalizing state index with
+  | zero =>
+    cases computed
+    exact .inl ⟨index, Nat.le_refl _, bit⟩
+  | succ count ih =>
+    simp only [advanceSlots, bind_ok_iff] at computed
+    obtain ⟨middle, firstOk, restOk⟩ := computed
+    rcases ih restOk bit with inherited | occurred
+    · obtain ⟨earlier, earlierLe, earlierBit⟩ := inherited
+      rcases advanceSlot_bit_origin before firstOk earlierBit with inherited | occurred
+      · obtain ⟨old, relation, oldBit⟩ := inherited
+        exact .inl ⟨old, by omega, oldBit⟩
+      · obtain ⟨cached, epoched, justified, total, previous, current, cachedOk, epochOk,
+          justifiedOk, weighed, threshold⟩ := occurred
+        exact .inr ⟨0, state, middle, cached, epoched, justified, total, previous, current,
+          earlier, by omega, earlierLe, rfl, firstOk, cachedOk, epochOk,
+          justifiedOk, weighed, threshold⟩
+    · obtain ⟨offset, atStep, next, cached, epoched, justified, total, previous, current,
+        origin, inside, originLe, prefixOk, stepOk, cachedOk, epochOk, justifiedOk,
+        weighed, threshold⟩ := occurred
+      refine .inr ⟨offset + 1, atStep, next, cached, epoched, justified, total, previous,
+        current, origin, by omega, originLe, ?_, stepOk, cachedOk, epochOk,
+        justifiedOk, weighed, threshold⟩
+      simp only [advanceSlots, bind_ok_iff]
+      exact ⟨middle, firstOk, prefixOk⟩
+
 /-- A changed final checkpoint in a slot run was assigned at a particular slot step.
 
 The successful prefix identifies that step on the actual execution.
@@ -3016,6 +3104,87 @@ theorem stateTransition_chain_committee
   apply getBeaconCommittee_congr
   · exact stateTransition_chain_active_indices (by decide) holds past computed
   · exact stateTransition_chain_attester_seed positive history holds past recentAfter computed
+
+/-- A true bit after a block is inherited or comes from a threshold in its slot run.
+
+Block processing itself cannot introduce justification bits. -/
+theorem stateTransition_bit_origin (before : fork < .altair) {index : Fin 4}
+    {signed : SignedBeaconBlock preset fork} {validateResult : Bool}
+    (computed : stateTransition config checks engine state signed validateResult = .ok after)
+    (bit : after.justificationBits.bits[index] = true) :
+    (∃ earlier : Fin 4, earlier.val ≤ index.val ∧
+      state.justificationBits.bits[earlier] = true) ∨
+    ∃ offset atStep next cached epoched justified total previous current, ∃ origin : Fin 4,
+      offset < signed.message.slot.toNat - state.slot.toNat ∧ origin.val ≤ index.val ∧
+      advanceSlots config offset state = .ok atStep ∧
+      advanceSlot config atStep = .ok next ∧
+      processSlot atStep = .ok cached ∧ processEpoch config cached = .ok epoched ∧
+      processJustificationAndFinalization cached = .ok justified ∧
+      weighJustificationAndFinalization cached total previous current = .ok justified ∧
+      ((origin.val = 0 ∧ 2 * total.toNat ≤ 3 * current.toNat) ∨
+        (origin.val = 1 ∧ 2 * total.toNat ≤ 3 * previous.toNat ∧
+          cached.justificationBits.bits[0] = false)) := by
+  obtain ⟨advanced, slotsOk, _, _, blockOk, _⟩ := stateTransition_ok computed
+  have frame := frame_processBlock before blockOk
+  rw [frame.justificationBits] at bit
+  simp only [processSlots, bind_ok_iff, ensure_ok_iff] at slotsOk
+  obtain ⟨_, _, advancedOk⟩ := slotsOk
+  exact advanceSlots_bit_origin before advancedOk bit
+
+/-- A true bit on a chain is inherited or comes from one of its actual weighing calls.
+
+The two successful prefixes locate the block and then the slot at which it originated. -/
+theorem stateTransition_chain_bit_origin (before : fork < .altair) {index : Fin 4}
+    {blocks : List (SignedBeaconBlock preset fork)} {validateResult : Bool}
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block validateResult)
+        state = .ok after)
+    (bit : after.justificationBits.bits[index] = true) :
+    (∃ earlier : Fin 4, earlier.val ≤ index.val ∧
+      state.justificationBits.bits[earlier] = true) ∨
+    ∃ earlier block later atBlock offset atStep next cached epoched justified total previous,
+      ∃ current, ∃ origin : Fin 4,
+      blocks = earlier ++ block :: later ∧
+      earlier.foldlM
+        (fun state block => stateTransition config checks engine state block validateResult)
+          state = .ok atBlock ∧
+      offset < block.message.slot.toNat - atBlock.slot.toNat ∧ origin.val ≤ index.val ∧
+      advanceSlots config offset atBlock = .ok atStep ∧
+      advanceSlot config atStep = .ok next ∧
+      processSlot atStep = .ok cached ∧ processEpoch config cached = .ok epoched ∧
+      processJustificationAndFinalization cached = .ok justified ∧
+      weighJustificationAndFinalization cached total previous current = .ok justified ∧
+      ((origin.val = 0 ∧ 2 * total.toNat ≤ 3 * current.toNat) ∨
+        (origin.val = 1 ∧ 2 * total.toNat ≤ 3 * previous.toNat ∧
+          cached.justificationBits.bits[0] = false)) := by
+  induction blocks generalizing state index with
+  | nil =>
+    cases computed
+    exact .inl ⟨index, Nat.le_refl _, bit⟩
+  | cons first rest ih =>
+    simp only [List.foldlM_cons, bind_ok_iff] at computed
+    obtain ⟨middle, firstOk, restOk⟩ := computed
+    rcases ih restOk bit with inherited | occurred
+    · obtain ⟨earlier, earlierLe, earlierBit⟩ := inherited
+      rcases stateTransition_bit_origin before firstOk earlierBit with inherited | occurred
+      · obtain ⟨old, oldLe, oldBit⟩ := inherited
+        exact .inl ⟨old, Nat.le_trans oldLe earlierLe, oldBit⟩
+      · obtain ⟨offset, atStep, next, cached, epoched, justified, total, previous, current,
+          origin, inside, originLe, prefixOk, stepOk, cachedOk, epochOk, justifiedOk,
+          weighed, threshold⟩ := occurred
+        exact .inr ⟨[], first, rest, state, offset, atStep, next, cached, epoched,
+          justified, total, previous, current, origin, rfl, rfl, inside,
+          Nat.le_trans originLe earlierLe, prefixOk, stepOk, cachedOk, epochOk,
+          justifiedOk, weighed, threshold⟩
+    · obtain ⟨earlier, block, later, atBlock, offset, atStep, next, cached, epoched,
+        justified, total, previous, current, origin, split, blocksOk, inside, originLe,
+        prefixOk, stepOk, cachedOk, epochOk, justifiedOk, weighed, threshold⟩ := occurred
+      refine .inr ⟨first :: earlier, block, later, atBlock, offset, atStep, next,
+        cached, epoched, justified, total, previous, current, origin, by simp [split],
+        ?_, inside, originLe, prefixOk, stepOk, cachedOk, epochOk, justifiedOk,
+        weighed, threshold⟩
+      simp only [List.foldlM_cons, bind_ok_iff]
+      exact ⟨middle, firstOk, blocksOk⟩
 
 /-- A changed finalized checkpoint after a block comes from a justification call in its slot run.
 

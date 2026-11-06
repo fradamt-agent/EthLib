@@ -893,6 +893,40 @@ theorem weighJustificationAndFinalization_old_bits {total previous current : Gwe
   obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := computed
   simp [shiftJustificationBits]
 
+/-- A true justification bit is a new threshold result or a shifted true bit.
+
+The previous-epoch threshold is needed only when the shifted current bit was false.
+
+The returned index states exactly which earlier bit supplies an inherited result. -/
+theorem weighJustificationAndFinalization_bit_origin {total previous current : Gwei}
+    {index : Fin 4}
+    (computed : weighJustificationAndFinalization state total previous current = .ok after)
+    (bit : after.justificationBits.bits[index] = true) :
+    (index.val = 0 ∧ 2 * total.toNat ≤ 3 * current.toNat) ∨
+      (index.val = 1 ∧ 2 * total.toNat ≤ 3 * previous.toNat ∧
+        state.justificationBits.bits[0] = false) ∨
+      ∃ earlier : Fin 4,
+        index.val = earlier.val + 1 ∧ state.justificationBits.bits[earlier] = true := by
+  have thresholds := weighJustificationAndFinalization_bits computed
+  have old := weighJustificationAndFinalization_old_bits computed
+  have cases : index = 0 ∨ index = 1 ∨ index = 2 ∨ index = 3 := by
+    have bound := index.isLt
+    have values : index.val = 0 ∨ index.val = 1 ∨ index.val = 2 ∨ index.val = 3 := by omega
+    rcases values with value | value | value | value
+    · exact .inl (Fin.ext value)
+    · exact .inr (.inl (Fin.ext value))
+    · exact .inr (.inr (.inl (Fin.ext value)))
+    · exact .inr (.inr (.inr (Fin.ext value)))
+  rcases cases with rfl | rfl | rfl | rfl
+  · exact .inl ⟨rfl, thresholds.1.mp bit⟩
+  · by_cases inherited : state.justificationBits.bits[0] = true
+    · exact .inr (.inr ⟨0, rfl, inherited⟩)
+    · have cleared : state.justificationBits.bits[0] = false := by
+        cases flag : state.justificationBits.bits[0] <;> simp_all
+      exact .inr (.inl ⟨rfl, (thresholds.2.mp bit).resolve_right inherited, cleared⟩)
+  · exact .inr (.inr ⟨1, rfl, old.1 ▸ bit⟩)
+  · exact .inr (.inr ⟨2, rfl, old.2 ▸ bit⟩)
+
 /-- The checkpoints that weighing the votes sets.
 
 The old current justified checkpoint becomes the previous one.
