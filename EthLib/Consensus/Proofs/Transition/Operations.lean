@@ -304,6 +304,16 @@ theorem processAttestation_indexed_valid {attestation : Attestation preset fork}
   rw [recordPendingAttestation_indexed attestation recorded] at indexedOk
   exact ⟨indexed, indexedOk, valid⟩
 
+/-- A Phase 0 attestation changes neither the registry nor the committee population. -/
+theorem processAttestation_active_indices {attestation : Attestation preset fork}
+    (before : fork < .altair) (epoch : Epoch)
+    (computed : processAttestation config checks state attestation = .ok after) :
+    getActiveValidatorIndices after epoch = getActiveValidatorIndices state epoch := by
+  obtain ⟨_, _, _, _, _, recorded, _, _, _⟩ := processAttestation_records before computed
+  cases current : attestation.data.target.epoch == getCurrentEpoch state <;>
+    simp only [recordPendingAttestation, current, Bool.false_eq_true, ↓reduceIte] at recorded <;>
+    split at recorded <;> cases recorded <;> rfl
+
 /-- Successful Phase 0 attestation processing preserves both stored source equalities. -/
 theorem processAttestation_sources {attestation : Attestation preset fork}
     (before : fork < .altair) (holds : PendingSourcesMatch state before)
@@ -874,6 +884,20 @@ theorem sameSizes_processVoluntaryExit {signed : SignedVoluntaryExit}
   exact sameSizes_initiateValidatorExit exited
 
 /-! ## All the operations of a block -/
+
+/-- A voluntary exit preserves every committee activity query for a past epoch. -/
+theorem processVoluntaryExit_active {signed : SignedVoluntaryExit} {epoch : Epoch}
+    (before : fork < .pectra) (past : epoch ≤ getCurrentEpoch state)
+    (computed : processVoluntaryExit config checks state signed = .ok after)
+    (other : ValidatorIndex) :
+    (getValidator after other).map (isActiveValidator · epoch) =
+      (getValidator state other).map (isActiveValidator · epoch) := by
+  unfold processVoluntaryExit at computed
+  split at computed
+  · cases computed
+  simp only [bind_ok_iff, ensure_ok_iff, liftAccessor_ok, liftSsz_ok] at computed
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, exited⟩ := computed
+  exact initiateValidatorExit_active before past exited other
 
 /-- The operations of a valid block run before Electra.
 

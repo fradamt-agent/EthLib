@@ -551,6 +551,48 @@ theorem frame_processAttesterSlashing {slashing : AttesterSlashing preset fork}
     (fun _ _ _ before ok => before.trans (frame_slashIfSlashable ok))
     (show Frame state (state, false).1 from Frame.refl state) folded
 
+/-- An attester-slashing step preserves every past activity query. -/
+theorem slashIfSlashable_active {step next : BeaconState preset fork × Bool}
+    {index : ValidatorIndex} {epoch : Epoch}
+    (before : fork < .pectra) (past : epoch ≤ getCurrentEpoch step.1)
+    (computed : slashIfSlashable config step index = .ok next) (other : ValidatorIndex) :
+    (getValidator next.1 other).map (isActiveValidator · epoch) =
+      (getValidator step.1 other).map (isActiveValidator · epoch) := by
+  obtain ⟨state, slashedAny⟩ := step
+  simp only [slashIfSlashable, bind_ok_iff, liftAccessor_ok] at computed
+  obtain ⟨_, _, rest⟩ := computed
+  split at rest
+  · simp only [bind_ok_iff, liftAccessor_ok, pure, Except.pure, Except.ok.injEq] at rest
+    obtain ⟨_, slashed, rfl⟩ := rest
+    exact slashValidator_active before past slashed other
+  · simp only [pure, Except.pure, Except.ok.injEq] at rest
+    subst next
+    rfl
+
+/-- A complete attester slashing preserves activity for every past epoch.
+
+Every step keeps the slot, so all steps use the same past-epoch bound. -/
+theorem processAttesterSlashing_active {slashing : AttesterSlashing preset fork} {epoch : Epoch}
+    (before : fork < .pectra) (past : epoch ≤ getCurrentEpoch state)
+    (computed : processAttesterSlashing config checks state slashing = .ok after)
+    (other : ValidatorIndex) :
+    (getValidator after other).map (isActiveValidator · epoch) =
+      (getValidator state other).map (isActiveValidator · epoch) := by
+  simp only [processAttesterSlashing, bind_ok_iff, ensure_ok_iff, pure, Except.pure,
+    Except.ok.injEq] at computed
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, folded, _, _, rfl⟩ := computed
+  have kept := foldlM_ok_invariant (fun step : BeaconState preset fork × Bool =>
+    step.1.slot = state.slot ∧
+      (getValidator step.1 other).map (isActiveValidator · epoch) =
+        (getValidator state other).map (isActiveValidator · epoch))
+    (fun prior index next holds ok => by
+      have recent : epoch ≤ getCurrentEpoch prior.1 := by
+        simpa only [getCurrentEpoch, holds.1] using past
+      exact ⟨(frame_slashIfSlashable ok).slot.trans holds.1,
+        (slashIfSlashable_active before recent ok other).trans holds.2⟩)
+    (show state.slot = state.slot ∧ _ from ⟨rfl, rfl⟩) folded
+  exact kept.2
+
 theorem frame_processAttestation (altair : fork < .altair) {attestation : Attestation preset fork}
     (computed : processAttestation config checks state attestation = .ok after) :
     Frame state after := by
@@ -655,6 +697,90 @@ theorem frame_processOperations (altair : fork < .altair) {body : BeaconBlockBod
     (Frame.foldlM (fun _ _ _ ok => frame_processDeposit altair ok) depositedOk).trans <|
     Frame.foldlM (fun _ _ _ ok => frame_processVoluntaryExit ok) exitsOk
 
+/-- Preserved indexed activity queries preserve the ordered active population. -/
+theorem active_indices_of_validator_queries {epoch : Epoch}
+    (within : state.RegistryWithinLimit) (afterWithin : after.RegistryWithinLimit)
+    (same : ∀ index, (getValidator after index).map (isActiveValidator · epoch) =
+      (getValidator state index).map (isActiveValidator · epoch)) :
+    getActiveValidatorIndices after epoch = getActiveValidatorIndices state epoch := by
+  apply getActiveValidatorIndices_congr within afterWithin
+  intro index
+  have equal := same index
+  simp only [getValidator] at equal
+  cases old : state.validators.data[index.toNat]? <;>
+    cases new : after.validators.data[index.toNat]? <;>
+    simp only [old, new, Except.map] at equal <;> simp_all
+
+/-- Phase 0 block operations preserve the ordered committee population for a past epoch.
+
+Slashing changes participation eligibility, while activation and exit scheduling take effect later.
+
+Deposits append inactive validators or change balances, neither of which reassigns committees. -/
+theorem processOperations_active_indices (before : fork < .altair)
+    {body : BeaconBlockBody preset fork} {epoch : Epoch}
+    (past : epoch ≤ getCurrentEpoch state)
+    (computed : processOperations config checks state body = .ok after) :
+    getActiveValidatorIndices after epoch = getActiveValidatorIndices state epoch := by
+  have earlier : fork < .pectra := Nat.lt_trans before (by decide)
+  have within (s : BeaconState preset fork) : s.RegistryWithinLimit :=
+    s.validators.bound (Nat.lt_trans before (by decide))
+  have proposerStep : ∀ (s : BeaconState preset fork) slashing s', epoch ≤ getCurrentEpoch s →
+      processProposerSlashing config checks s slashing = .ok s' →
+      getActiveValidatorIndices s' epoch = getActiveValidatorIndices s epoch := by
+    intro s slashing s' recent ok
+    exact active_indices_of_validator_queries (within s) (within s')
+      (processProposerSlashing_active earlier recent ok)
+  have attesterStep : ∀ (s : BeaconState preset fork) slashing s', epoch ≤ getCurrentEpoch s →
+      processAttesterSlashing config checks s slashing = .ok s' →
+      getActiveValidatorIndices s' epoch = getActiveValidatorIndices s epoch := by
+    intro s slashing s' recent ok
+    exact active_indices_of_validator_queries (within s) (within s')
+      (processAttesterSlashing_active earlier recent ok)
+  have exitStep : ∀ (s : BeaconState preset fork) exit s', epoch ≤ getCurrentEpoch s →
+      processVoluntaryExit config checks s exit = .ok s' →
+      getActiveValidatorIndices s' epoch = getActiveValidatorIndices s epoch := by
+    intro s exit s' recent ok
+    exact active_indices_of_validator_queries (within s) (within s')
+      (processVoluntaryExit_active earlier recent ok)
+  have foldPreserves {α : Type} {operation : BeaconState preset fork → α →
+        Except TransitionError (BeaconState preset fork)} {xs : List α}
+      {s s' : BeaconState preset fork}
+      (frame : ∀ s item s', operation s item = .ok s' → Frame s s')
+      (step : ∀ s item s', epoch ≤ getCurrentEpoch s → operation s item = .ok s' →
+        getActiveValidatorIndices s' epoch = getActiveValidatorIndices s epoch)
+      (recent : epoch ≤ getCurrentEpoch s) (ok : xs.foldlM operation s = .ok s') :
+      s'.slot = s.slot ∧
+        getActiveValidatorIndices s' epoch = getActiveValidatorIndices s epoch := by
+    apply foldlM_ok_invariant (fun t => t.slot = s.slot ∧
+      getActiveValidatorIndices t epoch = getActiveValidatorIndices s epoch)
+      (fun t item next holds applied => ?_) ⟨rfl, rfl⟩ ok
+    have recent' : epoch ≤ getCurrentEpoch t := by
+      simpa only [getCurrentEpoch, holds.1] using recent
+    exact ⟨(frame _ _ _ applied).slot.trans holds.1,
+      (step _ _ _ recent' applied).trans holds.2⟩
+  unfold processOperations at computed
+  split at computed
+  · cases computed
+  simp only [bind_ok_iff, ensure_ok_iff, ← Array.foldlM_toList] at computed
+  obtain ⟨_, _, _, _, proposers, proposersOk, attesters, attestersOk, attested, attestedOk,
+    deposited, depositedOk, exited, exitsOk, changesOk⟩ := computed
+  have capella : ¬Fork.shapella ≤ fork := Nat.not_le_of_lt (Nat.lt_trans before (by decide))
+  simp only [capella, ↓reduceDIte, pure, Except.pure, Except.ok.injEq] at changesOk
+  subst changesOk
+  have p := foldPreserves (fun _ _ _ ok => frame_processProposerSlashing ok)
+    proposerStep past proposersOk
+  have a := foldPreserves (fun _ _ _ ok => frame_processAttesterSlashing ok)
+    attesterStep (by simpa only [getCurrentEpoch, p.1] using past) attestersOk
+  have t := foldPreserves (fun _ _ _ ok => frame_processAttestation before ok)
+    (fun _ _ _ _ ok => processAttestation_active_indices before epoch ok)
+    (by simpa only [getCurrentEpoch, a.1, p.1] using past) attestedOk
+  have d := foldPreserves (fun _ _ _ ok => frame_processDeposit before ok)
+    (fun _ _ _ _ ok => processDeposit_active_indices before epoch ok)
+    (by simpa only [getCurrentEpoch, t.1, a.1, p.1] using past) depositedOk
+  have e := foldPreserves (fun _ _ _ ok => frame_processVoluntaryExit ok)
+    exitStep (by simpa only [getCurrentEpoch, d.1, t.1, a.1, p.1] using past) exitsOk
+  exact e.2.trans (d.2.trans (t.2.trans (a.2.trans p.2)))
+
 /-- Before Altair, a block forms a frame. -/
 theorem frame_processBlock (altair : fork < .altair) {block : BeaconBlock preset fork}
     (computed : processBlock config checks engine state block = .ok after) : Frame state after := by
@@ -663,6 +789,32 @@ theorem frame_processBlock (altair : fork < .altair) {block : BeaconBlock preset
   obtain ⟨_, headerOk, _, randaoOk, _, eth1Ok, operationsOk⟩ := computed
   exact (frame_processBlockHeader headerOk).trans <| (frame_processRandao randaoOk).trans <|
     (frame_processEth1Data eth1Ok).trans (frame_processOperations altair operationsOk)
+
+/-- A Phase 0 block preserves the active population for every past or current epoch. -/
+theorem processBlock_active_indices (before : fork < .altair)
+    {block : BeaconBlock preset fork} {epoch : Epoch}
+    (past : epoch ≤ getCurrentEpoch state)
+    (computed : processBlock config checks engine state block = .ok after) :
+    getActiveValidatorIndices after epoch = getActiveValidatorIndices state epoch := by
+  have notAltair : ¬Fork.altair ≤ fork := Nat.not_le_of_lt before
+  simp only [processBlock, notAltair, ↓reduceDIte, bind_ok_iff] at computed
+  obtain ⟨header, headerOk, randao, randaoOk, eth1, eth1Ok, operationsOk⟩ := computed
+  have headerFrame := frame_processBlockHeader headerOk
+  have randaoFrame := frame_processRandao randaoOk
+  have eth1Frame := frame_processEth1Data eth1Ok
+  have recent : epoch ≤ getCurrentEpoch eth1 := by
+    simpa only [getCurrentEpoch, eth1Frame.slot, randaoFrame.slot, headerFrame.slot] using past
+  have headerRegistry : header.validators = state.validators := by
+    obtain ⟨_, _, rfl⟩ := processBlockHeader_eq headerOk
+    rfl
+  have randaoRegistry : randao.validators = header.validators := by
+    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq randaoOk
+    rfl
+  have eth1Registry : eth1.validators = randao.validators := by
+    obtain ⟨_, _, rest⟩ := processEth1Data_eq eth1Ok
+    rw [← rest]
+  rw [processOperations_active_indices before recent operationsOk]
+  simp only [getActiveValidatorIndices, eth1Registry, randaoRegistry, headerRegistry]
 
 /-- A frame that preserves the pending lists preserves their checked sources. -/
 theorem PendingUnchanged.sources {before : fork < .altair}
@@ -1049,6 +1201,40 @@ theorem frame_processParticipationRecordUpdates
 
 /-! ## Justification and the epoch transition -/
 
+/-- Resetting Eth1 voting data preserves the registry. -/
+theorem processEth1DataReset_validators {before : fork < .hegota}
+    (computed : processEth1DataReset before state = .ok after) :
+    after.validators = state.validators := by
+  simp only [processEth1DataReset, bind_ok_iff, liftAccessor_ok] at computed
+  obtain ⟨_, _, rest⟩ := computed
+  split at rest <;> cases rest <;> rfl
+
+/-- Extending the historical roots preserves the registry. -/
+theorem processHistoricalRootsUpdate_validators
+    (computed : processHistoricalRootsUpdate state = .ok after) :
+    after.validators = state.validators := by
+  unfold processHistoricalRootsUpdate at computed
+  split at computed
+  · cases computed
+  simp only [bind_ok_iff, liftAccessor_ok] at computed
+  obtain ⟨_, _, rest⟩ := computed
+  split at rest
+  · simp only [bind_ok_iff, liftSsz_ok, pure, Except.pure, Except.ok.injEq] at rest
+    obtain ⟨_, _, _, _, rfl⟩ := rest
+    rfl
+  · cases rest
+    rfl
+
+/-- Rotating pending attestations preserves the registry. -/
+theorem processParticipationRecordUpdates_validators
+    (computed : processParticipationRecordUpdates state = .ok after) :
+    after.validators = state.validators := by
+  unfold processParticipationRecordUpdates at computed
+  split at computed
+  · cases computed
+  cases computed
+  rfl
+
 /-- The current justified epoch is at most the previous epoch. -/
 def JustifiedSettled (state : BeaconState preset fork) : Prop :=
   state.currentJustifiedCheckpoint.epoch ≤ getPreviousEpoch state
@@ -1193,6 +1379,53 @@ theorem processEpoch_invariant (altair : fork < .altair) (holds : Invariant stat
   · apply frame.effectiveBalancesBounded
     rw [EffectiveBalancesBounded, validators]
     exact holds.effectiveBalancesBounded
+
+/-- A Phase 0 epoch preserves committees for its current and all earlier epochs.
+
+The registry schedules changes for later epochs, and balance updates do not reassign committees. -/
+theorem processEpoch_active_indices (before : fork < .altair) (holds : Invariant state)
+    {epoch : Epoch} (past : epoch ≤ getCurrentEpoch state)
+    (computed : processEpoch config state = .ok after) :
+    getActiveValidatorIndices after epoch = getActiveValidatorIndices state epoch := by
+  have notAltair : ¬Fork.altair ≤ fork := Nat.not_le_of_lt before
+  simp only [processEpoch, notAltair, ↓reduceDIte, bind_ok_iff] at computed
+  obtain ⟨justified, justifiedOk, rewarded, rewardedOk, registered, registeredOk, slashed,
+    slashedOk, reset, resetOk, balanced, balancedOk, cleared, clearedOk, mixed, mixedOk, rooted,
+    rootedOk, rotated⟩ := computed
+  obtain ⟨_, _, _, slot, validators, _⟩ :=
+    processJustificationAndFinalization_invariant holds.ordered holds.settled justifiedOk
+  have rewardRegistry := processRewardsAndPenalties_validators rewardedOk
+  have rewardSlot := (frame_processRewardsAndPenalties rewardedOk).slot
+  have recent : epoch ≤ getCurrentEpoch rewarded := by
+    simpa only [getCurrentEpoch, rewardSlot, slot] using past
+  have registry := processRegistryUpdates_active_indices
+    (Nat.lt_trans before (by decide)) (rewarded.validators.bound (Nat.lt_trans before (by decide)))
+    recent registeredOk
+  have slashingRegistry := processSlashings_validators slashedOk
+  have resetRegistry := processEth1DataReset_validators resetOk
+  have effective := active_indices_of_validator_queries (epoch := epoch)
+    (reset.validators.bound (Nat.lt_trans before (by decide)))
+    (balanced.validators.bound (Nat.lt_trans before (by decide)))
+    (processEffectiveBalanceUpdates_active (epoch := epoch)
+      (reset.validators.bound (Nat.lt_trans before (by decide))) balancedOk)
+  have clearedRegistry : cleared.validators = balanced.validators := by
+    obtain ⟨_, _, rfl⟩ := processSlashingsReset_eq clearedOk
+    rfl
+  have mixedRegistry : mixed.validators = cleared.validators := by
+    obtain ⟨_, _, _, _, rfl⟩ := processRandaoMixesReset_eq mixedOk
+    rfl
+  have rootedRegistry := processHistoricalRootsUpdate_validators rootedOk
+  have rotatedRegistry := processParticipationRecordUpdates_validators rotated
+  calc
+    getActiveValidatorIndices after epoch = getActiveValidatorIndices balanced epoch := by
+      simp only [getActiveValidatorIndices, rotatedRegistry, rootedRegistry, mixedRegistry,
+        clearedRegistry]
+    _ = getActiveValidatorIndices reset epoch := effective
+    _ = getActiveValidatorIndices registered epoch := by
+      simp only [getActiveValidatorIndices, resetRegistry, slashingRegistry]
+    _ = getActiveValidatorIndices rewarded epoch := registry
+    _ = getActiveValidatorIndices state epoch := by
+      simp only [getActiveValidatorIndices, rewardRegistry, validators]
 
 /-- The bits and checkpoints at the end of a Phase 0 epoch come from its justification step.
 
@@ -1870,6 +2103,50 @@ theorem advanceSlots_invariant (altair : fork < .altair) :
     obtain ⟨afterHolds, second⟩ := advanceSlots_invariant altair nextHolds rest
     exact ⟨afterHolds, UInt64.le_trans first second⟩
 
+/-- Advancing one Phase 0 slot preserves active indices for every already reached epoch. -/
+theorem advanceSlot_active_indices (before : fork < .altair) (holds : Invariant state)
+    {epoch : Epoch} (past : epoch ≤ getCurrentEpoch state)
+    (computed : advanceSlot config state = .ok after) :
+    getActiveValidatorIndices after epoch = getActiveValidatorIndices state epoch := by
+  simp only [advanceSlot, bind_ok_iff, liftAccessor_ok, liftArith, mapError_ok_iff,
+    addChecked_ok_iff, pure, Except.pure, Except.ok.injEq] at computed
+  obtain ⟨_, _, cached, cachedOk, epoched, epochedOk, rfl⟩ := computed
+  have frame := frame_processSlot cachedOk
+  have recent : epoch ≤ getCurrentEpoch cached := by
+    simpa only [getCurrentEpoch, frame.slot] using past
+  have registry : cached.validators = state.validators := by
+    obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+    rfl
+  have kept : getActiveValidatorIndices epoched epoch =
+      getActiveValidatorIndices cached epoch := by
+    unfold epochIfLast at epochedOk
+    split at epochedOk
+    · exact processEpoch_active_indices before (frame.invariant holds) recent epochedOk
+    · cases epochedOk
+      rfl
+  change getActiveValidatorIndices epoched epoch = _
+  rw [kept]
+  simp only [getActiveValidatorIndices, registry]
+
+/-- A Phase 0 slot run preserves committee populations for epochs reached before the run. -/
+theorem advanceSlots_active_indices (before : fork < .altair) {epoch : Epoch} :
+    ∀ (count : Nat) {state after : BeaconState preset fork}, Invariant state →
+      epoch ≤ getCurrentEpoch state → advanceSlots config count state = .ok after →
+      getActiveValidatorIndices after epoch = getActiveValidatorIndices state epoch
+  | 0, _, _, _, _, computed => by
+    cases computed
+    rfl
+  | count + 1, state, _, holds, past, computed => by
+    simp only [advanceSlots, bind_ok_iff] at computed
+    obtain ⟨middle, first, tail⟩ := computed
+    have slot := advanceSlot_slot first
+    have later : getCurrentEpoch state ≤ getCurrentEpoch middle := by
+      rw [UInt64.le_iff_toNat_le, getCurrentEpoch_toNat, getCurrentEpoch_toNat, slot]
+      exact Nat.div_le_div_right (by omega)
+    exact (advanceSlots_active_indices before count
+      (advanceSlot_invariant before holds first).1 (UInt64.le_trans past later) tail).trans
+      (advanceSlot_active_indices before holds past first)
+
 /-- Before Altair, advancing to a later slot keeps the invariant.
 
 The finalized epoch does not decrease. -/
@@ -1899,6 +2176,50 @@ theorem stateTransition_invariant (altair : fork < .altair)
   refine ⟨frame.invariant advancedHolds, ?_⟩
   rw [frame.finalized]
   exact finalized
+
+/-- A successful Phase 0 transition preserves committees for epochs already reached at its input. -/
+theorem stateTransition_active_indices (before : fork < .altair) (holds : Invariant state)
+    {signed : SignedBeaconBlock preset fork} {validateResult : Bool} {epoch : Epoch}
+    (past : epoch ≤ getCurrentEpoch state)
+    (computed : stateTransition config checks engine state signed validateResult = .ok after) :
+    getActiveValidatorIndices after epoch = getActiveValidatorIndices state epoch := by
+  obtain ⟨advanced, slotsOk, _, _, blockOk, _⟩ := stateTransition_ok computed
+  have advancedPast : epoch ≤ getCurrentEpoch advanced := by
+    have slots := processSlots_slot slotsOk
+    have later : getCurrentEpoch state ≤ getCurrentEpoch advanced := by
+      rw [UInt64.le_iff_toNat_le, getCurrentEpoch_toNat, getCurrentEpoch_toNat, slots.2]
+      have less := UInt64.lt_iff_toNat_lt.mp slots.1
+      exact Nat.div_le_div_right (by omega)
+    exact UInt64.le_trans past later
+  have blockKept := processBlock_active_indices before advancedPast blockOk
+  simp only [processSlots, bind_ok_iff, ensure_ok_iff] at slotsOk
+  obtain ⟨_, _, advancedOk⟩ := slotsOk
+  exact blockKept.trans (advanceSlots_active_indices before _ holds past advancedOk)
+
+/-- Actual Phase 0 chains preserve active indices at every epoch reached before the chain. -/
+theorem stateTransition_chain_active_indices (before : fork < .altair)
+    (holds : Invariant state) {epoch : Epoch} (past : epoch ≤ getCurrentEpoch state)
+    {blocks : List (SignedBeaconBlock preset fork)}
+    (computed : blocks.foldlM
+      (fun s block => stateTransition config checks engine s block true) state = .ok after) :
+    getActiveValidatorIndices after epoch = getActiveValidatorIndices state epoch := by
+  have result := foldlM_ok_invariant (fun s => Invariant s ∧
+    epoch ≤ getCurrentEpoch s ∧
+    getActiveValidatorIndices s epoch = getActiveValidatorIndices state epoch)
+    (fun s block next prior ok => by
+      have invariant := (stateTransition_invariant before prior.1 ok).1
+      obtain ⟨advanced, slotsOk, _, _, blockOk, _⟩ := stateTransition_ok ok
+      have slots := processSlots_slot slotsOk
+      have frame := frame_processBlock before blockOk
+      have epochLe : getCurrentEpoch s ≤ getCurrentEpoch next := by
+        rw [UInt64.le_iff_toNat_le, getCurrentEpoch_toNat, getCurrentEpoch_toNat,
+          frame.slot, slots.2]
+        have less := UInt64.lt_iff_toNat_lt.mp slots.1
+        exact Nat.div_le_div_right (by omega)
+      exact ⟨invariant, UInt64.le_trans prior.2.1 epochLe,
+        (stateTransition_active_indices before prior.1 prior.2.1 ok).trans prior.2.2⟩)
+    ⟨holds, past, rfl⟩ computed
+  exact result.2.2
 
 /-- A changed finalized checkpoint after a block comes from a justification call in its slot run.
 

@@ -166,6 +166,70 @@ theorem updatedEffectiveBalance_increase_le {balance effectiveBalance result : G
     rw [UInt64.toNat_sub_of_le _ _ remainder, UInt64.toNat_mod] at bound
     omega
 
+/-- Updating an effective balance preserves every indexed committee activity query.
+
+Committee assignment uses activation and exit epochs, not effective balance. -/
+theorem updateEffectiveBalance_active {index : Nat} {epoch : Epoch}
+    (exactIndex : index.toUInt64.toNat = index)
+    (computed : updateEffectiveBalance state index = .ok after) (other : ValidatorIndex) :
+    (getValidator after other).map (isActiveValidator · epoch) =
+      (getValidator state other).map (isActiveValidator · epoch) := by
+  simp only [updateEffectiveBalance, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+    Except.ok.injEq] at computed
+  obtain ⟨validator, found, _, _, effectiveBalance, _, rfl⟩ := computed
+  by_cases equal : other = index.toUInt64
+  · subst other
+    have read := getValidator_setValidator_self found
+      { validator with effectiveBalance }
+    rw [exactIndex] at read
+    rw [read, found]
+    rfl
+  · have same := getValidator_setValidator_of_ne (state := state) equal
+      { validator with effectiveBalance }
+    rw [exactIndex] at same
+    rw [same]
+
+/-- The complete effective-balance pass preserves every indexed activity query. -/
+theorem processEffectiveBalanceUpdates_active {epoch : Epoch}
+    (within : state.RegistryWithinLimit)
+    (computed : processEffectiveBalanceUpdates state = .ok after) (other : ValidatorIndex) :
+    (getValidator after other).map (isActiveValidator · epoch) =
+      (getValidator state other).map (isActiveValidator · epoch) := by
+  unfold processEffectiveBalanceUpdates at computed
+  split at computed
+  · cases computed
+  have preserve : ∀ (indices : List Nat) (s s' : BeaconState preset fork),
+      s.RegistryWithinLimit → (∀ i ∈ indices, i < s.validators.data.size) →
+      indices.foldlM updateEffectiveBalance s = .ok s' →
+      (getValidator s' other).map (isActiveValidator · epoch) =
+        (getValidator s other).map (isActiveValidator · epoch) := by
+    intro indices
+    induction indices with
+    | nil =>
+      intro s s' _ _ ok
+      simp only [List.foldlM_nil, pure, Except.pure, Except.ok.injEq] at ok
+      subst s'
+      rfl
+    | cons index rest ih =>
+      intro s s' bound inside ok
+      rw [List.foldlM_cons, bind_ok_iff] at ok
+      obtain ⟨middle, first, tail⟩ := ok
+      have sizes : middle.validators.data.size = s.validators.data.size := by
+        simp only [updateEffectiveBalance, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+          Except.ok.injEq] at first
+        obtain ⟨_, _, _, _, _, _, rfl⟩ := first
+        simp only [BeaconState.setValidator, Array.size_set!]
+      have middleBound : middle.RegistryWithinLimit := by
+        unfold BeaconState.RegistryWithinLimit at bound ⊢
+        rw [sizes]
+        exact bound
+      have kept := updateEffectiveBalance_active (epoch := epoch)
+        (toNat_toUInt64_of_lt bound (inside index List.mem_cons_self)) first other
+      exact (ih middle s' middleBound (fun i member => by
+        rw [sizes]
+        exact inside i (List.mem_cons_of_mem _ member)) tail).trans kept
+  exact preserve _ state after within (fun _ member => List.mem_range.mp member) computed
+
 /-- A single update cannot use stored balance above the effective-balance cap. -/
 theorem updatedEffectiveBalance_increase_le_capped_headroom
     {balance effectiveBalance result : Gwei}
@@ -765,6 +829,35 @@ theorem sameSizes_applySlashingPenalty {total adjusted : Gwei} {index : Nat}
       exact computed ▸ SameSizes.refl _
   · simp only [pure, Except.pure, Except.ok.injEq] at computed
     exact computed ▸ SameSizes.refl _
+
+/-- The delayed slashing penalty changes balances, not committee assignments. -/
+theorem applySlashingPenalty_validators {total adjusted : Gwei} {index : Nat}
+    (computed : applySlashingPenalty state total adjusted index = .ok after) :
+    after.validators = state.validators := by
+  simp only [applySlashingPenalty, bind_ok_iff, liftAccessor_ok] at computed
+  obtain ⟨_, _, rest⟩ := computed
+  split at rest
+  · simp only [bind_ok_iff] at rest
+    obtain ⟨_, _, rest⟩ := rest
+    split at rest
+    · simp only [bind_ok_iff, liftAccessor_ok] at rest
+      obtain ⟨_, _, _, _, lowered⟩ := rest
+      exact decreaseBalance_validators lowered
+    · cases rest
+      rfl
+  · cases rest
+    rfl
+
+/-- Applying all delayed slashing penalties leaves the validator registry unchanged. -/
+theorem processSlashings_validators
+    (computed : processSlashings state = .ok after) : after.validators = state.validators := by
+  unfold processSlashings at computed
+  split at computed
+  · cases computed
+  simp only [bind_ok_iff] at computed
+  obtain ⟨_, _, _, _, _, _, applied⟩ := computed
+  exact foldlM_ok_invariant (fun s => s.validators = state.validators)
+    (fun _ _ _ same ok => (applySlashingPenalty_validators ok).trans same) rfl applied
 
 /-- The slashings succeed only before Electra, and keep the sizes. -/
 theorem processSlashings_ok (computed : processSlashings state = .ok after) :

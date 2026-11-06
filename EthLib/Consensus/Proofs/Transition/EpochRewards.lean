@@ -34,6 +34,38 @@ open Base Uint64 Serialization.Ssz
 
 variable {preset : Preset} {fork : Base.Fork} {state after : BeaconState preset fork}
 
+/-- Applying rewards and penalties changes balances, not the validator registry. -/
+theorem applyDeltas_validators {rewards penalties : Array Gwei} {index : Nat}
+    (computed : applyDeltas rewards penalties state index = .ok after) :
+    after.validators = state.validators := by
+  simp only [applyDeltas, bind_ok_iff, liftAccessor_ok] at computed
+  obtain ⟨_, raised, lowered⟩ := computed
+  exact (decreaseBalance_validators lowered).trans (increaseBalance_validators raised)
+
+/-- The complete delta application leaves the registry unchanged. -/
+theorem applyAllDeltas_validators {deltas : Array Gwei × Array Gwei}
+    (computed : applyAllDeltas state deltas = .ok after) :
+    after.validators = state.validators :=
+  foldlM_ok_invariant (fun s => s.validators = state.validators)
+    (fun _ _ _ same ok => (applyDeltas_validators ok).trans same) rfl computed
+
+/-- Epoch reward processing preserves committee assignments by leaving the registry unchanged. -/
+theorem processRewardsAndPenalties_validators {config : Config}
+    (computed : processRewardsAndPenalties config state = .ok after) :
+    after.validators = state.validators := by
+  unfold processRewardsAndPenalties at computed
+  split at computed
+  · cases computed
+    rfl
+  split at computed
+  · simp only [bind_ok_iff] at computed
+    obtain ⟨_, _, _, _, applied⟩ := computed
+    exact foldlM_ok_invariant (fun s => s.validators = state.validators)
+      (fun _ _ _ same ok => (applyAllDeltas_validators ok).trans same) rfl applied
+  · simp only [bind_ok_iff] at computed
+    obtain ⟨_, _, applied⟩ := computed
+    exact applyAllDeltas_validators applied
+
 /-- Adding a delta keeps the entries at the other indices. -/
 theorem addDelta_getD_of_ne {deltas result : Array Gwei} {index : ValidatorIndex}
     {amount : Gwei} (computed : addDelta deltas index amount = .ok result) {j : Nat}

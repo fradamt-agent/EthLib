@@ -385,6 +385,20 @@ theorem sameSizes_processProposerSlashing {config : Config} {checks : SignatureC
 
 /-! ## Attester slashings -/
 
+/-- A proposer slashing preserves committee activity for an epoch no later than the current one.
+
+Slashing excludes later participation tallies, but it does not reassign historical committees. -/
+theorem processProposerSlashing_active {config : Config} {checks : SignatureChecks}
+    {state after : BeaconState preset fork} {slashing : ProposerSlashing} {epoch : Epoch}
+    (before : fork < .pectra) (past : epoch ≤ getCurrentEpoch state)
+    (computed : processProposerSlashing config checks state slashing = .ok after)
+    (other : ValidatorIndex) :
+    (getValidator after other).map (isActiveValidator · epoch) =
+      (getValidator state other).map (isActiveValidator · epoch) := by
+  simp only [processProposerSlashing, bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at computed
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, slashed⟩ := computed
+  exact slashValidator_active before past slashed other
+
 /-- An already slashed validator cannot trigger another slashing or another reward. -/
 theorem slashIfSlashable_eq_of_slashed {config : Config}
     {state : BeaconState preset fork} {slashedAny : Bool} {index : ValidatorIndex}
