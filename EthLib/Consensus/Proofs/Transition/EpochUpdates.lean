@@ -31,6 +31,28 @@ variable {preset : Preset} {fork : Base.Fork} {state after : BeaconState preset 
 
 /-! ## Effective balances -/
 
+/-- Every validator's effective balance is at most the Phase 0 voting-weight cap. -/
+def EffectiveBalancesBounded (state : BeaconState preset fork) : Prop :=
+  ∀ validator ∈ state.validators.data, validator.effectiveBalance ≤ preset.MAX_EFFECTIVE_BALANCE
+
+/-- A bounded later effective balance can exceed its reference only by the initial deficit. -/
+theorem effectiveBalance_growth_le_initial_deficit {reference : Gwei} {validator : Validator}
+    (bounded : EffectiveBalancesBounded state) (member : validator ∈ state.validators.data) :
+    validator.effectiveBalance.toNat - reference.toNat ≤
+      preset.MAX_EFFECTIVE_BALANCE.toNat - reference.toNat := by
+  have bound := UInt64.le_iff_toNat_le.mp (bounded validator member)
+  omega
+
+/-- A registry replacement preserves the cap when the replacement satisfies it. -/
+theorem effectiveBalancesBounded_setValidator {index : Nat} {validator : Validator}
+    (bounded : EffectiveBalancesBounded state)
+    (bound : validator.effectiveBalance ≤ preset.MAX_EFFECTIVE_BALANCE) :
+    EffectiveBalancesBounded (state.setValidator index validator) := by
+  intro other member
+  rcases Array.mem_or_eq_of_mem_setIfInBounds member with old | rfl
+  · exact bounded other old
+  · exact bound
+
 /-- Stored balance that can fund an effective-balance increase without new rewards.
 
 The update rounds down and caps the balance, so this is an upper bound on its headroom. -/
@@ -44,6 +66,37 @@ def cappedEffectiveBalanceHeadroom (preset : Preset) (balance effectiveBalance :
   min (effectiveBalanceHeadroom balance effectiveBalance)
     (preset.MAX_EFFECTIVE_BALANCE.toNat - effectiveBalance.toNat)
 
+/-- A deposit can supply at most one Phase 0 effective-balance cap of voting weight.
+
+The balance credit itself is not capped. -/
+def cappedDepositCredit (preset : Preset) (amount : Gwei) : Nat :=
+  min amount.toNat preset.MAX_EFFECTIVE_BALANCE.toNat
+
+/-- Capping each deposit bounds the charge by the number of deposits times the cap. -/
+theorem sum_cappedDepositCredit_le (preset : Preset) (amounts : List Gwei) :
+    (amounts.map (cappedDepositCredit preset)).sum ≤
+      amounts.length * preset.MAX_EFFECTIVE_BALANCE.toNat := by
+  induction amounts with
+  | nil => simp
+  | cons amount amounts ih =>
+    have capped : cappedDepositCredit preset amount ≤ preset.MAX_EFFECTIVE_BALANCE.toNat :=
+      Nat.min_le_right _ _
+    simp only [List.map_cons, List.sum_cons, List.length_cons, Nat.succ_mul]
+    omega
+
+/-- Stored headroom and deposit credits share the same remaining effective-balance capacity.
+
+This caps their combined contribution instead of charging the same available capacity twice. -/
+theorem cappedEffectiveBalanceHeadroom_add_deposit (preset : Preset)
+    (balance effectiveBalance amount : Gwei) :
+    min (balance.toNat + amount.toNat - effectiveBalance.toNat)
+        (preset.MAX_EFFECTIVE_BALANCE.toNat - effectiveBalance.toNat) ≤
+      min (cappedEffectiveBalanceHeadroom preset balance effectiveBalance +
+          cappedDepositCredit preset amount)
+        (preset.MAX_EFFECTIVE_BALANCE.toNat - effectiveBalance.toNat) := by
+  unfold cappedEffectiveBalanceHeadroom effectiveBalanceHeadroom cappedDepositCredit
+  omega
+
 /-- An updated effective balance is the old one, or the balance rounded down and capped. -/
 theorem updatedEffectiveBalance_cases {balance effectiveBalance result : Gwei}
     (computed : updatedEffectiveBalance preset balance effectiveBalance = .ok result) :
@@ -55,6 +108,43 @@ theorem updatedEffectiveBalance_cases {balance effectiveBalance result : Gwei}
   cases leaves
   · exact .inl rfl
   · exact .inr rfl
+
+/-- The update preserves the effective-balance cap without an alignment assumption. -/
+theorem updatedEffectiveBalance_le_max {balance effectiveBalance result : Gwei}
+    (bounded : effectiveBalance ≤ preset.MAX_EFFECTIVE_BALANCE)
+    (computed : updatedEffectiveBalance preset balance effectiveBalance = .ok result) :
+    result ≤ preset.MAX_EFFECTIVE_BALANCE := by
+  rcases updatedEffectiveBalance_cases computed with rfl | rfl
+  · exact bounded
+  · exact Std.min_le_right
+
+/-- Updating one effective balance preserves the registry-wide cap. -/
+theorem updateEffectiveBalance_bounded {index : Nat}
+    (bounded : EffectiveBalancesBounded state)
+    (computed : updateEffectiveBalance state index = .ok after) :
+    EffectiveBalancesBounded after := by
+  simp only [updateEffectiveBalance, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+    Except.ok.injEq] at computed
+  obtain ⟨validator, found, _, _, effectiveBalance, updated, rfl⟩ := computed
+  apply effectiveBalancesBounded_setValidator bounded
+  apply updatedEffectiveBalance_le_max _ updated
+  unfold getValidator at found
+  split at found
+  · rename_i read
+    cases found
+    exact bounded _ (Array.mem_of_getElem? read)
+  · cases found
+
+/-- Updating every effective balance preserves the cap. -/
+theorem processEffectiveBalanceUpdates_bounded
+    (bounded : EffectiveBalancesBounded state)
+    (computed : processEffectiveBalanceUpdates state = .ok after) :
+    EffectiveBalancesBounded after := by
+  unfold processEffectiveBalanceUpdates at computed
+  split at computed
+  · cases computed
+  exact foldlM_ok_invariant EffectiveBalancesBounded
+    (fun _ _ _ before step => updateEffectiveBalance_bounded before step) bounded computed
 
 /-- An effective-balance increase cannot exceed the balance's excess over the old value.
 

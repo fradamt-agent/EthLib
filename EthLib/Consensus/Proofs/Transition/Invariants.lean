@@ -9,11 +9,13 @@ public import EthLib.Consensus.Proofs.Transition.StateTransition
 /-!
 # Proofs: invariants of the Phase 0 state transition
 
-Three properties of a state hold after each valid block, before Altair.
+The following properties hold after each valid block, before Altair.
 
 The registry and the balances keep one entry for each validator.
 
 Each validator may withdraw no earlier than it exits.
+
+Each effective balance is at most the Phase 0 cap.
 
 The finalized, previous justified and current justified epochs stay in increasing order.
 
@@ -54,16 +56,18 @@ structure Frame (state after : BeaconState preset fork) : Prop where
   currentJustified : after.currentJustifiedCheckpoint = state.currentJustifiedCheckpoint
   balancesMatch : BalancesMatch state → BalancesMatch after
   exitsOrdered : ExitsOrdered state → ExitsOrdered after
+  effectiveBalancesBounded : EffectiveBalancesBounded state → EffectiveBalancesBounded after
 
 theorem Frame.refl (state : BeaconState preset fork) : Frame state state :=
-  ⟨rfl, rfl, rfl, rfl, id, id⟩
+  ⟨rfl, rfl, rfl, rfl, id, id, id⟩
 
 theorem Frame.trans {first second third : BeaconState preset fork} (one : Frame first second)
     (two : Frame second third) : Frame first third :=
   ⟨two.slot.trans one.slot, two.finalized.trans one.finalized,
     two.previousJustified.trans one.previousJustified,
     two.currentJustified.trans one.currentJustified, two.balancesMatch ∘ one.balancesMatch,
-    two.exitsOrdered ∘ one.exitsOrdered⟩
+    two.exitsOrdered ∘ one.exitsOrdered,
+    two.effectiveBalancesBounded ∘ one.effectiveBalancesBounded⟩
 
 /-- A step that keeps the slot, the checkpoints and the registry, and the number of balances. -/
 theorem Frame.of_validators (sizes : SameSizes state after)
@@ -73,7 +77,8 @@ theorem Frame.of_validators (sizes : SameSizes state after)
     (currentJustified : after.currentJustifiedCheckpoint = state.currentJustifiedCheckpoint) :
     Frame state after :=
   ⟨slot, finalized, previousJustified, currentJustified, balancesMatch_of_sameSizes sizes,
-    fun ordered => by rw [ExitsOrdered, validators]; exact ordered⟩
+    (fun ordered => by rw [ExitsOrdered, validators]; exact ordered),
+    fun bounded => by rw [EffectiveBalancesBounded, validators]; exact bounded⟩
 
 /-- A fold whose every step is a frame is a frame. -/
 theorem Frame.foldlM {α : Type} {step : BeaconState preset fork → α → Except TransitionError _}
@@ -103,10 +108,13 @@ theorem ExitsOrdered.setValidator {index : Nat} {validator : Validator}
   · exact le
 
 theorem frame_setValidator {index : Nat} {validator : Validator}
-    (le : ExitsOrdered state → validator.exitEpoch ≤ validator.withdrawableEpoch) :
+    (le : ExitsOrdered state → validator.exitEpoch ≤ validator.withdrawableEpoch)
+    (bound : EffectiveBalancesBounded state →
+      validator.effectiveBalance ≤ preset.MAX_EFFECTIVE_BALANCE) :
     Frame state (state.setValidator index validator) :=
   ⟨rfl, rfl, rfl, rfl, balancesMatch_of_sameSizes (sameSizes_setValidator _ _ _),
-    fun ordered => ordered.setValidator (le ordered)⟩
+    (fun ordered => ordered.setValidator (le ordered)),
+    fun bounded => effectiveBalancesBounded_setValidator bounded (bound bounded)⟩
 
 theorem frame_increaseBalance {index : ValidatorIndex} {delta : Gwei}
     (computed : increaseBalance state index delta = .ok after) : Frame state after := by
@@ -140,12 +148,17 @@ theorem frame_exitQueue {exitBalance : Gwei} {exitEpoch : Epoch}
 /-- Starting an exit sets a withdrawable epoch no earlier than the exit epoch. -/
 theorem frame_initiateValidatorExit {index : ValidatorIndex}
     (computed : initiateValidatorExit config state index = .ok after) : Frame state after := by
-  obtain ⟨_, _, ⟨_, rfl⟩ | ⟨_, queued, exitEpoch, withdrawableEpoch, queue, summed, rfl⟩⟩ :=
+  obtain ⟨validator, found,
+    ⟨_, rfl⟩ | ⟨_, queued, exitEpoch, withdrawableEpoch, queue, summed, rfl⟩⟩ :=
     initiateValidatorExit_ok computed
   · exact Frame.refl _
-  · refine (frame_exitQueue queue).trans (frame_setValidator fun _ => ?_)
-    have sum := (addChecked_ok_iff.mp summed).2
-    exact UInt64.le_iff_toNat_le.mpr (by simp only at sum ⊢; omega)
+  · refine (frame_exitQueue queue).trans (frame_setValidator (fun _ => ?_) (fun bounded => ?_))
+    · have sum := (addChecked_ok_iff.mp summed).2
+      exact UInt64.le_iff_toNat_le.mpr (by simp only at sum ⊢; omega)
+    · have queuedFound : getValidator queued index = .ok validator := by
+        rw [getValidator_of_validators_eq (exitQueue_validators queue).1]
+        exact found
+      exact bounded validator (mem_of_getValidator queuedFound)
 
 theorem frame_slashings (state : BeaconState preset fork) (slashings : Vector Gwei _) :
     Frame state { state with slashings } :=
@@ -174,7 +187,7 @@ theorem frame_slashValidator {slashedIndex : ValidatorIndex}
     ((frame_setValidator (index := slashedIndex.toNat)
       (validator := { validator with
         slashed := true, withdrawableEpoch := max validator.withdrawableEpoch delay })
-      fun ordered => ?_).trans
+      (fun ordered => ?_) (fun bounded => bounded validator (mem_of_getValidator found))).trans
       (frame_slashings _ _)).trans <|
     (frame_decreaseBalance loweredOk).trans <| (frame_increaseBalance raisedOk).trans <|
     (frame_increaseBalance lastOk).trans (frame_slashValidatorLast done)
@@ -261,12 +274,21 @@ theorem frame_addValidatorToRegistry (altair : fork < .altair) {pubkey : BLSPubk
   · exact absurd ‹_› (Nat.not_le_of_lt altair)
   split at computed
   · cases computed
-    refine ⟨rfl, rfl, rfl, rfl, fun holds => ?_, fun ordered validator member => ?_⟩
+    refine ⟨rfl, rfl, rfl, rfl, (fun holds => ?_),
+      (fun ordered validator member => ?_), fun bounded validator member => ?_⟩
     · simp only [BalancesMatch, Array.size_push] at holds ⊢
       omega
     · rcases Array.mem_push.mp member with old | rfl
       · exact ordered validator old
       · exact UInt64.le_refl _
+    · rcases Array.mem_push.mp member with old | rfl
+      · exact bounded validator old
+      · have notElectra : ¬Fork.pectra ≤ fork := fun le =>
+          Nat.lt_irrefl _ (Nat.lt_of_lt_of_le (Nat.lt_trans altair (by decide)) le)
+        simpa [getValidatorFromDeposit, withdrawalMaxEffectiveBalance, notElectra] using
+          (Std.min_le_right
+            (a := amount - amount % preset.EFFECTIVE_BALANCE_INCREMENT)
+            (b := preset.MAX_EFFECTIVE_BALANCE))
   · cases computed
 
 theorem frame_applyDeposit (altair : fork < .altair) {pubkey : BLSPubkey}
@@ -380,9 +402,19 @@ theorem frame_updateRegistryEntry {index : Nat}
   simp only [updateRegistryEntry, bind_ok_iff, liftAccessor_ok] at computed
   obtain ⟨validator, found, queued, queuedOk, computed⟩ := computed
   obtain ⟨exitSame, withdrawableSame⟩ := queueForActivation_epochs queuedOk
-  have set : Frame state (state.setValidator index queued) := frame_setValidator fun ordered => by
-    rw [exitSame, withdrawableSame]
-    exact ordered validator (mem_of_getValidator found)
+  have sameBalance : queued.effectiveBalance = validator.effectiveBalance := by
+    unfold queueForActivation at queuedOk
+    split at queuedOk
+    · simp only [bind_ok_iff, liftAccessor_ok, pure, Except.pure, Except.ok.injEq] at queuedOk
+      obtain ⟨_, _, rfl⟩ := queuedOk
+      rfl
+    · simp only [pure, Except.pure, Except.ok.injEq] at queuedOk
+      exact congrArg Validator.effectiveBalance queuedOk.symm
+  have set : Frame state (state.setValidator index queued) := frame_setValidator
+    (fun ordered => by
+      rw [exitSame, withdrawableSame]
+      exact ordered validator (mem_of_getValidator found))
+    (fun bounded => by rw [sameBalance]; exact bounded validator (mem_of_getValidator found))
   split at computed
   · rw [liftAccessor_ok] at computed
     exact set.trans (frame_initiateValidatorExit computed)
@@ -394,7 +426,8 @@ theorem frame_activateValidator {index : ValidatorIndex}
   simp only [activateValidator, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
     Except.ok.injEq] at computed
   obtain ⟨validator, found, _, _, rfl⟩ := computed
-  exact frame_setValidator fun ordered => ordered validator (mem_of_getValidator found)
+  exact frame_setValidator (fun ordered => ordered validator (mem_of_getValidator found))
+    (fun bounded => bounded validator (mem_of_getValidator found))
 
 theorem frame_processRegistryUpdates
     (computed : processRegistryUpdates config state = .ok after) : Frame state after := by
@@ -447,8 +480,10 @@ theorem frame_updateEffectiveBalance {index : Nat}
     (computed : updateEffectiveBalance state index = .ok after) : Frame state after := by
   simp only [updateEffectiveBalance, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
     Except.ok.injEq] at computed
-  obtain ⟨validator, found, _, _, _, _, rfl⟩ := computed
-  exact frame_setValidator fun ordered => ordered validator (mem_of_getValidator found)
+  obtain ⟨validator, found, _, _, _, updated, rfl⟩ := computed
+  exact frame_setValidator (fun ordered => ordered validator (mem_of_getValidator found))
+    (fun bounded => updatedEffectiveBalance_le_max
+      (bounded validator (mem_of_getValidator found)) updated)
 
 theorem frame_processEffectiveBalanceUpdates
     (computed : processEffectiveBalanceUpdates state = .ok after) : Frame state after := by
@@ -502,6 +537,7 @@ structure Invariant (state : BeaconState preset fork) : Prop where
   exitsOrdered : ExitsOrdered state
   ordered : CheckpointsOrdered state
   settled : JustifiedSettled state
+  effectiveBalancesBounded : EffectiveBalancesBounded state
 
 theorem getPreviousEpoch_toNat (state : BeaconState preset fork) :
     (getPreviousEpoch state).toNat = (getCurrentEpoch state).toNat - 1 := by
@@ -520,6 +556,7 @@ theorem Frame.invariant (frame : Frame state after) (holds : Invariant state) :
     Invariant after where
   balancesMatch := frame.balancesMatch holds.balancesMatch
   exitsOrdered := frame.exitsOrdered holds.exitsOrdered
+  effectiveBalancesBounded := frame.effectiveBalancesBounded holds.effectiveBalancesBounded
   ordered := by
     have := holds.ordered
     unfold CheckpointsOrdered at this ⊢
@@ -572,7 +609,8 @@ theorem processEpoch_invariant (altair : fork < .altair) (holds : Invariant stat
     after.slot = state.slot ∧ BalancesMatch after ∧ ExitsOrdered after ∧
       CheckpointsOrdered after ∧
       state.finalizedCheckpoint.epoch ≤ after.finalizedCheckpoint.epoch ∧
-      after.currentJustifiedCheckpoint.epoch ≤ getCurrentEpoch state := by
+      after.currentJustifiedCheckpoint.epoch ≤ getCurrentEpoch state ∧
+      EffectiveBalancesBounded after := by
   have notAltair : ¬Fork.altair ≤ fork := fun le => Nat.lt_irrefl _ (Nat.lt_of_lt_of_le altair le)
   simp only [processEpoch, notAltair, ↓reduceDIte, bind_ok_iff] at computed
   obtain ⟨justified, justifiedOk, rewarded, rewardedOk, registered, registeredOk, slashed,
@@ -601,7 +639,7 @@ theorem processEpoch_invariant (altair : fork < .altair) (holds : Invariant stat
     rw [validators]
     exact this
   refine ⟨frame.slot.trans slot, frame.balancesMatch balancesMatch,
-    frame.exitsOrdered exitsOrdered, ?_, ?_, ?_⟩
+    frame.exitsOrdered exitsOrdered, ?_, ?_, ?_, ?_⟩
   · unfold CheckpointsOrdered at ordered ⊢
     rw [frame.finalized, frame.previousJustified, frame.currentJustified]
     exact ordered
@@ -609,6 +647,9 @@ theorem processEpoch_invariant (altair : fork < .altair) (holds : Invariant stat
     exact finalized
   · rw [frame.currentJustified]
     exact current
+  · apply frame.effectiveBalancesBounded
+    rw [EffectiveBalancesBounded, validators]
+    exact holds.effectiveBalancesBounded
 
 /-! ## Slots and blocks -/
 
@@ -638,7 +679,7 @@ theorem advanceSlot_invariant (altair : fork < .altair) (holds : Invariant state
   unfold epochIfLast at epochedOk
   split at epochedOk
   · rename_i boundary
-    obtain ⟨_, balancesMatch, exitsOrdered, ordered, finalized, current⟩ :=
+    obtain ⟨_, balancesMatch, exitsOrdered, ordered, finalized, current, bounded⟩ :=
       processEpoch_invariant altair cachedHolds epochedOk
     have boundary' : next.toNat % preset.SLOTS_PER_EPOCH.toNat = 0 := by
       simpa [UInt64.toNat_mod] using congrArg UInt64.toNat boundary
@@ -646,7 +687,7 @@ theorem advanceSlot_invariant (altair : fork < .altair) (holds : Invariant state
         state.slot.toNat / preset.SLOTS_PER_EPOCH.toNat + 1 := by
       rw [sum]
       exact Nat.succ_div_of_dvd (Nat.dvd_of_mod_eq_zero (sum ▸ boundary'))
-    refine ⟨⟨balancesMatch, exitsOrdered, ordered, ?_⟩, ?_⟩
+    refine ⟨⟨balancesMatch, exitsOrdered, ordered, ?_, bounded⟩, ?_⟩
     · have current' := UInt64.le_iff_toNat_le.mp current
       rw [getCurrentEpoch_toNat, cachedFrame.slot] at current'
       unfold JustifiedSettled
@@ -667,7 +708,8 @@ theorem advanceSlot_invariant (altair : fork < .altair) (holds : Invariant state
         state.slot.toNat / preset.SLOTS_PER_EPOCH.toNat := by
       rw [sum]
       exact Nat.succ_div_of_not_dvd notBoundary'
-    refine ⟨⟨cachedHolds.balancesMatch, cachedHolds.exitsOrdered, cachedHolds.ordered, ?_⟩, ?_⟩
+    refine ⟨⟨cachedHolds.balancesMatch, cachedHolds.exitsOrdered, cachedHolds.ordered, ?_,
+      cachedHolds.effectiveBalancesBounded⟩, ?_⟩
     · have settled := UInt64.le_iff_toNat_le.mp holds.settled
       rw [getPreviousEpoch_toNat, getCurrentEpoch_toNat] at settled
       unfold JustifiedSettled

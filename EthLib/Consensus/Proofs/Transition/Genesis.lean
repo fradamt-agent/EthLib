@@ -37,6 +37,7 @@ theorem emptyGenesisState_invariant (before : fork < .altair) (genesisTime : UIn
   exitsOrdered := fun _ member => by simp [emptyGenesisState] at member
   ordered := ⟨UInt64.le_refl _, UInt64.le_refl _⟩
   settled := UInt64.zero_le
+  effectiveBalancesBounded := fun _ member => by simp [emptyGenesisState] at member
 
 theorem frame_genesisDeposit (altair : fork < .altair) {before : fork < .hegota}
     {leaves : Array DepositData}
@@ -55,9 +56,12 @@ theorem frame_activateAtGenesis {index : Nat}
   simp only [activateAtGenesis, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
     Except.ok.injEq] at computed
   obtain ⟨validator, found, _, _, rfl⟩ := computed
-  refine frame_setValidator fun ordered => ?_
-  have le := ordered validator (mem_of_getValidator found)
-  split <;> exact le
+  apply frame_setValidator
+  · intro ordered
+    have le := ordered validator (mem_of_getValidator found)
+    split <;> exact le
+  · intro _
+    split <;> exact Std.min_le_right
 
 /-- A candidate genesis state satisfies the invariant that each valid block keeps before Altair.
 
@@ -82,6 +86,42 @@ theorem initializeBeaconStateFromEth1_invariant {eth1BlockHash : Hash32} {eth1Ti
   have rooted : Frame activated { activated with genesisValidatorsRoot := root } :=
     Frame.of_validators ⟨rfl, rfl⟩ rfl rfl rfl rfl rfl
   exact rooted.invariant (frame.invariant (emptyGenesisState_invariant before _ _ _ _))
+
+/-- Every Phase 0 state reached from initialized genesis keeps the effective-balance cap.
+
+The block list uses the actual state transition, including result validation. -/
+theorem effectiveBalancesBounded_of_initialized_chain
+    {engine : ExecutionEngine preset fork} {genesis : BeaconState preset fork}
+    {eth1BlockHash : Hash32} {eth1Timestamp : UInt64} {deposits : Array Deposit}
+    {blocks : List (SignedBeaconBlock preset fork)}
+    (initialized : initializeBeaconStateFromEth1 config checks eth1BlockHash eth1Timestamp
+      deposits = .ok genesis)
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block true) genesis =
+        .ok after) :
+    EffectiveBalancesBounded after := by
+  obtain ⟨before, holds⟩ := initializeBeaconStateFromEth1_invariant initialized
+  have invariant := foldlM_ok_invariant Invariant
+    (fun _ _ _ current ok => (stateTransition_invariant before current ok).1) holds computed
+  exact invariant.effectiveBalancesBounded
+
+/-- Growth from any reference balance on an initialized chain is bounded by its initial deficit.
+
+The reference can be the effective balance of the same validator at the common ancestor. -/
+theorem effectiveBalance_growth_le_deficit_of_initialized_chain
+    {engine : ExecutionEngine preset fork} {genesis : BeaconState preset fork}
+    {eth1BlockHash : Hash32} {eth1Timestamp : UInt64} {deposits : Array Deposit}
+    {blocks : List (SignedBeaconBlock preset fork)} {reference : Gwei} {validator : Validator}
+    (initialized : initializeBeaconStateFromEth1 config checks eth1BlockHash eth1Timestamp
+      deposits = .ok genesis)
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block true) genesis =
+        .ok after)
+    (member : validator ∈ after.validators.data) :
+    validator.effectiveBalance.toNat - reference.toNat ≤
+      preset.MAX_EFFECTIVE_BALANCE.toNat - reference.toNat :=
+  effectiveBalance_growth_le_initial_deficit
+    (effectiveBalancesBounded_of_initialized_chain initialized computed) member
 
 /-- A candidate state launches the chain exactly when it is late enough.
 
