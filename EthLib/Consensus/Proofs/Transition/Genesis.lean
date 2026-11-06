@@ -48,7 +48,7 @@ theorem frame_genesisDeposit (altair : fork < .altair) {before : fork < .hegota}
   obtain ⟨depositRoot, _, deposited⟩ := computed
   exact (Frame.of_validators (state := state)
     (after := { state with eth1Data := fun _ => { state.eth1Data before with depositRoot } })
-    ⟨rfl, rfl⟩ rfl rfl rfl rfl rfl).trans (frame_processDeposit altair deposited)
+    ⟨rfl, rfl⟩ rfl rfl rfl rfl rfl rfl).trans (frame_processDeposit altair deposited)
 
 /-- Setting the effective balance and the activation at genesis changes no exit. -/
 theorem frame_activateAtGenesis {index : Nat}
@@ -84,7 +84,7 @@ theorem initializeBeaconStateFromEth1_invariant {eth1BlockHash : Hash32} {eth1Ti
   have frame := (Frame.foldlM (fun _ _ _ ok => frame_genesisDeposit before ok) depositedOk).trans
     (Frame.foldlM (fun _ _ _ ok => frame_activateAtGenesis ok) activatedOk)
   have rooted : Frame activated { activated with genesisValidatorsRoot := root } :=
-    Frame.of_validators ⟨rfl, rfl⟩ rfl rfl rfl rfl rfl
+    Frame.of_validators ⟨rfl, rfl⟩ rfl rfl rfl rfl rfl rfl
   exact rooted.invariant (frame.invariant (emptyGenesisState_invariant before _ _ _ _))
 
 /-- Every Phase 0 state reached from initialized genesis keeps the effective-balance cap.

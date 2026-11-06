@@ -78,6 +78,74 @@ theorem validator_two_thirds_comparison (reference left right : Validator)
   cases leftMarked <;> cases rightMarked <;> simp only [Bool.false_and, Bool.true_and,
     Bool.false_eq_true, ↓reduceIte] <;> omega
 
+/-- Sum the comparison over concrete registry entries and their two participation marks.
+
+The entries align the same validator index in the reference and the two weighing states.
+
+The maximum loss is taken before summing, so recovery on one branch cannot erase it. -/
+theorem validators_two_thirds_comparison
+    (entries : List (Validator × Validator × Validator × Bool × Bool))
+    (bounded : ∀ entry ∈ entries,
+      entry.1.effectiveBalance ≤ preset.MAX_EFFECTIVE_BALANCE ∧
+      entry.2.1.effectiveBalance ≤ preset.MAX_EFFECTIVE_BALANCE ∧
+      entry.2.2.1.effectiveBalance ≤ preset.MAX_EFFECTIVE_BALANCE) :
+    (entries.map fun entry => entry.1.effectiveBalance.toNat).sum +
+        3 * (entries.map fun entry =>
+          if entry.2.2.2.1 then entry.2.1.effectiveBalance.toNat else 0).sum +
+        3 * (entries.map fun entry =>
+          if entry.2.2.2.2 then entry.2.2.1.effectiveBalance.toNat else 0).sum ≤
+      3 * (entries.map fun entry =>
+          if entry.2.2.2.1 && entry.2.2.2.2 then entry.1.effectiveBalance.toNat else 0).sum +
+        3 * (entries.map fun entry =>
+          max (entry.1.effectiveBalance.toNat - entry.2.1.effectiveBalance.toNat)
+            (entry.1.effectiveBalance.toNat - entry.2.2.1.effectiveBalance.toNat)).sum +
+        2 * (entries.map fun entry =>
+          preset.MAX_EFFECTIVE_BALANCE.toNat - entry.1.effectiveBalance.toNat).sum +
+        2 * (entries.map fun entry => entry.2.1.effectiveBalance.toNat).sum +
+        2 * (entries.map fun entry => entry.2.2.1.effectiveBalance.toNat).sum := by
+  induction entries with
+  | nil => simp
+  | cons entry entries ih =>
+    have bounds := bounded entry List.mem_cons_self
+    have one := validator_two_thirds_comparison entry.1 entry.2.1 entry.2.2.1
+      entry.2.2.2.1 entry.2.2.2.2 bounds.1 bounds.2.1 bounds.2.2
+    have rest := ih (fun other member => bounded other (List.mem_cons_of_mem entry member))
+    simp only [List.map_cons, List.sum_cons, Nat.mul_add]
+    omega
+
+/-- Removing a reference validator from either active denominator costs twice its reference stake.
+
+Participation marks here count only validators active in the corresponding current epoch.
+
+Previous-epoch participants absent from that denominator must be charged separately.
+
+The exit charge is shared between the branches rather than summed twice. -/
+theorem validator_active_two_thirds_comparison (reference left right : Validator)
+    (leftEpoch rightEpoch : Epoch) (leftMarked rightMarked : Bool)
+    (referenceBound : reference.effectiveBalance ≤ preset.MAX_EFFECTIVE_BALANCE)
+    (leftBound : left.effectiveBalance ≤ preset.MAX_EFFECTIVE_BALANCE)
+    (rightBound : right.effectiveBalance ≤ preset.MAX_EFFECTIVE_BALANCE)
+    (leftActive : leftMarked = true → isActiveValidator left leftEpoch = true)
+    (rightActive : rightMarked = true → isActiveValidator right rightEpoch = true) :
+    reference.effectiveBalance.toNat +
+        3 * (if leftMarked then left.effectiveBalance.toNat else 0) +
+        3 * (if rightMarked then right.effectiveBalance.toNat else 0) ≤
+      3 * (if leftMarked && rightMarked then reference.effectiveBalance.toNat else 0) +
+        3 * max (reference.effectiveBalance.toNat - left.effectiveBalance.toNat)
+          (reference.effectiveBalance.toNat - right.effectiveBalance.toNat) +
+        2 * (preset.MAX_EFFECTIVE_BALANCE.toNat - reference.effectiveBalance.toNat) +
+        2 * (if isActiveValidator left leftEpoch then left.effectiveBalance.toNat else 0) +
+        2 * (if isActiveValidator right rightEpoch then right.effectiveBalance.toNat else 0) +
+        2 * (if isActiveValidator left leftEpoch && isActiveValidator right rightEpoch
+          then 0 else reference.effectiveBalance.toNat) := by
+  have referenceLe := UInt64.le_iff_toNat_le.mp referenceBound
+  have leftLe := UInt64.le_iff_toNat_le.mp leftBound
+  have rightLe := UInt64.le_iff_toNat_le.mp rightBound
+  cases leftIsActive : isActiveValidator left leftEpoch <;>
+    cases rightIsActive : isActiveValidator right rightEpoch <;>
+    cases leftMarked <;> cases rightMarked <;>
+    simp_all only [Bool.false_and, Bool.true_and, Bool.false_eq_true, ↓reduceIte] <;> omega
+
 /-- The marked sum is a sum of the effective balances paired with true marks.
 
 The array zip discards any unmatched suffix, exactly as `sumMarked` does. -/
@@ -521,6 +589,33 @@ theorem weighJustificationAndFinalization_bits {total previous current : Gwei}
   simp only [UInt64.reduceToNat] at pwOk thresholdOk cwOk
   rw [pwOk.2, thresholdOk.2, cwOk.2]
   simp [Nat.mul_comm]
+
+/-- A newest true bit has an actual current-epoch threshold computation behind it.
+
+Unlike a changed checkpoint, this witness also covers a checkpoint already justified before.
+
+It retains both balance accessors and the exact call that weighs them. -/
+theorem processJustificationAndFinalization_current_bit (before : fork < .altair)
+    (computed : processJustificationAndFinalization state = .ok after)
+    (eligible : ¬getCurrentEpoch state ≤ GENESIS_EPOCH + 1)
+    (bit : after.justificationBits.bits[0] = true) :
+    ∃ previous current total previousBalance currentBalance,
+      getMatchingTargetAttestations state before (getPreviousEpoch state) = .ok previous ∧
+      getMatchingTargetAttestations state before (getCurrentEpoch state) = .ok current ∧
+      getTotalActiveBalance state = .ok total ∧
+      getAttestingBalance state previous = .ok previousBalance ∧
+      getAttestingBalance state current = .ok currentBalance ∧
+      weighJustificationAndFinalization state total previousBalance currentBalance = .ok after ∧
+      2 * total.toNat ≤ 3 * currentBalance.toNat := by
+  unfold processJustificationAndFinalization at computed
+  split at computed
+  · exact absurd ‹_› (Nat.not_le_of_lt before)
+  simp only [bind_ok_iff, liftAccessor_ok] at computed
+  obtain ⟨previous, previousOk, current, currentOk, total, totalOk, previousBalance,
+    previousBalanceOk, currentBalance, currentBalanceOk, weighed⟩ := computed
+  exact ⟨previous, current, total, previousBalance, currentBalance, previousOk, currentOk,
+    totalOk, previousBalanceOk, currentBalanceOk, weighed,
+    (weighJustificationAndFinalization_bits weighed).1.mp bit⟩
 
 /-- The two oldest justification bits retain the preceding call's two middle bits.
 
