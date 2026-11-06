@@ -31,6 +31,12 @@ variable {preset : Preset} {fork : Base.Fork} {state after : BeaconState preset 
 
 /-! ## Effective balances -/
 
+/-- Stored balance that can fund an effective-balance increase without new rewards.
+
+The update rounds down and caps the balance, so this is an upper bound on its headroom. -/
+def effectiveBalanceHeadroom (balance effectiveBalance : Gwei) : Nat :=
+  balance.toNat - effectiveBalance.toNat
+
 /-- An updated effective balance is the old one, or the balance rounded down and capped. -/
 theorem updatedEffectiveBalance_cases {balance effectiveBalance result : Gwei}
     (computed : updatedEffectiveBalance preset balance effectiveBalance = .ok result) :
@@ -42,6 +48,51 @@ theorem updatedEffectiveBalance_cases {balance effectiveBalance result : Gwei}
   cases leaves
   · exact .inl rfl
   · exact .inr rfl
+
+/-- An effective-balance increase cannot exceed the balance's excess over the old value.
+
+This bound includes stored balance below the next hysteresis threshold.
+
+A bound from rewards alone must also account for that stored balance. -/
+theorem updatedEffectiveBalance_increase_le {balance effectiveBalance result : Gwei}
+    (computed : updatedEffectiveBalance preset balance effectiveBalance = .ok result) :
+    result.toNat - effectiveBalance.toNat ≤ balance.toNat - effectiveBalance.toNat := by
+  rcases updatedEffectiveBalance_cases computed with rfl | rfl
+  · omega
+  · have remainder : balance % preset.EFFECTIVE_BALANCE_INCREMENT ≤ balance := by
+      rw [UInt64.le_iff_toNat_le, UInt64.toNat_mod]
+      exact Nat.mod_le _ _
+    have capped : min (balance - balance % preset.EFFECTIVE_BALANCE_INCREMENT)
+        preset.MAX_EFFECTIVE_BALANCE ≤
+        balance - balance % preset.EFFECTIVE_BALANCE_INCREMENT := Std.min_le_left
+    have bound := UInt64.le_iff_toNat_le.mp capped
+    rw [UInt64.toNat_sub_of_le _ _ remainder, UInt64.toNat_mod] at bound
+    omega
+
+/-- Credits after the reference state and its stored headroom cover an effective-balance increase.
+
+The caller must bound credits from deposits and rewards separately.
+
+Penalties can only reduce the balance bound in the hypothesis. -/
+theorem updatedEffectiveBalance_increase_le_headroom_add
+    {referenceBalance referenceEffective balance effectiveBalance result : Gwei} {credits : Nat}
+    (balanceBound : balance.toNat ≤ referenceBalance.toNat + credits)
+    (computed : updatedEffectiveBalance preset balance effectiveBalance = .ok result) :
+    result.toNat - referenceEffective.toNat ≤
+      effectiveBalanceHeadroom referenceBalance referenceEffective + credits +
+        (effectiveBalance.toNat - referenceEffective.toNat) := by
+  unfold effectiveBalanceHeadroom
+  rcases updatedEffectiveBalance_cases computed with rfl | rfl
+  · omega
+  · have remainder : balance % preset.EFFECTIVE_BALANCE_INCREMENT ≤ balance := by
+      rw [UInt64.le_iff_toNat_le, UInt64.toNat_mod]
+      exact Nat.mod_le _ _
+    have capped : min (balance - balance % preset.EFFECTIVE_BALANCE_INCREMENT)
+        preset.MAX_EFFECTIVE_BALANCE ≤
+        balance - balance % preset.EFFECTIVE_BALANCE_INCREMENT := Std.min_le_left
+    have bound := UInt64.le_iff_toNat_le.mp capped
+    rw [UInt64.toNat_sub_of_le _ _ remainder, UInt64.toNat_mod] at bound
+    omega
 
 /-- Every effective balance is a whole number of increments, and at most the largest. -/
 def EffectiveBalancesAligned (state : BeaconState preset fork) : Prop :=
