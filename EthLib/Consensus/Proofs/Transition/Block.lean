@@ -335,6 +335,18 @@ theorem processProposerSlashing_slashed {config : Config} {checks : SignatureChe
   obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, slashed⟩ := computed
   exact (slashValidator_slashedFlag slashed).1
 
+/-- A proposer slashing cannot pay a second reward for an already slashed validator. -/
+theorem processProposerSlashing_ne_ok_of_slashed {config : Config} {checks : SignatureChecks}
+    {state after : BeaconState preset fork} {slashing : ProposerSlashing}
+    (flag : slashedFlag state slashing.signedHeader1.message.proposerIndex = .ok true) :
+    processProposerSlashing config checks state slashing ≠ .ok after := by
+  intro computed
+  obtain ⟨_, _, _, validator, found, slashable, _, _⟩ :=
+    processProposerSlashing_checks computed
+  have set : validator.slashed = true := by
+    simpa [slashedFlag, found, Except.map] using flag
+  simp [isSlashableValidator, set] at slashable
+
 theorem sameSizes_processProposerSlashing {config : Config} {checks : SignatureChecks}
     {state after : BeaconState preset fork} {slashing : ProposerSlashing}
     (computed : processProposerSlashing config checks state slashing = .ok after) :
@@ -344,6 +356,19 @@ theorem sameSizes_processProposerSlashing {config : Config} {checks : SignatureC
   exact sameSizes_slashValidator slashed
 
 /-! ## Attester slashings -/
+
+/-- An already slashed validator cannot trigger another slashing or another reward. -/
+theorem slashIfSlashable_eq_of_slashed {config : Config}
+    {state : BeaconState preset fork} {slashedAny : Bool} {index : ValidatorIndex}
+    (flag : slashedFlag state index = .ok true) :
+    slashIfSlashable config (state, slashedAny) index = .ok (state, slashedAny) := by
+  unfold slashedFlag at flag
+  cases found : getValidator state index with
+  | error error => simp [found, Except.map] at flag
+  | ok validator =>
+    have set : validator.slashed = true := by simpa [found, Except.map] using flag
+    simp [slashIfSlashable, found, liftAccessor, Except.mapError, bind, Except.bind,
+      isSlashableValidator, set, pure, Except.pure]
 
 /-- A step of an attester slashing keeps the sizes, and keeps every slashed flag that is set.
 
@@ -397,6 +422,33 @@ theorem foldlM_slashIfSlashable {config : Config} (indices : List ValidatorIndex
       · exact .inl stepFlag
       · exact .inr ⟨first, List.mem_cons_self, restKept first flag⟩
     · exact .inr ⟨index, List.mem_cons_of_mem first member, flag⟩
+
+/-- After an index is slashed, removing its later occurrences cannot change the slashing fold.
+
+Other slashings preserve its flag, so the removed steps pay no additional reward. -/
+theorem foldlM_slashIfSlashable_filter_slashed {config : Config}
+    (indices : List ValidatorIndex) {index : ValidatorIndex}
+    {step after : BeaconState preset fork × Bool}
+    (flag : slashedFlag step.1 index = .ok true)
+    (computed : indices.foldlM (slashIfSlashable config) step = .ok after) :
+    (indices.filter (· != index)).foldlM (slashIfSlashable config) step = .ok after := by
+  induction indices generalizing step with
+  | nil => exact computed
+  | cons first rest ih =>
+    simp only [List.foldlM_cons, bind_ok_iff] at computed
+    obtain ⟨middle, firstOk, restOk⟩ := computed
+    by_cases same : first = index
+    · subst first
+      have unchanged := slashIfSlashable_eq_of_slashed flag (config := config)
+        (slashedAny := step.2)
+      rw [unchanged] at firstOk
+      cases firstOk
+      simpa using ih flag restOk
+    · have kept := (slashIfSlashable_ok firstOk).2.1 index flag
+      have restFiltered := ih kept restOk
+      rw [List.filter_cons_of_pos (by simpa using same)]
+      rw [List.foldlM_cons, bind_ok_iff]
+      exact ⟨middle, firstOk, restFiltered⟩
 
 /-- A valid attester slashing holds two valid attestations that Casper FFG forbids together. -/
 theorem processAttesterSlashing_checks {config : Config} {checks : SignatureChecks}
