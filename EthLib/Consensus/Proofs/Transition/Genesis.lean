@@ -725,6 +725,163 @@ theorem previousJustification_authenticated_at_cached_slot
   · rw [data]
     exact rootEq
 
+/-- A changed justified checkpoint counts authenticated included attestations for that checkpoint.
+
+The source is selected from the cached state's own justified checkpoints.
+
+The previous-target case uses its actual threshold, even when a justification bit was inherited. -/
+theorem changedJustification_authenticated_at_cached_slot
+    {engine : ExecutionEngine preset .phase0}
+    {genesis after atStep cached justified : BeaconState preset .phase0}
+    {eth1BlockHash : Hash32} {eth1Timestamp : UInt64} {deposits : Array Deposit}
+    {blocks : List (SignedBeaconBlock preset .phase0)} {count : Nat}
+    (positive : 0 < preset.MIN_SEED_LOOKAHEAD.toNat)
+    (history : preset.MIN_SEED_LOOKAHEAD.toNat + 3 <
+      preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (initialized : initializeBeaconStateFromEth1 config checks eth1BlockHash eth1Timestamp
+      deposits = .ok genesis)
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block true) genesis =
+        .ok after)
+    (advanced : advanceSlots config count after = .ok atStep)
+    (cachedOk : processSlot atStep = .ok cached)
+    (weighed : processJustificationAndFinalization cached = .ok justified)
+    (changed : justified.currentJustifiedCheckpoint ≠ cached.currentJustifiedCheckpoint) :
+    ∃ epoch attestations indices,
+      (epoch = getPreviousEpoch cached ∨ epoch = getCurrentEpoch cached) ∧
+      justified.currentJustifiedCheckpoint.epoch = epoch ∧
+      getBlockRoot cached epoch = .ok justified.currentJustifiedCheckpoint.root ∧
+      getMatchingTargetAttestations cached (by decide) epoch = .ok attestations ∧
+      getUnslashedAttestingIndices cached attestations = .ok indices ∧
+      2 * sumMarked cached.validators.data
+          (markIndices cached.validators.data.size
+            (getActiveValidatorIndices cached (getCurrentEpoch cached))) ≤
+        3 * sumMarked cached.validators.data (markIndices cached.validators.data.size indices) +
+          3 * totalBalanceFloor cached indices ∧
+      ∀ index ∈ indices,
+        ∃ pending ∈ attestations, ∃ earlier block later atBlock atSlot,
+          blocks = earlier ++ block :: later ∧
+          earlier.foldlM
+            (fun state block => stateTransition config checks engine state block true)
+              genesis = .ok atBlock ∧
+          processSlots config atBlock block.message.slot = .ok atSlot ∧
+          PendingIncludedInBlock config checks (by decide) atSlot block.message pending ∧
+        ∃ (recorded : BeaconState preset .phase0)
+          (attestation : Attestation preset .phase0)
+          (indexed : IndexedAttestation preset .phase0),
+          indexed.data = pending.data ∧
+          getIndexedAttestation recorded attestation = .ok indexed ∧
+          index ∈ indexed.attestingIndices.data ∧
+          indexed.data.source =
+            (if epoch = getCurrentEpoch cached then cached.currentJustifiedCheckpoint
+              else cached.previousJustifiedCheckpoint) ∧
+          indexed.data.target = justified.currentJustifiedCheckpoint ∧
+          isValidIndexedAttestation config checks recorded indexed = .ok true := by
+  obtain ⟨sources, epochs⟩ := pending_invariants_at_cached_slot_of_initialized_chain
+    (by decide) initialized computed advanced cachedOk
+  obtain ⟨epoch, attestations, indices, recent, matching, indicesOk, epochEq, threshold,
+    witnesses⟩ := processJustificationAndFinalization_pending_signers (by decide) weighed changed
+  have rootOk := processJustificationAndFinalization_justified_root weighed changed
+  rw [epochEq] at rootOk
+  refine ⟨epoch, attestations, indices, recent, epochEq, rootOk,
+    matching, indicesOk, threshold, ?_⟩
+  intro index member
+  obtain ⟨⟨pending, pendingMember, signers, root, signersOk, signer, pendingRootOk,
+    pendingRoot, _⟩, _⟩ := witnesses index member
+  obtain ⟨_, _, sourceOk, _, sourceMember, _⟩ :=
+    getMatchingTargetAttestations_mem matching pendingMember
+  have pendingMember' : pending ∈ (cached.currentEpochAttestations (by decide)).data ∨
+      pending ∈ (cached.previousEpochAttestations (by decide)).data := by
+    simp only [getMatchingSourceAttestations, bind_ok_iff, ensure_ok_iff, pure, Except.pure,
+      Except.ok.injEq] at sourceOk
+    obtain ⟨_, _, rfl⟩ := sourceOk
+    split at sourceMember
+    · exact .inl sourceMember
+    · exact .inr sourceMember
+  obtain ⟨recorded, attestation, indexed, indexedOk, listed, data, _, valid⟩ :=
+    pending_signers_at_cached_slot_of_initialized_chain positive history
+      initialized computed advanced cachedOk pendingMember' signersOk
+  obtain ⟨earlier, block, later, atBlock, atSlot, split, prefixOk, slotsOk, included⟩ :=
+    pendingIncluded_at_cached_slot_of_initialized_chain (by decide)
+      initialized computed advanced cachedOk pendingMember'
+  refine ⟨pending, pendingMember, earlier, block, later, atBlock, atSlot, split,
+    prefixOk, slotsOk, included, recorded, attestation, indexed, data, indexedOk, ?_, ?_, ?_,
+    valid⟩
+  · rw [listed]
+    simpa only [List.mem_toArray] using mem_sortedSet.mpr signer
+  · rw [data]
+    exact getMatchingTargetAttestations_source sources matching pendingMember
+  · have rootEq : root = justified.currentJustifiedCheckpoint.root := by
+      simpa only [rootOk, Except.ok.injEq] using pendingRootOk.symm
+    have targetEpoch : indexed.data.target.epoch = justified.currentJustifiedCheckpoint.epoch := by
+      rw [data, (getMatchingTargetAttestations_slot_epoch epochs matching pendingMember).1,
+        epochEq]
+    have targetRoot : indexed.data.target.root = justified.currentJustifiedCheckpoint.root := by
+      rw [data, pendingRoot, rootEq]
+    have checkpointEq : ∀ x y : Checkpoint,
+        x.epoch = y.epoch → x.root = y.root → x = y := by
+      intro ⟨epoch1, root1⟩ ⟨epoch2, root2⟩ epochs roots
+      cases epochs
+      cases roots
+      rfl
+    exact checkpointEq _ _ targetEpoch targetRoot
+
+/-- The first crossing of an epoch uses a cached state whose two stored sources are below it.
+
+The concrete justification call creates a checkpoint above the boundary.
+
+This locates the epoch-order witness needed for the surround case of Casper FFG §2. -/
+theorem justifiedCrossing_of_initialized_chain
+    {engine : ExecutionEngine preset .phase0}
+    {genesis after : BeaconState preset .phase0}
+    {eth1BlockHash : Hash32} {eth1Timestamp : UInt64} {deposits : Array Deposit}
+    {blocks : List (SignedBeaconBlock preset .phase0)} {boundary : Nat}
+    (initialized : initializeBeaconStateFromEth1 config checks eth1BlockHash eth1Timestamp
+      deposits = .ok genesis)
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block true) genesis =
+        .ok after)
+    (below : genesis.currentJustifiedCheckpoint.epoch.toNat ≤ boundary)
+    (above : boundary < after.currentJustifiedCheckpoint.epoch.toNat) :
+    ∃ earlier block later atBlock offset atStep next cached epoched justified,
+      blocks = earlier ++ block :: later ∧
+      earlier.foldlM
+        (fun state block => stateTransition config checks engine state block true)
+          genesis = .ok atBlock ∧
+      offset < block.message.slot.toNat - atBlock.slot.toNat ∧
+      advanceSlots config offset atBlock = .ok atStep ∧
+      advanceSlot config atStep = .ok next ∧
+      processSlot atStep = .ok cached ∧ processEpoch config cached = .ok epoched ∧
+      processJustificationAndFinalization cached = .ok justified ∧
+      cached.previousJustifiedCheckpoint.epoch.toNat ≤ boundary ∧
+      cached.currentJustifiedCheckpoint.epoch.toNat ≤ boundary ∧
+      boundary < justified.currentJustifiedCheckpoint.epoch.toNat ∧
+      justified.currentJustifiedCheckpoint ≠ cached.currentJustifiedCheckpoint := by
+  obtain ⟨earlier, block, later, atBlock, offset, atStep, next, split, prefixOk,
+    inside, advanced, stepOk, stepBelow, stepAbove⟩ :=
+    stateTransition_chain_justified_crossing (by decide) computed below above
+  have changed : next.currentJustifiedCheckpoint ≠ atStep.currentJustifiedCheckpoint := by
+    intro equal
+    rw [equal] at stepAbove
+    omega
+  obtain ⟨cached, epoched, justified, cachedOk, epochOk, weighed, assigned, changedEpoch⟩ :=
+    advanceSlot_justified_origin (by decide) stepOk changed
+  have atBlockInvariant := foldlM_ok_invariant Invariant
+    (fun _ _ _ holds ok => (stateTransition_invariant (by decide) holds ok).1)
+    (initializeBeaconStateFromEth1_invariant initialized).2 prefixOk
+  have atStepInvariant := (advanceSlots_invariant (by decide) atBlockInvariant advanced).1
+  have frame := frame_processSlot cachedOk
+  have currentBelow : cached.currentJustifiedCheckpoint.epoch.toNat ≤ boundary := by
+    simpa only [frame.currentJustified] using stepBelow
+  have previousBelow : cached.previousJustifiedCheckpoint.epoch.toNat ≤ boundary := by
+    rw [frame.previousJustified]
+    have ordered := UInt64.le_iff_toNat_le.mp atStepInvariant.ordered.2
+    omega
+  refine ⟨earlier, block, later, atBlock, offset, atStep, next, cached, epoched, justified,
+    split, prefixOk, inside, advanced, stepOk, cachedOk, epochOk, weighed,
+    previousBelow, currentBelow, ?_, changedEpoch⟩
+  simpa only [assigned] using stepAbove
+
 /-- Current justifications of different roots at one epoch expose double-vote evidence.
 
 The conclusion names checked indexed attestations for every index counted on both chains.

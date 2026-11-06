@@ -2564,6 +2564,81 @@ theorem advanceSlot_finalized_origin (before : fork < .altair)
     subst epochedOk
     exact (changed cachedFrame.finalized).elim
 
+/-- A changed current justified checkpoint comes from a justification call in this slot. -/
+theorem advanceSlot_justified_origin (before : fork < .altair)
+    (computed : advanceSlot config state = .ok after)
+    (changed : after.currentJustifiedCheckpoint ≠ state.currentJustifiedCheckpoint) :
+    ∃ cached epoched justified,
+      processSlot state = .ok cached ∧ processEpoch config cached = .ok epoched ∧
+      processJustificationAndFinalization cached = .ok justified ∧
+      after.currentJustifiedCheckpoint = justified.currentJustifiedCheckpoint ∧
+      justified.currentJustifiedCheckpoint ≠ cached.currentJustifiedCheckpoint := by
+  simp only [advanceSlot, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+    Except.ok.injEq] at computed
+  obtain ⟨next, _, cached, cachedOk, epoched, epochedOk, rfl⟩ := computed
+  have frame := frame_processSlot cachedOk
+  unfold epochIfLast at epochedOk
+  split at epochedOk
+  · obtain ⟨justified, justifiedOk, _, current, _⟩ :=
+      processEpoch_justification before epochedOk
+    refine ⟨cached, epoched, justified, cachedOk, epochedOk, justifiedOk, current, ?_⟩
+    intro same
+    exact changed (current.trans (same.trans frame.currentJustified))
+  · cases epochedOk
+    exact (changed frame.currentJustified).elim
+
+/-- A changed current justified checkpoint in a slot run was assigned at a particular step. -/
+theorem advanceSlots_justified_origin {count : Nat}
+    (computed : advanceSlots config count state = .ok after)
+    (changed : after.currentJustifiedCheckpoint ≠ state.currentJustifiedCheckpoint) :
+    ∃ offset atStep next, offset < count ∧
+      advanceSlots config offset state = .ok atStep ∧
+      advanceSlot config atStep = .ok next ∧
+      next.currentJustifiedCheckpoint = after.currentJustifiedCheckpoint ∧
+      next.currentJustifiedCheckpoint ≠ atStep.currentJustifiedCheckpoint := by
+  induction count generalizing state with
+  | zero =>
+    cases computed
+    exact (changed rfl).elim
+  | succ count ih =>
+    simp only [advanceSlots, bind_ok_iff] at computed
+    obtain ⟨middle, firstOk, restOk⟩ := computed
+    by_cases same : after.currentJustifiedCheckpoint = middle.currentJustifiedCheckpoint
+    · exact ⟨0, state, middle, by omega, rfl, firstOk, same.symm,
+        fun equal => changed (same.trans equal)⟩
+    · obtain ⟨offset, atStep, next, inside, prefixOk, stepOk, assigned, changedStep⟩ :=
+        ih restOk same
+      refine ⟨offset + 1, atStep, next, by omega, ?_, stepOk, assigned, changedStep⟩
+      simp only [advanceSlots, bind_ok_iff]
+      exact ⟨middle, firstOk, prefixOk⟩
+
+/-- A slot run that crosses a justified epoch has a first slot crossing that epoch.
+
+The input bound is retained for both stored sources when checkpoint order is available. -/
+theorem advanceSlots_justified_crossing {count boundary : Nat}
+    (computed : advanceSlots config count state = .ok after)
+    (below : state.currentJustifiedCheckpoint.epoch.toNat ≤ boundary)
+    (above : boundary < after.currentJustifiedCheckpoint.epoch.toNat) :
+    ∃ offset atStep next, offset < count ∧
+      advanceSlots config offset state = .ok atStep ∧
+      advanceSlot config atStep = .ok next ∧
+      atStep.currentJustifiedCheckpoint.epoch.toNat ≤ boundary ∧
+      boundary < next.currentJustifiedCheckpoint.epoch.toNat := by
+  induction count generalizing state with
+  | zero =>
+    cases computed
+    omega
+  | succ count ih =>
+    simp only [advanceSlots, bind_ok_iff] at computed
+    obtain ⟨middle, firstOk, restOk⟩ := computed
+    by_cases middleBelow : middle.currentJustifiedCheckpoint.epoch.toNat ≤ boundary
+    · obtain ⟨offset, atStep, next, inside, prefixOk, stepOk, stepBelow, stepAbove⟩ :=
+        ih restOk middleBelow
+      refine ⟨offset + 1, atStep, next, by omega, ?_, stepOk, stepBelow, stepAbove⟩
+      simp only [advanceSlots, bind_ok_iff]
+      exact ⟨middle, firstOk, prefixOk⟩
+    · exact ⟨0, state, middle, by omega, rfl, firstOk, below, by omega⟩
+
 /-- Advancing one slot cannot set a bit before justification is enabled.
 
 The early epoch calls return their input, and all other slot operations preserve the bits. -/
@@ -3541,6 +3616,136 @@ theorem stateTransition_chain_bit_origin (before : fork < .altair) {index : Fin 
         weighed, threshold⟩
       simp only [List.foldlM_cons, bind_ok_iff]
       exact ⟨middle, firstOk, blocksOk⟩
+
+/-- A changed justified checkpoint after a block comes from its slot run. -/
+theorem stateTransition_justified_origin (before : fork < .altair)
+    {signed : SignedBeaconBlock preset fork} {validateResult : Bool}
+    (computed : stateTransition config checks engine state signed validateResult = .ok after)
+    (changed : after.currentJustifiedCheckpoint ≠ state.currentJustifiedCheckpoint) :
+    ∃ offset atStep next cached epoched justified,
+      offset < signed.message.slot.toNat - state.slot.toNat ∧
+      advanceSlots config offset state = .ok atStep ∧
+      advanceSlot config atStep = .ok next ∧
+      processSlot atStep = .ok cached ∧ processEpoch config cached = .ok epoched ∧
+      processJustificationAndFinalization cached = .ok justified ∧
+      after.currentJustifiedCheckpoint = justified.currentJustifiedCheckpoint ∧
+      justified.currentJustifiedCheckpoint ≠ cached.currentJustifiedCheckpoint := by
+  obtain ⟨advanced, slotsOk, _, _, blockOk, _⟩ := stateTransition_ok computed
+  have frame := frame_processBlock before blockOk
+  have changedSlots : advanced.currentJustifiedCheckpoint ≠ state.currentJustifiedCheckpoint := by
+    simpa only [frame.currentJustified] using changed
+  simp only [processSlots, bind_ok_iff, ensure_ok_iff] at slotsOk
+  obtain ⟨_, _, advancedOk⟩ := slotsOk
+  obtain ⟨offset, atStep, next, inside, prefixOk, stepOk, assigned, changedStep⟩ :=
+    advanceSlots_justified_origin advancedOk changedSlots
+  obtain ⟨cached, epoched, justified, cachedOk, epochOk, justifiedOk, assignedStep, changedEpoch⟩ :=
+    advanceSlot_justified_origin before stepOk changedStep
+  exact ⟨offset, atStep, next, cached, epoched, justified, inside, prefixOk, stepOk,
+    cachedOk, epochOk, justifiedOk,
+    frame.currentJustified.trans (assigned.symm.trans assignedStep), changedEpoch⟩
+
+/-- Every changed current justified checkpoint on a chain has a concrete assignment call.
+
+The witness locates its last assignment, rather than an unrelated change of justification. -/
+theorem stateTransition_chain_justified_origin (before : fork < .altair)
+    {blocks : List (SignedBeaconBlock preset fork)} {validateResult : Bool}
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block validateResult)
+        state = .ok after)
+    (changed : after.currentJustifiedCheckpoint ≠ state.currentJustifiedCheckpoint) :
+    ∃ earlier block later atBlock offset atStep next cached epoched justified,
+      blocks = earlier ++ block :: later ∧
+      earlier.foldlM
+        (fun state block => stateTransition config checks engine state block validateResult)
+          state = .ok atBlock ∧
+      offset < block.message.slot.toNat - atBlock.slot.toNat ∧
+      advanceSlots config offset atBlock = .ok atStep ∧
+      advanceSlot config atStep = .ok next ∧
+      processSlot atStep = .ok cached ∧ processEpoch config cached = .ok epoched ∧
+      processJustificationAndFinalization cached = .ok justified ∧
+      after.currentJustifiedCheckpoint = justified.currentJustifiedCheckpoint ∧
+      justified.currentJustifiedCheckpoint ≠ cached.currentJustifiedCheckpoint := by
+  induction blocks generalizing state with
+  | nil =>
+    cases computed
+    exact (changed rfl).elim
+  | cons first rest ih =>
+    simp only [List.foldlM_cons, bind_ok_iff] at computed
+    obtain ⟨middle, firstOk, restOk⟩ := computed
+    by_cases same : after.currentJustifiedCheckpoint = middle.currentJustifiedCheckpoint
+    · have changedFirst : middle.currentJustifiedCheckpoint ≠ state.currentJustifiedCheckpoint :=
+        fun equal => changed (same.trans equal)
+      obtain ⟨offset, atStep, next, cached, epoched, justified, inside, prefixOk, stepOk,
+        cachedOk, epochOk, justifiedOk, assigned, changedEpoch⟩ :=
+        stateTransition_justified_origin before firstOk changedFirst
+      exact ⟨[], first, rest, state, offset, atStep, next, cached, epoched, justified,
+        rfl, rfl, inside, prefixOk, stepOk, cachedOk, epochOk, justifiedOk,
+        same.trans assigned, changedEpoch⟩
+    · obtain ⟨earlier, block, later, atBlock, offset, atStep, next, cached, epoched, justified,
+        split, blocksOk, inside, prefixOk, stepOk, cachedOk, epochOk, justifiedOk,
+        assigned, changedEpoch⟩ := ih restOk same
+      refine ⟨first :: earlier, block, later, atBlock, offset, atStep, next, cached, epoched,
+        justified, by simp [split], ?_, inside, prefixOk, stepOk, cachedOk, epochOk,
+        justifiedOk, assigned, changedEpoch⟩
+      simp only [List.foldlM_cons, bind_ok_iff]
+      exact ⟨middle, firstOk, blocksOk⟩
+
+/-- A block crossing a justified epoch contains a slot whose input has not crossed it. -/
+theorem stateTransition_justified_crossing (before : fork < .altair)
+    {signed : SignedBeaconBlock preset fork} {validateResult : Bool} {boundary : Nat}
+    (computed : stateTransition config checks engine state signed validateResult = .ok after)
+    (below : state.currentJustifiedCheckpoint.epoch.toNat ≤ boundary)
+    (above : boundary < after.currentJustifiedCheckpoint.epoch.toNat) :
+    ∃ offset atStep next,
+      offset < signed.message.slot.toNat - state.slot.toNat ∧
+      advanceSlots config offset state = .ok atStep ∧
+      advanceSlot config atStep = .ok next ∧
+      atStep.currentJustifiedCheckpoint.epoch.toNat ≤ boundary ∧
+      boundary < next.currentJustifiedCheckpoint.epoch.toNat := by
+  obtain ⟨advanced, slotsOk, _, _, blockOk, _⟩ := stateTransition_ok computed
+  have frame := frame_processBlock before blockOk
+  have aboveSlots : boundary < advanced.currentJustifiedCheckpoint.epoch.toNat := by
+    simpa only [frame.currentJustified] using above
+  simp only [processSlots, bind_ok_iff, ensure_ok_iff] at slotsOk
+  obtain ⟨_, _, advancedOk⟩ := slotsOk
+  exact advanceSlots_justified_crossing advancedOk below aboveSlots
+
+/-- The first crossing of a justified epoch on a chain has an actual block and slot prefix. -/
+theorem stateTransition_chain_justified_crossing (before : fork < .altair)
+    {blocks : List (SignedBeaconBlock preset fork)} {validateResult : Bool} {boundary : Nat}
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block validateResult)
+        state = .ok after)
+    (below : state.currentJustifiedCheckpoint.epoch.toNat ≤ boundary)
+    (above : boundary < after.currentJustifiedCheckpoint.epoch.toNat) :
+    ∃ earlier block later atBlock offset atStep next,
+      blocks = earlier ++ block :: later ∧
+      earlier.foldlM
+        (fun state block => stateTransition config checks engine state block validateResult)
+          state = .ok atBlock ∧
+      offset < block.message.slot.toNat - atBlock.slot.toNat ∧
+      advanceSlots config offset atBlock = .ok atStep ∧
+      advanceSlot config atStep = .ok next ∧
+      atStep.currentJustifiedCheckpoint.epoch.toNat ≤ boundary ∧
+      boundary < next.currentJustifiedCheckpoint.epoch.toNat := by
+  induction blocks generalizing state with
+  | nil =>
+    cases computed
+    omega
+  | cons first rest ih =>
+    simp only [List.foldlM_cons, bind_ok_iff] at computed
+    obtain ⟨middle, firstOk, restOk⟩ := computed
+    by_cases middleBelow : middle.currentJustifiedCheckpoint.epoch.toNat ≤ boundary
+    · obtain ⟨earlier, block, later, atBlock, offset, atStep, next, split, blocksOk,
+        inside, prefixOk, stepOk, stepBelow, stepAbove⟩ := ih restOk middleBelow
+      refine ⟨first :: earlier, block, later, atBlock, offset, atStep, next,
+        by simp [split], ?_, inside, prefixOk, stepOk, stepBelow, stepAbove⟩
+      simp only [List.foldlM_cons, bind_ok_iff]
+      exact ⟨middle, firstOk, blocksOk⟩
+    · obtain ⟨offset, atStep, next, inside, prefixOk, stepOk, stepBelow, stepAbove⟩ :=
+        stateTransition_justified_crossing before firstOk below (by omega)
+      exact ⟨[], first, rest, state, offset, atStep, next, rfl, rfl,
+        inside, prefixOk, stepOk, stepBelow, stepAbove⟩
 
 /-- A changed finalized checkpoint after a block comes from a justification call in its slot run.
 
