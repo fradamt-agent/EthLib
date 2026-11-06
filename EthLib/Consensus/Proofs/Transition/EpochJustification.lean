@@ -48,6 +48,113 @@ theorem pendingSourcesMatch_of_fields {before : fork < .altair}
   rw [current, previous, currentPending, previousPending]
   exact holds
 
+/-- Compare two participation marks using the effective balances at the same validator index.
+
+The two later balances can grow only to the Phase 0 cap.
+
+The largest decrease below the reference is charged once, with coefficient three.
+
+The initial deficit has coefficient two, even when both branches refill it.
+
+Summing this inequality permits two two-thirds thresholds to cancel their denominators.
+
+This is the balance calculation of Casper FFG §2 with the actual effective balances. -/
+theorem validator_two_thirds_comparison (reference left right : Validator)
+    (leftMarked rightMarked : Bool)
+    (referenceBound : reference.effectiveBalance ≤ preset.MAX_EFFECTIVE_BALANCE)
+    (leftBound : left.effectiveBalance ≤ preset.MAX_EFFECTIVE_BALANCE)
+    (rightBound : right.effectiveBalance ≤ preset.MAX_EFFECTIVE_BALANCE) :
+    reference.effectiveBalance.toNat +
+        3 * (if leftMarked then left.effectiveBalance.toNat else 0) +
+        3 * (if rightMarked then right.effectiveBalance.toNat else 0) ≤
+      3 * (if leftMarked && rightMarked then reference.effectiveBalance.toNat else 0) +
+        3 * max (reference.effectiveBalance.toNat - left.effectiveBalance.toNat)
+          (reference.effectiveBalance.toNat - right.effectiveBalance.toNat) +
+        2 * (preset.MAX_EFFECTIVE_BALANCE.toNat - reference.effectiveBalance.toNat) +
+        2 * left.effectiveBalance.toNat + 2 * right.effectiveBalance.toNat := by
+  have referenceLe := UInt64.le_iff_toNat_le.mp referenceBound
+  have leftLe := UInt64.le_iff_toNat_le.mp leftBound
+  have rightLe := UInt64.le_iff_toNat_le.mp rightBound
+  cases leftMarked <;> cases rightMarked <;> simp only [Bool.false_and, Bool.true_and,
+    Bool.false_eq_true, ↓reduceIte] <;> omega
+
+/-- The marked sum is a sum of the effective balances paired with true marks.
+
+The array zip discards any unmatched suffix, exactly as `sumMarked` does. -/
+theorem sumMarked_eq_sum (validators : Array Validator) (marked : Array Bool) :
+    sumMarked validators marked =
+      ((validators.zip marked).toList.map fun (validator, mark) =>
+        if mark then validator.effectiveBalance.toNat else 0).sum := by
+  unfold sumMarked
+  rw [← Array.foldl_toList]
+  have fold : ∀ (entries : List (Validator × Bool)) (start : Nat),
+      entries.foldl (fun sum (validator, mark) =>
+        if mark then sum + validator.effectiveBalance.toNat else sum) start =
+      start + (entries.map fun (validator, mark) =>
+        if mark then validator.effectiveBalance.toNat else 0).sum := by
+    intro entries
+    induction entries with
+    | nil => intro start; simp
+    | cons entry rest ih =>
+      obtain ⟨validator, mark⟩ := entry
+      intro start
+      cases mark <;> simp [ih, Nat.add_assoc]
+  simpa using fold (validators.zip marked).toList 0
+
+/-- Two marked sets can together count at most the registry plus their intersection.
+
+This is the balance intersection calculation used with the two-thirds threshold of Casper FFG §2.
+
+All weights are the effective balances of this concrete registry. -/
+theorem sumMarked_intersection (validators : Array Validator) (left right : Array Bool)
+    (leftSize : left.size = validators.size) (rightSize : right.size = validators.size) :
+    sumMarked validators left + sumMarked validators right ≤
+      (validators.toList.map (·.effectiveBalance.toNat)).sum +
+        sumMarked validators (left.zipWith (· && ·) right) := by
+  simp only [sumMarked_eq_sum, Array.toList_zip, Array.toList_zipWith]
+  have intersection : ∀ (validators : List Validator) (left right : List Bool),
+      left.length = validators.length → right.length = validators.length →
+      ((validators.zip left).map fun (validator, mark) =>
+        if mark then validator.effectiveBalance.toNat else 0).sum +
+        ((validators.zip right).map fun (validator, mark) =>
+          if mark then validator.effectiveBalance.toNat else 0).sum ≤
+        (validators.map (·.effectiveBalance.toNat)).sum +
+          ((validators.zip (left.zipWith (· && ·) right)).map fun (validator, mark) =>
+            if mark then validator.effectiveBalance.toNat else 0).sum := by
+    intro validators
+    induction validators with
+    | nil => intro left right l r; simp at l r; subst l; subst r; simp
+    | cons validator validators ih =>
+      intro left right l r
+      cases left with
+      | nil => simp at l
+      | cons a left =>
+        cases right with
+        | nil => simp at r
+        | cons b right =>
+          have rest := ih left right (by simpa using l) (by simpa using r)
+          cases a <;> cases b <;> simp only [List.zip_cons_cons, List.map_cons,
+            List.sum_cons, List.zipWith_cons_cons, Bool.and_false, Bool.false_and,
+            Bool.true_and, Bool.false_eq_true, ↓reduceIte] at * <;> omega
+  exact intersection validators.toList left.toList right.toList
+    (by simpa using leftSize) (by simpa using rightSize)
+
+/-- Two raw two-thirds bounds force one third of the registry into the marked intersection.
+
+Each raw bound can retain an explicit correction, such as the target-balance floor. -/
+theorem sumMarked_two_thirds_intersection (validators : Array Validator) (left right : Array Bool)
+    (leftSize : left.size = validators.size) (rightSize : right.size = validators.size)
+    (leftCorrection rightCorrection : Nat)
+    (leftEnough : 2 * (validators.toList.map (·.effectiveBalance.toNat)).sum ≤
+      3 * sumMarked validators left + leftCorrection)
+    (rightEnough : 2 * (validators.toList.map (·.effectiveBalance.toNat)).sum ≤
+      3 * sumMarked validators right + rightCorrection) :
+    (validators.toList.map (·.effectiveBalance.toNat)).sum ≤
+      3 * sumMarked validators (left.zipWith (· && ·) right) +
+        leftCorrection + rightCorrection := by
+  have intersection := sumMarked_intersection validators left right leftSize rightSize
+  omega
+
 /-- The extra balance that the increment floor adds to a raw sum of effective balances.
 
 `getTotalBalance` returns at least one increment, even when no validator participates. -/
@@ -266,6 +373,30 @@ theorem weighJustificationAndFinalization_threshold {total previous current : Gw
       omega
     · exact (changed (same.trans unchanged)).elim
 
+/-- A changed justified checkpoint is the checkpoint read at a successful target threshold.
+
+Both the root and epoch are those returned by the actual block-root accessor. -/
+theorem weighJustificationAndFinalization_justified_root {total previous current : Gwei}
+    (computed : weighJustificationAndFinalization state total previous current = .ok after)
+    (changed : after.currentJustifiedCheckpoint ≠ state.currentJustifiedCheckpoint) :
+    getBlockRoot state after.currentJustifiedCheckpoint.epoch =
+      .ok after.currentJustifiedCheckpoint.root := by
+  simp only [weighJustificationAndFinalization, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+    Except.ok.injEq] at computed
+  obtain ⟨_, _, _, _, first, firstOk, _, _, second, secondOk,
+    _, _, _, _, _, _, _, _, rfl⟩ := computed
+  dsimp only at changed ⊢
+  by_cases secondChanged : second ≠ first
+  · obtain ⟨_, epoch, root⟩ := justifyCheckpoint_changed secondOk secondChanged
+    rw [epoch]
+    exact root
+  · have same : second = first := Classical.not_not.mp secondChanged
+    have firstChanged : first ≠ state.currentJustifiedCheckpoint := by
+      simpa only [same] using changed
+    obtain ⟨_, epoch, root⟩ := justifyCheckpoint_changed firstOk firstChanged
+    rw [same, epoch]
+    exact root
+
 /-- A matching target attestation comes from the source list and has the epoch's block root.
 
 The source list itself relies on the source check at inclusion, not a second source check here. -/
@@ -390,6 +521,18 @@ theorem weighJustificationAndFinalization_bits {total previous current : Gwei}
   simp only [UInt64.reduceToNat] at pwOk thresholdOk cwOk
   rw [pwOk.2, thresholdOk.2, cwOk.2]
   simp [Nat.mul_comm]
+
+/-- The two oldest justification bits retain the preceding call's two middle bits.
+
+Only the newest two positions can receive a threshold result in this call. -/
+theorem weighJustificationAndFinalization_old_bits {total previous current : Gwei}
+    (computed : weighJustificationAndFinalization state total previous current = .ok after) :
+    after.justificationBits.bits[2] = state.justificationBits.bits[1] ∧
+      after.justificationBits.bits[3] = state.justificationBits.bits[2] := by
+  simp only [weighJustificationAndFinalization, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+    Except.ok.injEq] at computed
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := computed
+  simp [shiftJustificationBits]
 
 /-- The checkpoints that weighing the votes sets.
 
@@ -533,6 +676,16 @@ theorem processJustificationAndFinalization_ok
   · simp only [bind_ok_iff] at computed
     obtain ⟨_, _, _, _, total, _, previous, _, current, _, weighed⟩ := computed
     exact .inr ⟨total, previous, current, weighed⟩
+
+/-- A changed justified checkpoint is exactly the block root read for its epoch. -/
+theorem processJustificationAndFinalization_justified_root
+    (computed : processJustificationAndFinalization state = .ok after)
+    (changed : after.currentJustifiedCheckpoint ≠ state.currentJustifiedCheckpoint) :
+    getBlockRoot state after.currentJustifiedCheckpoint.epoch =
+      .ok after.currentJustifiedCheckpoint.root := by
+  rcases processJustificationAndFinalization_ok computed with rfl | ⟨_, _, _, weighed⟩
+  · exact (changed rfl).elim
+  · exact weighJustificationAndFinalization_justified_root weighed changed
 
 /-- From Altair, in the first two epochs, justification and finalization change nothing. -/
 theorem processJustificationAndFinalization_early_altair (altair : .altair ≤ fork)

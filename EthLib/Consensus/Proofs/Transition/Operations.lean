@@ -241,6 +241,84 @@ theorem processAttestation_sources {attestation : Attestation preset fork}
   apply recordPendingAttestation_sources holds _ recorded
   simpa only [data, beq_iff_eq] using source
 
+/-- Every pending record after inclusion was already stored or records this attestation.
+
+The new record keeps both the attestation data and its aggregation bits.
+
+The source equality refers to the state before inclusion. -/
+theorem processAttestation_pending_origin {attestation : Attestation preset fork}
+    {pending : PendingAttestation preset} (before : fork < .altair)
+    (computed : processAttestation config checks state attestation = .ok after)
+    (member : pending ∈ (after.currentEpochAttestations before).data ∨
+      pending ∈ (after.previousEpochAttestations before).data) :
+    pending ∈ (state.currentEpochAttestations before).data ∨
+      pending ∈ (state.previousEpochAttestations before).data ∨
+      (pending.data = attestation.data ∧
+        pending.aggregationBits.bits = attestation.aggregationBits.bits ∧
+        pending.data.source = if pending.data.target.epoch = getCurrentEpoch state then
+          state.currentJustifiedCheckpoint else state.previousJustifiedCheckpoint) := by
+  have source := (processAttestation_checks before computed).2.2.2.2.2.2
+  obtain ⟨added, bits, data, _, _, recorded, _⟩ := processAttestation_records before computed
+  unfold recordPendingAttestation at recorded
+  by_cases current : attestation.data.target.epoch = getCurrentEpoch state
+  · simp only [current, beq_self_eq_true, ↓reduceIte] at recorded
+    split at recorded <;> cases recorded
+    simp only [Array.mem_push] at member
+    rcases member with (old | rfl) | old
+    · exact .inl old
+    · exact .inr (.inr ⟨data, bits, by simpa only [data] using source⟩)
+    · exact .inr (.inl old)
+  · simp only [beq_eq_false_iff_ne.mpr current, Bool.false_eq_true, ↓reduceIte] at recorded
+    split at recorded <;> cases recorded
+    simp only [Array.mem_push] at member
+    rcases member with old | (old | rfl)
+    · exact .inl old
+    · exact .inr (.inl old)
+    · exact .inr (.inr ⟨data, bits, by simpa only [data] using source⟩)
+
+/-- A pending record after a list of attestations was stored before or came from that list.
+
+The witness includes the exact successful inclusion call and its source checkpoint. -/
+theorem foldlM_processAttestation_pending_origin (before : fork < .altair)
+    {attestations : List (Attestation preset fork)} {pending : PendingAttestation preset}
+    (computed : attestations.foldlM (processAttestation config checks) state = .ok after)
+    (member : pending ∈ (after.currentEpochAttestations before).data ∨
+      pending ∈ (after.previousEpochAttestations before).data) :
+    pending ∈ (state.currentEpochAttestations before).data ∨
+      pending ∈ (state.previousEpochAttestations before).data ∨
+      ∃ earlier attestation later inclusion included,
+        attestations = earlier ++ attestation :: later ∧
+        earlier.foldlM (processAttestation config checks) state = .ok inclusion ∧
+        processAttestation config checks inclusion attestation = .ok included ∧
+        pending.data = attestation.data ∧
+        pending.aggregationBits.bits = attestation.aggregationBits.bits ∧
+        pending.data.source = if pending.data.target.epoch = getCurrentEpoch inclusion then
+          inclusion.currentJustifiedCheckpoint else inclusion.previousJustifiedCheckpoint := by
+  induction attestations generalizing state with
+  | nil =>
+    simp only [List.foldlM_nil, pure, Except.pure, Except.ok.injEq] at computed
+    subst computed
+    exact member.imp_right Or.inl
+  | cons first rest ih =>
+    simp only [List.foldlM_cons, bind_ok_iff] at computed
+    obtain ⟨middle, firstOk, restOk⟩ := computed
+    rcases ih restOk with old | old | ⟨earlier, attestation, later, inclusion,
+        included, split, earlierOk, inclusionOk, data, bits, source⟩
+    · rcases processAttestation_pending_origin before firstOk (.inl old) with
+        old | old | ⟨data, bits, source⟩
+      · exact .inl old
+      · exact .inr (.inl old)
+      · exact .inr (.inr ⟨[], first, rest, state, middle, rfl, rfl, firstOk, data, bits, source⟩)
+    · rcases processAttestation_pending_origin before firstOk (.inr old) with
+        old | old | ⟨data, bits, source⟩
+      · exact .inl old
+      · exact .inr (.inl old)
+      · exact .inr (.inr ⟨[], first, rest, state, middle, rfl, rfl, firstOk, data, bits, source⟩)
+    · refine .inr (.inr ⟨first :: earlier, attestation, later, inclusion, included,
+        by simp [split], ?_, inclusionOk, data, bits, source⟩)
+      rw [List.foldlM_cons, bind_ok_iff]
+      exact ⟨middle, firstOk, earlierOk⟩
+
 /-- From Altair, writing the flags of an epoch keeps the sizes of the registry and the balances.
 -/
 theorem sameSizes_setEpochParticipation (current : Bool)
