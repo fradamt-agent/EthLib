@@ -90,6 +90,300 @@ theorem Frame.foldlM {α : Type} {step : BeaconState preset fork → α → Exce
   foldlM_ok_invariant (Frame state) (fun _ _ _ before ok => before.trans (frame _ _ _ ok))
     (Frame.refl state) computed
 
+/-- Equality of the two pending-attestation lists before Altair.
+
+Balance, registry and randomness updates preserve these lists until participation rotation. -/
+structure PendingUnchanged (state after : BeaconState preset fork) (before : fork < .altair) :
+    Prop where
+  current : after.currentEpochAttestations before = state.currentEpochAttestations before
+  previous : after.previousEpochAttestations before = state.previousEpochAttestations before
+
+theorem PendingUnchanged.refl (state : BeaconState preset fork) (before : fork < .altair) :
+    PendingUnchanged state state before := ⟨rfl, rfl⟩
+
+theorem PendingUnchanged.trans {first second third : BeaconState preset fork}
+    {before : fork < .altair} (one : PendingUnchanged first second before)
+    (two : PendingUnchanged second third before) : PendingUnchanged first third before :=
+  ⟨two.current.trans one.current, two.previous.trans one.previous⟩
+
+theorem PendingUnchanged.foldlM {α : Type} {before : fork < .altair}
+    {step : BeaconState preset fork → α → Except TransitionError _}
+    (keeps : ∀ s x s', step s x = .ok s' → PendingUnchanged s s' before) {items : List α}
+    (computed : items.foldlM step state = .ok after) : PendingUnchanged state after before :=
+  foldlM_ok_invariant (fun next => PendingUnchanged state next before)
+    (fun _ _ _ prior ok => prior.trans (keeps _ _ _ ok))
+    (PendingUnchanged.refl state before) computed
+
+theorem pendingUnchanged_increaseBalance {before : fork < .altair}
+    {index : ValidatorIndex} {delta : Gwei}
+    (computed : increaseBalance state index delta = .ok after) :
+    PendingUnchanged state after before := by
+  simp only [increaseBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at computed
+  obtain ⟨_, _, _, _, rfl⟩ := computed
+  exact ⟨rfl, rfl⟩
+
+theorem pendingUnchanged_decreaseBalance {before : fork < .altair}
+    {index : ValidatorIndex} {delta : Gwei}
+    (computed : decreaseBalance state index delta = .ok after) :
+    PendingUnchanged state after before := by
+  simp only [decreaseBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at computed
+  obtain ⟨_, _, rfl⟩ := computed
+  exact ⟨rfl, rfl⟩
+
+theorem pendingUnchanged_exitQueue {before : fork < .altair} {balance : Gwei} {epoch : Epoch}
+    (computed : exitQueue config state balance = .ok (after, epoch)) :
+    PendingUnchanged state after before := by
+  have notElectra : ¬Fork.pectra ≤ fork := Nat.not_le_of_lt (Nat.lt_trans before (by decide))
+  simp only [exitQueue, notElectra, ↓reduceDIte, bind_ok_iff, pure, Except.pure,
+    Except.ok.injEq, Prod.mk.injEq] at computed
+  obtain ⟨_, _, rfl, _⟩ := computed
+  exact ⟨rfl, rfl⟩
+
+theorem pendingUnchanged_initiateValidatorExit {before : fork < .altair}
+    {index : ValidatorIndex}
+    (computed : initiateValidatorExit config state index = .ok after) :
+    PendingUnchanged state after before := by
+  obtain ⟨_, _, ⟨_, rfl⟩ | ⟨_, queued, _, _, queue, _, rfl⟩⟩ :=
+    initiateValidatorExit_ok computed
+  · exact .refl _ _
+  · have kept : PendingUnchanged state queued before := pendingUnchanged_exitQueue queue
+    exact ⟨kept.current, kept.previous⟩
+
+theorem pendingUnchanged_applyDeltas {before : fork < .altair}
+    {rewards penalties : Array Gwei} {index : Nat}
+    (computed : applyDeltas rewards penalties state index = .ok after) :
+    PendingUnchanged state after before := by
+  simp only [applyDeltas, bind_ok_iff, liftAccessor_ok] at computed
+  obtain ⟨_, raised, lowered⟩ := computed
+  exact (pendingUnchanged_increaseBalance raised).trans (pendingUnchanged_decreaseBalance lowered)
+
+theorem pendingUnchanged_applyAllDeltas {before : fork < .altair}
+    {deltas : Array Gwei × Array Gwei}
+    (computed : applyAllDeltas state deltas = .ok after) :
+    PendingUnchanged state after before :=
+  PendingUnchanged.foldlM (fun _ _ _ ok => pendingUnchanged_applyDeltas ok) computed
+
+theorem pendingUnchanged_processRewardsAndPenalties {before : fork < .altair}
+    (computed : processRewardsAndPenalties config state = .ok after) :
+    PendingUnchanged state after before := by
+  unfold processRewardsAndPenalties at computed
+  split at computed
+  · cases computed
+    exact .refl _ _
+  split at computed
+  · exact absurd ‹_› (Nat.not_le_of_lt before)
+  · obtain ⟨_, _, applied⟩ := bind_ok_iff.mp computed
+    exact pendingUnchanged_applyAllDeltas applied
+
+theorem pendingUnchanged_updateRegistryEntry {before : fork < .altair} {index : Nat}
+    (computed : updateRegistryEntry config state index = .ok after) :
+    PendingUnchanged state after before := by
+  simp only [updateRegistryEntry, bind_ok_iff, liftAccessor_ok] at computed
+  obtain ⟨validator, _, queued, _, computed⟩ := computed
+  have kept : PendingUnchanged state (state.setValidator index queued) before := ⟨rfl, rfl⟩
+  split at computed
+  · exact kept.trans (pendingUnchanged_initiateValidatorExit (liftAccessor_ok.mp computed))
+  · cases computed
+    exact kept
+
+theorem pendingUnchanged_activateValidator {before : fork < .altair} {index : ValidatorIndex}
+    (computed : activateValidator state index = .ok after) :
+    PendingUnchanged state after before := by
+  simp only [activateValidator, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+    Except.ok.injEq] at computed
+  obtain ⟨_, _, _, _, rfl⟩ := computed
+  exact ⟨rfl, rfl⟩
+
+theorem pendingUnchanged_processRegistryUpdates {before : fork < .altair}
+    (computed : processRegistryUpdates config state = .ok after) :
+    PendingUnchanged state after before := by
+  unfold processRegistryUpdates at computed
+  split at computed
+  · cases computed
+  simp only [bind_ok_iff] at computed
+  obtain ⟨_, updated, activated⟩ := computed
+  exact (PendingUnchanged.foldlM
+    (fun _ _ _ ok => pendingUnchanged_updateRegistryEntry ok) updated).trans
+      (PendingUnchanged.foldlM (fun _ _ _ ok => pendingUnchanged_activateValidator ok) activated)
+
+theorem pendingUnchanged_applySlashingPenalty {before : fork < .altair}
+    {total adjusted : Gwei} {index : Nat}
+    (computed : applySlashingPenalty state total adjusted index = .ok after) :
+    PendingUnchanged state after before := by
+  simp only [applySlashingPenalty, bind_ok_iff, liftAccessor_ok] at computed
+  obtain ⟨_, _, computed⟩ := computed
+  split at computed
+  · simp only [bind_ok_iff] at computed
+    obtain ⟨_, _, computed⟩ := computed
+    split at computed
+    · simp only [bind_ok_iff, liftAccessor_ok] at computed
+      obtain ⟨_, _, _, _, lowered⟩ := computed
+      exact pendingUnchanged_decreaseBalance lowered
+    · cases computed
+      exact .refl _ _
+  · cases computed
+    exact .refl _ _
+
+theorem pendingUnchanged_processSlashings {before : fork < .altair}
+    (computed : processSlashings state = .ok after) :
+    PendingUnchanged state after before := by
+  unfold processSlashings at computed
+  split at computed
+  · cases computed
+  simp only [bind_ok_iff] at computed
+  obtain ⟨_, _, _, _, _, _, applied⟩ := computed
+  exact PendingUnchanged.foldlM (fun _ _ _ ok => pendingUnchanged_applySlashingPenalty ok) applied
+
+theorem pendingUnchanged_processEth1DataReset {before : fork < .altair}
+    {beforeHeze : fork < .hegota}
+    (computed : processEth1DataReset beforeHeze state = .ok after) :
+    PendingUnchanged state after before := by
+  simp only [processEth1DataReset, bind_ok_iff, liftAccessor_ok] at computed
+  obtain ⟨_, _, computed⟩ := computed
+  split at computed <;> cases computed <;> exact ⟨rfl, rfl⟩
+
+theorem pendingUnchanged_updateEffectiveBalance {before : fork < .altair} {index : Nat}
+    (computed : updateEffectiveBalance state index = .ok after) :
+    PendingUnchanged state after before := by
+  simp only [updateEffectiveBalance, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+    Except.ok.injEq] at computed
+  obtain ⟨_, _, _, _, _, _, rfl⟩ := computed
+  exact ⟨rfl, rfl⟩
+
+theorem pendingUnchanged_processEffectiveBalanceUpdates {before : fork < .altair}
+    (computed : processEffectiveBalanceUpdates state = .ok after) :
+    PendingUnchanged state after before := by
+  unfold processEffectiveBalanceUpdates at computed
+  split at computed
+  · cases computed
+  exact PendingUnchanged.foldlM
+    (fun _ _ _ ok => pendingUnchanged_updateEffectiveBalance ok) computed
+
+theorem pendingUnchanged_processSlashingsReset {before : fork < .altair}
+    (computed : processSlashingsReset state = .ok after) :
+    PendingUnchanged state after before := by
+  obtain ⟨_, _, rfl⟩ := processSlashingsReset_eq computed
+  exact ⟨rfl, rfl⟩
+
+theorem pendingUnchanged_processRandaoMixesReset {before : fork < .altair}
+    (computed : processRandaoMixesReset state = .ok after) :
+    PendingUnchanged state after before := by
+  obtain ⟨_, _, _, _, rfl⟩ := processRandaoMixesReset_eq computed
+  exact ⟨rfl, rfl⟩
+
+theorem pendingUnchanged_processHistoricalRootsUpdate {before : fork < .altair}
+    (computed : processHistoricalRootsUpdate state = .ok after) :
+    PendingUnchanged state after before := by
+  unfold processHistoricalRootsUpdate at computed
+  split at computed
+  · cases computed
+  simp only [bind_ok_iff, liftAccessor_ok] at computed
+  obtain ⟨_, _, computed⟩ := computed
+  split at computed
+  · simp only [bind_ok_iff, liftSsz_ok, pure, Except.pure, Except.ok.injEq] at computed
+    obtain ⟨_, _, _, _, rfl⟩ := computed
+    exact ⟨rfl, rfl⟩
+  · cases computed
+    exact .refl _ _
+
+theorem pendingUnchanged_slashValidator {before : fork < .altair}
+    {index : ValidatorIndex} {whistleblower : Option ValidatorIndex}
+    (computed : slashValidator config state index whistleblower = .ok after) :
+    PendingUnchanged state after before := by
+  simp only [slashValidator, bind_ok_iff, liftArith, mapError_ok_iff] at computed
+  obtain ⟨exited, exitedOk, validator, _, delay, _, _, _, _, _, lowered, loweredOk,
+    _, _, _, _, raised, raisedOk, last, lastOk, done⟩ := computed
+  have exitedPending : PendingUnchanged state exited before :=
+    pendingUnchanged_initiateValidatorExit exitedOk
+  have loweredPending := pendingUnchanged_decreaseBalance (before := before) loweredOk
+  have marked : PendingUnchanged exited lowered before :=
+    ⟨loweredPending.current, loweredPending.previous⟩
+  have changed := exitedPending.trans <| marked.trans <|
+    (pendingUnchanged_increaseBalance raisedOk).trans (pendingUnchanged_increaseBalance lastOk)
+  have notGloas : ¬Fork.glamsterdam ≤ fork :=
+    Nat.not_le_of_lt (Nat.lt_trans before (by decide))
+  simp only [notGloas, ↓reduceDIte, pure, Except.pure, Except.ok.injEq] at done
+  subst done
+  exact changed
+
+theorem pendingUnchanged_processProposerSlashing {before : fork < .altair}
+    {slashing : ProposerSlashing}
+    (computed : processProposerSlashing config checks state slashing = .ok after) :
+    PendingUnchanged state after before := by
+  simp only [processProposerSlashing, bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at computed
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, slashed⟩ := computed
+  exact pendingUnchanged_slashValidator slashed
+
+theorem pendingUnchanged_slashIfSlashable {before : fork < .altair}
+    {step next : BeaconState preset fork × Bool} {index : ValidatorIndex}
+    (computed : slashIfSlashable config step index = .ok next) :
+    PendingUnchanged step.1 next.1 before := by
+  obtain ⟨state, flag⟩ := step
+  simp only [slashIfSlashable, bind_ok_iff, liftAccessor_ok] at computed
+  obtain ⟨_, _, computed⟩ := computed
+  split at computed
+  · simp only [bind_ok_iff, liftAccessor_ok, pure, Except.pure, Except.ok.injEq] at computed
+    obtain ⟨_, slashed, rfl⟩ := computed
+    exact pendingUnchanged_slashValidator slashed
+  · cases computed
+    exact .refl _ _
+
+theorem pendingUnchanged_processAttesterSlashing {before : fork < .altair}
+    {slashing : AttesterSlashing preset fork}
+    (computed : processAttesterSlashing config checks state slashing = .ok after) :
+    PendingUnchanged state after before := by
+  simp only [processAttesterSlashing, bind_ok_iff, ensure_ok_iff, pure, Except.pure,
+    Except.ok.injEq] at computed
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, folded, _, _, rfl⟩ := computed
+  exact foldlM_ok_invariant (fun step => PendingUnchanged state step.1 before)
+    (fun _ _ _ prior ok => prior.trans (pendingUnchanged_slashIfSlashable ok))
+    (show PendingUnchanged state (state, false).1 before from .refl _ _) folded
+
+theorem pendingUnchanged_addValidatorToRegistry (before : fork < .altair)
+    {pubkey : BLSPubkey} {credentials : Bytes32} {amount : Gwei}
+    (computed : addValidatorToRegistry state pubkey credentials amount = .ok after) :
+    PendingUnchanged state after before := by
+  unfold addValidatorToRegistry at computed
+  split at computed
+  · exact absurd ‹_› (Nat.not_le_of_lt before)
+  split at computed <;> cases computed
+  exact ⟨rfl, rfl⟩
+
+theorem pendingUnchanged_applyDeposit (before : fork < .altair)
+    {pubkey : BLSPubkey} {credentials : Bytes32} {amount : Gwei} {signature : BLSSignature}
+    (computed : applyDeposit config checks state pubkey credentials amount signature =
+      .ok after) : PendingUnchanged state after before := by
+  have notElectra : ¬Fork.pectra ≤ fork := Nat.not_le_of_lt (Nat.lt_trans before (by decide))
+  simp only [applyDeposit, notElectra, ↓reduceDIte, applyPendingDeposit] at computed
+  split at computed
+  · simp only [bind_ok_iff] at computed
+    obtain ⟨_, _, computed⟩ := computed
+    split at computed
+    · exact pendingUnchanged_addValidatorToRegistry before computed
+    · cases computed
+      exact .refl _ _
+  · exact pendingUnchanged_increaseBalance (liftAccessor_ok.mp computed)
+
+theorem pendingUnchanged_processDeposit (before : fork < .altair)
+    {beforeHeze : fork < .hegota} {deposit : Deposit}
+    (computed : processDeposit config checks beforeHeze state deposit = .ok after) :
+    PendingUnchanged state after before := by
+  obtain ⟨_, _, next, _, applied⟩ := processDeposit_ok computed
+  have kept : PendingUnchanged state { state with eth1DepositIndex := fun _ => next } before :=
+    ⟨rfl, rfl⟩
+  exact kept.trans (pendingUnchanged_applyDeposit before applied)
+
+theorem pendingUnchanged_processVoluntaryExit {before : fork < .altair}
+    {signed : SignedVoluntaryExit}
+    (computed : processVoluntaryExit config checks state signed = .ok after) :
+    PendingUnchanged state after before := by
+  unfold processVoluntaryExit at computed
+  split at computed
+  · cases computed
+  simp only [bind_ok_iff, ensure_ok_iff, liftAccessor_ok, liftSsz_ok] at computed
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, exited⟩ := computed
+  exact pendingUnchanged_initiateValidatorExit exited
+
 /-! ## Mutators -/
 
 theorem mem_of_getValidator {index : ValidatorIndex} {validator : Validator}
@@ -360,6 +654,125 @@ theorem frame_processBlock (altair : fork < .altair) {block : BeaconBlock preset
   obtain ⟨_, headerOk, _, randaoOk, _, eth1Ok, operationsOk⟩ := computed
   exact (frame_processBlockHeader headerOk).trans <| (frame_processRandao randaoOk).trans <|
     (frame_processEth1Data eth1Ok).trans (frame_processOperations altair operationsOk)
+
+/-- A frame that preserves the pending lists preserves their checked sources. -/
+theorem PendingUnchanged.sources {before : fork < .altair}
+    (pending : PendingUnchanged state after before) (frame : Frame state after)
+    (holds : PendingSourcesMatch state before) : PendingSourcesMatch after before :=
+  pendingSourcesMatch_of_fields holds frame.currentJustified frame.previousJustified
+    pending.current pending.previous
+
+/-- A frame that preserves the pending lists preserves their checked epochs. -/
+theorem PendingUnchanged.epochs {before : fork < .altair}
+    (pending : PendingUnchanged state after before) (frame : Frame state after)
+    (holds : PendingEpochsMatch state before) : PendingEpochsMatch after before :=
+  pendingEpochsMatch_of_fields holds frame.slot pending.current pending.previous
+
+/-- All Phase 0 block operations preserve the checked sources of pending attestations.
+
+Only attestation processing appends records, and it checks the source before appending. -/
+theorem processOperations_pending_sources (before : fork < .altair)
+    (holds : PendingSourcesMatch state before) {body : BeaconBlockBody preset fork}
+    (computed : processOperations config checks state body = .ok after) :
+    PendingSourcesMatch after before := by
+  unfold processOperations at computed
+  split at computed
+  · cases computed
+  simp only [bind_ok_iff, ensure_ok_iff, ← Array.foldlM_toList] at computed
+  obtain ⟨_, _, _, _, proposers, proposersOk, attesters, attestersOk, attested, attestedOk,
+    deposited, depositedOk, exited, exitsOk, changesOk⟩ := computed
+  have notCapella : ¬Fork.shapella ≤ fork :=
+    Nat.not_le_of_lt (Nat.lt_trans before (by decide))
+  simp only [notCapella, ↓reduceDIte, pure, Except.pure, Except.ok.injEq] at changesOk
+  subst changesOk
+  have proposersHold := foldlM_ok_invariant (fun s => PendingSourcesMatch s before)
+    (fun _ _ _ prior ok => (pendingUnchanged_processProposerSlashing ok).sources
+      (frame_processProposerSlashing ok) prior) holds proposersOk
+  have attestersHold := foldlM_ok_invariant (fun s => PendingSourcesMatch s before)
+    (fun _ _ _ prior ok => (pendingUnchanged_processAttesterSlashing ok).sources
+      (frame_processAttesterSlashing ok) prior) proposersHold attestersOk
+  have attestedHold := foldlM_ok_invariant (fun s => PendingSourcesMatch s before)
+    (fun _ _ _ prior ok => processAttestation_sources before prior ok) attestersHold attestedOk
+  have depositedHold := foldlM_ok_invariant (fun s => PendingSourcesMatch s before)
+    (fun _ _ _ prior ok => (pendingUnchanged_processDeposit before ok).sources
+      (frame_processDeposit before ok) prior) attestedHold depositedOk
+  exact foldlM_ok_invariant (fun s => PendingSourcesMatch s before)
+    (fun _ _ _ prior ok => (pendingUnchanged_processVoluntaryExit ok).sources
+      (frame_processVoluntaryExit ok) prior) depositedHold exitsOk
+
+/-- The header, RANDAO and deposit-contract vote do not change pending sources. -/
+theorem processBlock_pending_sources (before : fork < .altair)
+    (holds : PendingSourcesMatch state before) {block : BeaconBlock preset fork}
+    (computed : processBlock config checks engine state block = .ok after) :
+    PendingSourcesMatch after before := by
+  have notAltair : ¬Fork.altair ≤ fork := Nat.not_le_of_lt before
+  simp only [processBlock, notAltair, ↓reduceDIte, bind_ok_iff] at computed
+  obtain ⟨header, headerOk, randao, randaoOk, eth1, eth1Ok, operationsOk⟩ := computed
+  have headerPending : PendingUnchanged state header before := by
+    obtain ⟨_, _, rfl⟩ := processBlockHeader_eq headerOk
+    exact ⟨rfl, rfl⟩
+  have randaoPending : PendingUnchanged header randao before := by
+    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq randaoOk
+    exact ⟨rfl, rfl⟩
+  have eth1Pending : PendingUnchanged randao eth1 before := by
+    obtain ⟨_, _, unchanged⟩ := processEth1Data_eq eth1Ok
+    exact ⟨by rw [← unchanged], by rw [← unchanged]⟩
+  apply processOperations_pending_sources before _ operationsOk
+  exact (headerPending.trans (randaoPending.trans eth1Pending)).sources
+    ((frame_processBlockHeader headerOk).trans
+      ((frame_processRandao randaoOk).trans (frame_processEth1Data eth1Ok))) holds
+
+/-- Block operations preserve the target and slot epochs checked at inclusion. -/
+theorem processOperations_pending_epochs (before : fork < .altair)
+    (holds : PendingEpochsMatch state before) {body : BeaconBlockBody preset fork}
+    (computed : processOperations config checks state body = .ok after) :
+    PendingEpochsMatch after before := by
+  unfold processOperations at computed
+  split at computed
+  · cases computed
+  simp only [bind_ok_iff, ensure_ok_iff, ← Array.foldlM_toList] at computed
+  obtain ⟨_, _, _, _, proposers, proposersOk, attesters, attestersOk, attested, attestedOk,
+    deposited, depositedOk, exited, exitsOk, changesOk⟩ := computed
+  have notCapella : ¬Fork.shapella ≤ fork :=
+    Nat.not_le_of_lt (Nat.lt_trans before (by decide))
+  simp only [notCapella, ↓reduceDIte, pure, Except.pure, Except.ok.injEq] at changesOk
+  subst changesOk
+  have proposersHold := foldlM_ok_invariant (fun s => PendingEpochsMatch s before)
+    (fun _ _ _ prior ok => (pendingUnchanged_processProposerSlashing ok).epochs
+      (frame_processProposerSlashing ok) prior) holds proposersOk
+  have attestersHold := foldlM_ok_invariant (fun s => PendingEpochsMatch s before)
+    (fun _ _ _ prior ok => (pendingUnchanged_processAttesterSlashing ok).epochs
+      (frame_processAttesterSlashing ok) prior) proposersHold attestersOk
+  have attestedHold := foldlM_ok_invariant (fun s => PendingEpochsMatch s before)
+    (fun _ _ _ prior ok => processAttestation_epochs before prior ok) attestersHold attestedOk
+  have depositedHold := foldlM_ok_invariant (fun s => PendingEpochsMatch s before)
+    (fun _ _ _ prior ok => (pendingUnchanged_processDeposit before ok).epochs
+      (frame_processDeposit before ok) prior) attestedHold depositedOk
+  exact foldlM_ok_invariant (fun s => PendingEpochsMatch s before)
+    (fun _ _ _ prior ok => (pendingUnchanged_processVoluntaryExit ok).epochs
+      (frame_processVoluntaryExit ok) prior) depositedHold exitsOk
+
+/-- The preliminary block steps preserve the pending lists and their assigned epochs. -/
+theorem processBlock_pending_epochs (before : fork < .altair)
+    (holds : PendingEpochsMatch state before) {block : BeaconBlock preset fork}
+    (computed : processBlock config checks engine state block = .ok after) :
+    PendingEpochsMatch after before := by
+  have notAltair : ¬Fork.altair ≤ fork := Nat.not_le_of_lt before
+  simp only [processBlock, notAltair, ↓reduceDIte, bind_ok_iff] at computed
+  obtain ⟨header, headerOk, randao, randaoOk, eth1, eth1Ok, operationsOk⟩ := computed
+  have headerPending : PendingUnchanged state header before := by
+    obtain ⟨_, _, rfl⟩ := processBlockHeader_eq headerOk
+    exact ⟨rfl, rfl⟩
+  have randaoPending : PendingUnchanged header randao before := by
+    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq randaoOk
+    exact ⟨rfl, rfl⟩
+  have eth1Pending : PendingUnchanged randao eth1 before := by
+    obtain ⟨_, _, unchanged⟩ := processEth1Data_eq eth1Ok
+    exact ⟨by rw [← unchanged], by rw [← unchanged]⟩
+  apply processOperations_pending_epochs before _ operationsOk
+  exact (headerPending.trans (randaoPending.trans eth1Pending)).epochs
+    ((frame_processBlockHeader headerOk).trans
+      ((frame_processRandao randaoOk).trans (frame_processEth1Data eth1Ok))) holds
 
 /-! ## The steps of an epoch -/
 
@@ -705,6 +1118,91 @@ theorem processEpoch_justification (before : fork < .altair)
   exact ⟨justified, justifiedOk, frame.justificationBits, frame.currentJustified,
     frame.previousJustified, frame.finalized⟩
 
+/-- Phase 0 epoch processing restores the checked sources after rotating participation.
+
+The intervening rewards, registry updates, penalties and resets preserve the pending lists. -/
+theorem processEpoch_pending_sources (before : fork < .altair)
+    (holds : PendingSourcesMatch state before)
+    (early : getCurrentEpoch state ≤ GENESIS_EPOCH + 1 →
+      state.currentJustifiedCheckpoint = state.previousJustifiedCheckpoint)
+    (computed : processEpoch config state = .ok after) : PendingSourcesMatch after before := by
+  have notAltair : ¬Fork.altair ≤ fork := Nat.not_le_of_lt before
+  simp only [processEpoch, notAltair, ↓reduceDIte, bind_ok_iff] at computed
+  obtain ⟨justified, justifiedOk, rewarded, rewardedOk, registered, registeredOk, slashed,
+    slashedOk, reset, resetOk, balanced, balancedOk, cleared, clearedOk, mixed, mixedOk, rooted,
+    rootedOk, rotated⟩ := computed
+  have pending : PendingUnchanged justified rooted before :=
+    (pendingUnchanged_processRewardsAndPenalties rewardedOk).trans <|
+    (pendingUnchanged_processRegistryUpdates registeredOk).trans <|
+    (pendingUnchanged_processSlashings slashedOk).trans <|
+    (pendingUnchanged_processEth1DataReset resetOk).trans <|
+    (pendingUnchanged_processEffectiveBalanceUpdates balancedOk).trans <|
+    (pendingUnchanged_processSlashingsReset clearedOk).trans <|
+    (pendingUnchanged_processRandaoMixesReset mixedOk).trans <|
+    pendingUnchanged_processHistoricalRootsUpdate rootedOk
+  have frame : Frame justified rooted :=
+    (frame_processRewardsAndPenalties rewardedOk).trans <|
+    (frame_processRegistryUpdates registeredOk).trans <|
+    (frame_processSlashings slashedOk).trans <|
+    (frame_processEth1DataReset resetOk).trans <|
+    (frame_processEffectiveBalanceUpdates balancedOk).trans <|
+    (frame_processSlashingsReset clearedOk).trans <|
+    (frame_processRandaoMixesReset mixedOk).trans <|
+    frame_processHistoricalRootsUpdate rootedOk
+  apply processParticipationRecordUpdates_sources before _ rotated
+  intro entry member
+  rw [pending.current] at member
+  rw [frame.previousJustified]
+  exact processJustificationAndFinalization_sources_for_rotation before holds early
+    justifiedOk entry member
+
+/-- In the first two epochs, epoch processing keeps both justified checkpoints unchanged. -/
+theorem processEpoch_justified_of_early (before : fork < .altair)
+    (early : getCurrentEpoch state ≤ GENESIS_EPOCH + 1)
+    (computed : processEpoch config state = .ok after) :
+    after.currentJustifiedCheckpoint = state.currentJustifiedCheckpoint ∧
+      after.previousJustifiedCheckpoint = state.previousJustifiedCheckpoint := by
+  obtain ⟨justified, justifiedOk, _, current, previous, _⟩ :=
+    processEpoch_justification before computed
+  unfold processJustificationAndFinalization at justifiedOk
+  split at justifiedOk
+  · exact absurd ‹_› (Nat.not_le_of_lt before)
+  simp only [pure, Except.pure, Except.ok.injEq] at justifiedOk
+  subst justifiedOk
+  exact ⟨current, previous⟩
+
+/-- Epoch processing rotates the current pending records unchanged and clears the current list.
+
+The records retain their target and slot epochs until the following slot increment. -/
+theorem processEpoch_pending_rotation (before : fork < .altair)
+    (computed : processEpoch config state = .ok after) :
+    after.previousEpochAttestations before = state.currentEpochAttestations before ∧
+      (after.currentEpochAttestations before).data = #[] := by
+  have notAltair : ¬Fork.altair ≤ fork := Nat.not_le_of_lt before
+  simp only [processEpoch, notAltair, ↓reduceDIte, bind_ok_iff] at computed
+  obtain ⟨justified, justifiedOk, rewarded, rewardedOk, registered, registeredOk, slashed,
+    slashedOk, reset, resetOk, balanced, balancedOk, cleared, clearedOk, mixed, mixedOk, rooted,
+    rootedOk, rotated⟩ := computed
+  have justificationPending : PendingUnchanged state justified before := by
+    rcases processJustificationAndFinalization_ok justifiedOk with rfl | ⟨_, _, _, weighed⟩
+    · exact .refl _ _
+    · obtain ⟨_, _, _, unchanged⟩ := weighJustificationAndFinalization_checkpoints weighed
+      exact ⟨by rw [← unchanged], by rw [← unchanged]⟩
+  have pending : PendingUnchanged state rooted before := justificationPending.trans <|
+    (pendingUnchanged_processRewardsAndPenalties rewardedOk).trans <|
+    (pendingUnchanged_processRegistryUpdates registeredOk).trans <|
+    (pendingUnchanged_processSlashings slashedOk).trans <|
+    (pendingUnchanged_processEth1DataReset resetOk).trans <|
+    (pendingUnchanged_processEffectiveBalanceUpdates balancedOk).trans <|
+    (pendingUnchanged_processSlashingsReset clearedOk).trans <|
+    (pendingUnchanged_processRandaoMixesReset mixedOk).trans <|
+    pendingUnchanged_processHistoricalRootsUpdate rootedOk
+  obtain ⟨result, resultOk, previous, current, _⟩ :=
+    processParticipationRecordUpdates_eq (state := rooted) before
+  rw [resultOk] at rotated
+  cases rotated
+  exact ⟨previous.trans pending.current, current⟩
+
 /-- A newest true bit after an eligible Phase 0 epoch has a current target balance above threshold.
 
 The balances are read before rewards, penalties, registry updates and effective-balance updates.
@@ -739,6 +1237,181 @@ theorem getCurrentEpoch_toNat (state : BeaconState preset fork) :
 theorem frame_processSlot (computed : processSlot state = .ok after) : Frame state after := by
   obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok computed
   exact Frame.of_validators ⟨rfl, rfl⟩ rfl rfl rfl rfl rfl rfl
+
+/-- Pending sources match, and the two justified checkpoints agree during the first two epochs.
+
+The early equality permits participation rotation while justification is still disabled. -/
+def PendingSourcesInvariant (state : BeaconState preset fork) (before : fork < .altair) : Prop :=
+  PendingSourcesMatch state before ∧
+    (getCurrentEpoch state ≤ GENESIS_EPOCH + 1 →
+      state.currentJustifiedCheckpoint = state.previousJustifiedCheckpoint)
+
+/-- A Phase 0 block preserves pending sources and the early checkpoint equality. -/
+theorem processBlock_pending_sources_invariant (before : fork < .altair)
+    (holds : PendingSourcesInvariant state before) {block : BeaconBlock preset fork}
+    (computed : processBlock config checks engine state block = .ok after) :
+    PendingSourcesInvariant after before := by
+  have frame := frame_processBlock before computed
+  refine ⟨processBlock_pending_sources before holds.1 computed, ?_⟩
+  intro early
+  rw [frame.currentJustified, frame.previousJustified]
+  apply holds.2
+  simpa only [getCurrentEpoch, frame.slot] using early
+
+/-- Slot processing preserves checked pending sources, including across epoch boundaries. -/
+theorem advanceSlot_pending_sources (before : fork < .altair)
+    (holds : PendingSourcesInvariant state before)
+    (computed : advanceSlot config state = .ok after) :
+    PendingSourcesInvariant after before := by
+  simp only [advanceSlot, bind_ok_iff, liftAccessor_ok, liftArith, mapError_ok_iff,
+    addChecked_ok_iff, pure, Except.pure, Except.ok.injEq] at computed
+  obtain ⟨next, ⟨_, sum⟩, cached, cachedOk, epoched, epochedOk, rfl⟩ := computed
+  have frame := frame_processSlot cachedOk
+  have cachedPending : PendingUnchanged state cached before := by
+    obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+    exact ⟨rfl, rfl⟩
+  have sources := cachedPending.sources frame holds.1
+  have earlyCached : getCurrentEpoch cached ≤ GENESIS_EPOCH + 1 →
+      cached.currentJustifiedCheckpoint = cached.previousJustifiedCheckpoint := by
+    intro early
+    rw [frame.currentJustified, frame.previousJustified]
+    apply holds.2
+    simpa only [getCurrentEpoch, frame.slot] using early
+  have epochLe : getCurrentEpoch cached ≤ computeEpochAtSlot preset next := by
+    rw [UInt64.le_iff_toNat_le, getCurrentEpoch_toNat, frame.slot]
+    simp only [computeEpochAtSlot, UInt64.toNat_div]
+    exact Nat.div_le_div_right (by omega)
+  unfold epochIfLast at epochedOk
+  split at epochedOk
+  · have epochedSources := processEpoch_pending_sources before sources earlyCached epochedOk
+    refine ⟨⟨epochedSources.1, epochedSources.2⟩, ?_⟩
+    intro early
+    have earlyInput : getCurrentEpoch cached ≤ GENESIS_EPOCH + 1 :=
+      UInt64.le_trans epochLe early
+    obtain ⟨current, previous⟩ := processEpoch_justified_of_early before earlyInput epochedOk
+    exact current.trans ((earlyCached earlyInput).trans previous.symm)
+  · cases epochedOk
+    exact ⟨sources, fun early => earlyCached (UInt64.le_trans epochLe early)⟩
+
+/-- A successful run of slots preserves the pending-source invariant. -/
+theorem advanceSlots_pending_sources (before : fork < .altair) :
+    ∀ (count : Nat) {state after : BeaconState preset fork},
+      PendingSourcesInvariant state before → advanceSlots config count state = .ok after →
+        PendingSourcesInvariant after before
+  | 0, _, _, holds, computed => by
+    cases computed
+    exact holds
+  | count + 1, _, _, holds, computed => by
+    simp only [advanceSlots, bind_ok_iff] at computed
+    obtain ⟨middle, first, rest⟩ := computed
+    exact advanceSlots_pending_sources before count (advanceSlot_pending_sources before holds first)
+      rest
+
+/-- The complete Phase 0 state transition preserves the pending-source invariant. -/
+theorem stateTransition_pending_sources (before : fork < .altair)
+    (holds : PendingSourcesInvariant state before) {block : SignedBeaconBlock preset fork}
+    {validateResult : Bool}
+    (computed : stateTransition config checks engine state block validateResult = .ok after) :
+    PendingSourcesInvariant after before := by
+  simp only [stateTransition, bind_ok_iff] at computed
+  obtain ⟨atSlot, slots, applied⟩ := computed
+  simp only [processSlots, bind_ok_iff, ensure_ok_iff] at slots
+  obtain ⟨_, _, advanced⟩ := slots
+  have atSlotHolds := advanceSlots_pending_sources before _ holds advanced
+  simp only [applySignedBlock, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at applied
+  obtain ⟨_, _, _, processed, _, _, rfl⟩ := applied
+  exact processBlock_pending_sources_invariant before atSlotHolds processed
+
+/-- A slot step keeps each pending record in the list for its checked target and slot epoch. -/
+theorem advanceSlot_pending_epochs (before : fork < .altair)
+    (holds : PendingEpochsMatch state before)
+    (computed : advanceSlot config state = .ok after) : PendingEpochsMatch after before := by
+  simp only [advanceSlot, bind_ok_iff, liftAccessor_ok, liftArith, mapError_ok_iff,
+    addChecked_ok_iff, pure, Except.pure, Except.ok.injEq] at computed
+  obtain ⟨next, ⟨_, sum⟩, cached, cachedOk, epoched, epochedOk, rfl⟩ := computed
+  have frame := frame_processSlot cachedOk
+  have cachedPending : PendingUnchanged state cached before := by
+    obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+    exact ⟨rfl, rfl⟩
+  have cachedHolds := cachedPending.epochs frame holds
+  simp only [UInt64.toNat_one] at sum
+  unfold epochIfLast at epochedOk
+  split at epochedOk
+  · rename_i boundary
+    have boundary' : next.toNat % preset.SLOTS_PER_EPOCH.toNat = 0 := by
+      simpa [UInt64.toNat_mod] using congrArg UInt64.toNat boundary
+    have step : next.toNat / preset.SLOTS_PER_EPOCH.toNat =
+        state.slot.toNat / preset.SLOTS_PER_EPOCH.toNat + 1 := by
+      rw [sum]
+      exact Nat.succ_div_of_dvd (Nat.dvd_of_mod_eq_zero (sum ▸ boundary'))
+    have previousEpoch : getPreviousEpoch { epoched with slot := next } =
+        getCurrentEpoch cached := by
+      apply UInt64.toNat_inj.mp
+      rw [getPreviousEpoch_toNat, getCurrentEpoch_toNat, getCurrentEpoch_toNat, frame.slot]
+      change next.toNat / preset.SLOTS_PER_EPOCH.toNat - 1 =
+        state.slot.toNat / preset.SLOTS_PER_EPOCH.toNat
+      rw [step, Nat.add_sub_cancel]
+    obtain ⟨previous, current⟩ := processEpoch_pending_rotation before epochedOk
+    constructor
+    · intro entry member
+      rw [current] at member
+      simp at member
+    · intro entry member
+      rw [previous] at member
+      rw [previousEpoch]
+      exact cachedHolds.1 entry member
+  · rename_i notBoundary
+    cases epochedOk
+    have notBoundary' : ¬preset.SLOTS_PER_EPOCH.toNat ∣ state.slot.toNat + 1 := by
+      intro divides
+      apply notBoundary
+      apply UInt64.toNat_inj.mp
+      simpa [UInt64.toNat_mod, sum] using Nat.mod_eq_zero_of_dvd divides
+    have step : next.toNat / preset.SLOTS_PER_EPOCH.toNat =
+        state.slot.toNat / preset.SLOTS_PER_EPOCH.toNat := by
+      rw [sum]
+      exact Nat.succ_div_of_not_dvd notBoundary'
+    have sameEpoch : getCurrentEpoch { cached with slot := next } = getCurrentEpoch cached := by
+      apply UInt64.toNat_inj.mp
+      simpa only [getCurrentEpoch_toNat, frame.slot] using step
+    have samePrevious : getPreviousEpoch { cached with slot := next } =
+        getPreviousEpoch cached := by simp only [getPreviousEpoch, sameEpoch]
+    constructor
+    · intro entry member
+      rw [sameEpoch]
+      exact cachedHolds.1 entry member
+    · intro entry member
+      rw [samePrevious]
+      exact cachedHolds.2 entry member
+
+/-- Advancing slots preserves the checked epochs of pending attestations. -/
+theorem advanceSlots_pending_epochs (before : fork < .altair) :
+    ∀ (count : Nat) {state after : BeaconState preset fork},
+      PendingEpochsMatch state before → advanceSlots config count state = .ok after →
+        PendingEpochsMatch after before
+  | 0, _, _, holds, computed => by
+    cases computed
+    exact holds
+  | count + 1, _, _, holds, computed => by
+    simp only [advanceSlots, bind_ok_iff] at computed
+    obtain ⟨middle, first, rest⟩ := computed
+    exact advanceSlots_pending_epochs before count (advanceSlot_pending_epochs before holds first)
+      rest
+
+/-- The complete Phase 0 transition preserves the checked epochs of pending attestations. -/
+theorem stateTransition_pending_epochs (before : fork < .altair)
+    (holds : PendingEpochsMatch state before) {block : SignedBeaconBlock preset fork}
+    {validateResult : Bool}
+    (computed : stateTransition config checks engine state block validateResult = .ok after) :
+    PendingEpochsMatch after before := by
+  simp only [stateTransition, bind_ok_iff] at computed
+  obtain ⟨atSlot, slots, applied⟩ := computed
+  simp only [processSlots, bind_ok_iff, ensure_ok_iff] at slots
+  obtain ⟨_, _, advanced⟩ := slots
+  have atSlotHolds := advanceSlots_pending_epochs before _ holds advanced
+  simp only [applySignedBlock, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at applied
+  obtain ⟨_, _, _, processed, _, _, rfl⟩ := applied
+  exact processBlock_pending_epochs before atSlotHolds processed
 
 /-- A slot that changes finalization contains an actual epoch and justification computation.
 

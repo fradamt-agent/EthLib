@@ -888,20 +888,28 @@ theorem processJustificationAndFinalization_ok
     obtain ⟨_, _, _, _, total, _, previous, _, current, _, weighed⟩ := computed
     exact .inr ⟨total, previous, current, weighed⟩
 
-/-- An eligible justification step leaves the current pending sources ready for rotation.
+/-- A justification step leaves the current pending sources ready for rotation.
 
 The step assigns the old current checkpoint to the previous checkpoint.
+
+In the first two epochs it does nothing, so the two checkpoints must already agree.
 
 It does not change the pending attestations, even when it justifies a new current checkpoint. -/
 theorem processJustificationAndFinalization_sources_for_rotation (before : fork < .altair)
     (holds : PendingSourcesMatch state before)
-    (eligible : ¬getCurrentEpoch state ≤ GENESIS_EPOCH + 1)
+    (early : getCurrentEpoch state ≤ GENESIS_EPOCH + 1 →
+      state.currentJustifiedCheckpoint = state.previousJustifiedCheckpoint)
     (computed : processJustificationAndFinalization state = .ok after) :
     ∀ pending ∈ (after.currentEpochAttestations before).data,
       pending.data.source = after.previousJustifiedCheckpoint := by
   unfold processJustificationAndFinalization at computed
   split at computed
   · exact absurd ‹_› (Nat.not_le_of_lt before)
+  split at computed
+  · rename_i firstEpochs
+    cases computed
+    intro entry member
+    exact (holds.1 entry member).trans (early firstEpochs)
   simp only [bind_ok_iff, liftAccessor_ok] at computed
   obtain ⟨_, _, _, _, _, _, _, _, _, _, weighed⟩ := computed
   obtain ⟨previous, _, _, unchanged⟩ := weighJustificationAndFinalization_checkpoints weighed

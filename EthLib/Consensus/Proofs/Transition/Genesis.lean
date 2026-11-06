@@ -87,6 +87,120 @@ theorem initializeBeaconStateFromEth1_invariant {eth1BlockHash : Hash32} {eth1Ti
     Frame.of_validators ⟨rfl, rfl⟩ rfl rfl rfl rfl rfl rfl
   exact rooted.invariant (frame.invariant (emptyGenesisState_invariant before _ _ _ _))
 
+/-- Genesis initialization leaves both pending-attestation lists empty and checkpoints equal. -/
+theorem initializeBeaconStateFromEth1_pending_sources {eth1BlockHash : Hash32}
+    {eth1Timestamp : UInt64} {deposits : Array Deposit}
+    (before : fork < .altair)
+    (computed : initializeBeaconStateFromEth1 config checks eth1BlockHash eth1Timestamp deposits =
+      .ok after) : PendingSourcesInvariant after before := by
+  unfold initializeBeaconStateFromEth1 at computed
+  split at computed
+  · cases computed
+  simp only [bind_ok_iff, ensure_ok_iff, liftSsz_ok, pure, Except.pure,
+    Except.ok.injEq] at computed
+  obtain ⟨_, _, _, _, _, _, deposited, depositedOk, activated, activatedOk, root, _, rfl⟩ :=
+    computed
+  have depositsKeep : ∀ (s : BeaconState preset fork) (entry : Deposit × Nat) s',
+      genesisDeposit config checks (Nat.lt_trans before (by decide))
+        (deposits.map (·.data)) s entry = .ok s' → PendingUnchanged s s' before := by
+    intro s entry s' applied
+    simp only [genesisDeposit, bind_ok_iff] at applied
+    obtain ⟨_, _, applied⟩ := applied
+    have pending := pendingUnchanged_processDeposit before applied
+    exact ⟨pending.current, pending.previous⟩
+  have activationsKeep : ∀ (s : BeaconState preset fork) index s',
+      activateAtGenesis s index = .ok s' →
+      PendingUnchanged s s' before := by
+    intro s index s' applied
+    simp only [activateAtGenesis, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+      Except.ok.injEq] at applied
+    obtain ⟨_, _, _, _, rfl⟩ := applied
+    split <;> exact ⟨rfl, rfl⟩
+  have pending := (PendingUnchanged.foldlM depositsKeep depositedOk).trans
+    (PendingUnchanged.foldlM activationsKeep activatedOk)
+  have frame := (Frame.foldlM (fun _ _ _ ok => frame_genesisDeposit before ok) depositedOk).trans
+    (Frame.foldlM (fun _ _ _ ok => frame_activateAtGenesis ok) activatedOk)
+  constructor
+  · constructor
+    · intro entry member
+      rw [pending.current] at member
+      simp [emptyGenesisState] at member
+    · intro entry member
+      rw [pending.previous] at member
+      simp [emptyGenesisState] at member
+  · intro _
+    exact frame.currentJustified.trans frame.previousJustified.symm
+
+/-- Every initialized Phase 0 chain retains the sources checked during attestation inclusion.
+
+No participation or checkpoint hypothesis is required from the caller. -/
+theorem pendingSourcesMatch_of_initialized_chain
+    {engine : ExecutionEngine preset fork} {genesis : BeaconState preset fork}
+    {eth1BlockHash : Hash32} {eth1Timestamp : UInt64} {deposits : Array Deposit}
+    {blocks : List (SignedBeaconBlock preset fork)}
+    (before : fork < .altair)
+    (initialized : initializeBeaconStateFromEth1 config checks eth1BlockHash eth1Timestamp
+      deposits = .ok genesis)
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block true) genesis =
+        .ok after) : PendingSourcesMatch after before := by
+  have holds := initializeBeaconStateFromEth1_pending_sources before initialized
+  exact (foldlM_ok_invariant (fun s => PendingSourcesInvariant s before)
+    (fun _ _ _ prior ok => stateTransition_pending_sources before prior ok) holds computed).1
+
+/-- Genesis initialization contains no pending attestations with an incorrect epoch. -/
+theorem initializeBeaconStateFromEth1_pending_epochs {eth1BlockHash : Hash32}
+    {eth1Timestamp : UInt64} {deposits : Array Deposit}
+    (before : fork < .altair)
+    (computed : initializeBeaconStateFromEth1 config checks eth1BlockHash eth1Timestamp deposits =
+      .ok after) : PendingEpochsMatch after before := by
+  unfold initializeBeaconStateFromEth1 at computed
+  split at computed
+  · cases computed
+  simp only [bind_ok_iff, ensure_ok_iff, liftSsz_ok, pure, Except.pure,
+    Except.ok.injEq] at computed
+  obtain ⟨_, _, _, _, _, _, deposited, depositedOk, activated, activatedOk, root, _, rfl⟩ :=
+    computed
+  have depositsKeep : ∀ (s : BeaconState preset fork) (entry : Deposit × Nat) s',
+      genesisDeposit config checks (Nat.lt_trans before (by decide))
+        (deposits.map (·.data)) s entry = .ok s' → PendingUnchanged s s' before := by
+    intro s entry s' applied
+    simp only [genesisDeposit, bind_ok_iff] at applied
+    obtain ⟨_, _, applied⟩ := applied
+    have pending := pendingUnchanged_processDeposit before applied
+    exact ⟨pending.current, pending.previous⟩
+  have activationsKeep : ∀ (s : BeaconState preset fork) index s',
+      activateAtGenesis s index = .ok s' → PendingUnchanged s s' before := by
+    intro s index s' applied
+    simp only [activateAtGenesis, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+      Except.ok.injEq] at applied
+    obtain ⟨_, _, _, _, rfl⟩ := applied
+    split <;> exact ⟨rfl, rfl⟩
+  have pending := (PendingUnchanged.foldlM depositsKeep depositedOk).trans
+    (PendingUnchanged.foldlM activationsKeep activatedOk)
+  constructor
+  · intro entry member
+    rw [pending.current] at member
+    simp [emptyGenesisState] at member
+  · intro entry member
+    rw [pending.previous] at member
+    simp [emptyGenesisState] at member
+
+/-- Every initialized chain retains the target and slot epochs checked at inclusion. -/
+theorem pendingEpochsMatch_of_initialized_chain
+    {engine : ExecutionEngine preset fork} {genesis : BeaconState preset fork}
+    {eth1BlockHash : Hash32} {eth1Timestamp : UInt64} {deposits : Array Deposit}
+    {blocks : List (SignedBeaconBlock preset fork)}
+    (before : fork < .altair)
+    (initialized : initializeBeaconStateFromEth1 config checks eth1BlockHash eth1Timestamp
+      deposits = .ok genesis)
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block true) genesis =
+        .ok after) : PendingEpochsMatch after before := by
+  exact foldlM_ok_invariant (fun s => PendingEpochsMatch s before)
+    (fun _ _ _ prior ok => stateTransition_pending_epochs before prior ok)
+    (initializeBeaconStateFromEth1_pending_epochs before initialized) computed
+
 /-- Every Phase 0 state reached from initialized genesis keeps the effective-balance cap.
 
 The block list uses the actual state transition, including result validation. -/
