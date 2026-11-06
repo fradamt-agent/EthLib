@@ -106,6 +106,15 @@ theorem PendingUnchanged.trans {first second third : BeaconState preset fork}
     (two : PendingUnchanged second third before) : PendingUnchanged first third before :=
   ⟨two.current.trans one.current, two.previous.trans one.previous⟩
 
+/-- An unchanged pair of lists has exactly the same pending records. -/
+theorem PendingUnchanged.mem_iff {before : fork < .altair}
+    (kept : PendingUnchanged state after before) (pending : PendingAttestation preset) :
+    (pending ∈ (after.currentEpochAttestations before).data ∨
+      pending ∈ (after.previousEpochAttestations before).data) ↔
+    (pending ∈ (state.currentEpochAttestations before).data ∨
+      pending ∈ (state.previousEpochAttestations before).data) := by
+  rw [kept.current, kept.previous]
+
 theorem PendingUnchanged.foldlM {α : Type} {before : fork < .altair}
     {step : BeaconState preset fork → α → Except TransitionError _}
     (keeps : ∀ s x s', step s x = .ok s' → PendingUnchanged s s' before) {items : List α}
@@ -774,6 +783,103 @@ theorem processBlock_pending_epochs (before : fork < .altair)
     ((frame_processBlockHeader headerOk).trans
       ((frame_processRandao randaoOk).trans (frame_processEth1Data eth1Ok))) holds
 
+/-- A pending record after block operations was already present or was included in this body.
+
+The witness retains the successful slashing prefix and the exact attestation-processing call. -/
+theorem processOperations_pending_origin (before : fork < .altair)
+    {body : BeaconBlockBody preset fork} {pending : PendingAttestation preset}
+    (computed : processOperations config checks state body = .ok after)
+    (member : pending ∈ (after.currentEpochAttestations before).data ∨
+      pending ∈ (after.previousEpochAttestations before).data) :
+    (pending ∈ (state.currentEpochAttestations before).data ∨
+      pending ∈ (state.previousEpochAttestations before).data) ∨
+    ∃ proposers attesters earlier attestation later inclusion included,
+      body.proposerSlashings.data.toList.foldlM (processProposerSlashing config checks) state =
+        .ok proposers ∧
+      body.attesterSlashings.data.toList.foldlM (processAttesterSlashing config checks) proposers =
+        .ok attesters ∧
+      body.attestations.data.toList = earlier ++ attestation :: later ∧
+      earlier.foldlM (processAttestation config checks) attesters = .ok inclusion ∧
+      processAttestation config checks inclusion attestation = .ok included ∧
+      pending.data = attestation.data ∧
+      pending.aggregationBits.bits = attestation.aggregationBits.bits := by
+  unfold processOperations at computed
+  split at computed
+  · cases computed
+  simp only [bind_ok_iff, ensure_ok_iff, ← Array.foldlM_toList] at computed
+  obtain ⟨_, _, _, _, proposers, proposersOk, attesters, attestersOk, attested, attestedOk,
+    deposited, depositedOk, exited, exitsOk, changesOk⟩ := computed
+  have notCapella : ¬Fork.shapella ≤ fork :=
+    Nat.not_le_of_lt (Nat.lt_trans before (by decide))
+  simp only [notCapella, ↓reduceDIte, pure, Except.pure, Except.ok.injEq] at changesOk
+  subst changesOk
+  have tailPending : PendingUnchanged attested exited before :=
+    (PendingUnchanged.foldlM
+      (fun _ _ _ ok => pendingUnchanged_processDeposit before ok) depositedOk).trans
+        (PendingUnchanged.foldlM (fun _ _ _ ok => pendingUnchanged_processVoluntaryExit ok) exitsOk)
+  have attestedMember := (tailPending.mem_iff pending).mp member
+  rcases foldlM_processAttestation_pending_origin before attestedOk attestedMember with
+      old | old | ⟨earlier, attestation, later, inclusion, included, split, earlierOk,
+        includedOk, data, bits, _⟩
+  · apply Or.inl
+    have prefixPending : PendingUnchanged state attesters before :=
+      (PendingUnchanged.foldlM
+        (fun _ _ _ ok => pendingUnchanged_processProposerSlashing ok) proposersOk).trans
+          (PendingUnchanged.foldlM
+            (fun _ _ _ ok => pendingUnchanged_processAttesterSlashing ok) attestersOk)
+    exact (prefixPending.mem_iff pending).mp (.inl old)
+  · apply Or.inl
+    have prefixPending : PendingUnchanged state attesters before :=
+      (PendingUnchanged.foldlM
+        (fun _ _ _ ok => pendingUnchanged_processProposerSlashing ok) proposersOk).trans
+          (PendingUnchanged.foldlM
+            (fun _ _ _ ok => pendingUnchanged_processAttesterSlashing ok) attestersOk)
+    exact (prefixPending.mem_iff pending).mp (.inr old)
+  · exact .inr ⟨proposers, attesters, earlier, attestation, later, inclusion, included,
+      proposersOk, attestersOk, split, earlierOk, includedOk, data, bits⟩
+
+/-- A pending record after a block either predates the block or has a successful inclusion in it.
+
+The inclusion state is after the header, randomness and deposit-contract vote of this block. -/
+theorem processBlock_pending_origin (before : fork < .altair)
+    {block : BeaconBlock preset fork} {pending : PendingAttestation preset}
+    (computed : processBlock config checks engine state block = .ok after)
+    (member : pending ∈ (after.currentEpochAttestations before).data ∨
+      pending ∈ (after.previousEpochAttestations before).data) :
+    (pending ∈ (state.currentEpochAttestations before).data ∨
+      pending ∈ (state.previousEpochAttestations before).data) ∨
+    ∃ header randao eth1 proposers attesters earlier attestation later inclusion included,
+      processBlockHeader state block = .ok header ∧
+      processRandao config checks header block.body = .ok randao ∧
+      processEth1Data (Nat.lt_trans before (by decide)) randao block.body = .ok eth1 ∧
+      block.body.proposerSlashings.data.toList.foldlM
+        (processProposerSlashing config checks) eth1 = .ok proposers ∧
+      block.body.attesterSlashings.data.toList.foldlM
+        (processAttesterSlashing config checks) proposers = .ok attesters ∧
+      block.body.attestations.data.toList = earlier ++ attestation :: later ∧
+      earlier.foldlM (processAttestation config checks) attesters = .ok inclusion ∧
+      processAttestation config checks inclusion attestation = .ok included ∧
+      pending.data = attestation.data ∧
+      pending.aggregationBits.bits = attestation.aggregationBits.bits := by
+  have notAltair : ¬Fork.altair ≤ fork := Nat.not_le_of_lt before
+  simp only [processBlock, notAltair, ↓reduceDIte, bind_ok_iff] at computed
+  obtain ⟨header, headerOk, randao, randaoOk, eth1, eth1Ok, operationsOk⟩ := computed
+  rcases processOperations_pending_origin before operationsOk member with old |
+      ⟨proposers, attesters, earlier, attestation, later, inclusion, included, rest⟩
+  · apply Or.inl
+    have headerPending : PendingUnchanged state header before := by
+      obtain ⟨_, _, rfl⟩ := processBlockHeader_eq headerOk
+      exact ⟨rfl, rfl⟩
+    have randaoPending : PendingUnchanged header randao before := by
+      obtain ⟨_, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq randaoOk
+      exact ⟨rfl, rfl⟩
+    have eth1Pending : PendingUnchanged randao eth1 before := by
+      obtain ⟨_, _, unchanged⟩ := processEth1Data_eq eth1Ok
+      exact ⟨by rw [← unchanged], by rw [← unchanged]⟩
+    exact ((headerPending.trans (randaoPending.trans eth1Pending)).mem_iff pending).mp old
+  · exact .inr ⟨header, randao, eth1, proposers, attesters, earlier, attestation, later,
+      inclusion, included, headerOk, randaoOk, eth1Ok, rest⟩
+
 /-! ## The steps of an epoch -/
 
 theorem frame_applyDeltas {rewards penalties : Array Gwei} {index : Nat}
@@ -1412,6 +1518,163 @@ theorem stateTransition_pending_epochs (before : fork < .altair)
   simp only [applySignedBlock, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at applied
   obtain ⟨_, _, _, processed, _, _, rfl⟩ := applied
   exact processBlock_pending_epochs before atSlotHolds processed
+
+/-- Slot processing cannot create a pending attestation.
+
+At an epoch boundary it can only retain the old current list as the previous list. -/
+theorem advanceSlot_pending_mem (before : fork < .altair)
+    {pending : PendingAttestation preset}
+    (computed : advanceSlot config state = .ok after)
+    (member : pending ∈ (after.currentEpochAttestations before).data ∨
+      pending ∈ (after.previousEpochAttestations before).data) :
+    pending ∈ (state.currentEpochAttestations before).data ∨
+      pending ∈ (state.previousEpochAttestations before).data := by
+  simp only [advanceSlot, bind_ok_iff, liftAccessor_ok, liftArith, mapError_ok_iff,
+    addChecked_ok_iff, pure, Except.pure, Except.ok.injEq] at computed
+  obtain ⟨_, _, cached, cachedOk, epoched, epochedOk, rfl⟩ := computed
+  have kept : PendingUnchanged state cached before := by
+    obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+    exact ⟨rfl, rfl⟩
+  apply (kept.mem_iff pending).mp
+  unfold epochIfLast at epochedOk
+  split at epochedOk
+  · obtain ⟨previous, current⟩ := processEpoch_pending_rotation before epochedOk
+    rcases member with member | member
+    · rw [current] at member
+      simp at member
+    · exact .inl (previous ▸ member)
+  · cases epochedOk
+    exact member
+
+/-- No number of successful slot steps can create a pending attestation. -/
+theorem advanceSlots_pending_mem (before : fork < .altair) {pending : PendingAttestation preset} :
+    ∀ (count : Nat) {state after : BeaconState preset fork},
+      advanceSlots config count state = .ok after →
+      (pending ∈ (after.currentEpochAttestations before).data ∨
+        pending ∈ (after.previousEpochAttestations before).data) →
+      pending ∈ (state.currentEpochAttestations before).data ∨
+        pending ∈ (state.previousEpochAttestations before).data
+  | 0, _, _, computed, member => by
+    cases computed
+    exact member
+  | count + 1, _, _, computed, member => by
+    simp only [advanceSlots, bind_ok_iff] at computed
+    obtain ⟨middle, first, rest⟩ := computed
+    exact advanceSlot_pending_mem before first (advanceSlots_pending_mem before count rest member)
+
+/-- Successful processing of an attestation in a concrete block, with its stored data and bits.
+
+The state arguments are the actual intermediate states of block processing.
+
+This predicate records execution, not an abstract vote or a supermajority relation. -/
+def PendingIncludedInBlock (config : Config) (checks : SignatureChecks)
+    (before : fork < .altair) (atSlot : BeaconState preset fork)
+    (block : BeaconBlock preset fork) (pending : PendingAttestation preset) : Prop :=
+  ∃ header randao eth1 proposers attesters earlier attestation later inclusion included,
+    processBlockHeader atSlot block = .ok header ∧
+    processRandao config checks header block.body = .ok randao ∧
+    processEth1Data (Nat.lt_trans before (by decide)) randao block.body = .ok eth1 ∧
+    block.body.proposerSlashings.data.toList.foldlM
+      (processProposerSlashing config checks) eth1 = .ok proposers ∧
+    block.body.attesterSlashings.data.toList.foldlM
+      (processAttesterSlashing config checks) proposers = .ok attesters ∧
+    block.body.attestations.data.toList = earlier ++ attestation :: later ∧
+    earlier.foldlM (processAttestation config checks) attesters = .ok inclusion ∧
+    processAttestation config checks inclusion attestation = .ok included ∧
+    pending.data = attestation.data ∧
+    pending.aggregationBits.bits = attestation.aggregationBits.bits
+
+/-- A concrete inclusion supplies the checked source and a valid indexed signature.
+
+The signature check uses the state after recording the pending attestation, as processing does. -/
+theorem PendingIncludedInBlock.checked {before : fork < .altair}
+    {atSlot : BeaconState preset fork} {block : BeaconBlock preset fork}
+    {pending : PendingAttestation preset}
+    (included : PendingIncludedInBlock config checks before atSlot block pending) :
+    ∃ (inclusion recorded : BeaconState preset fork) (attestation : Attestation preset fork)
+      (indexed : IndexedAttestation preset fork),
+      processAttestation config checks inclusion attestation = .ok recorded ∧
+      pending.data = attestation.data ∧
+      pending.aggregationBits.bits = attestation.aggregationBits.bits ∧
+      pending.data.source =
+        (if pending.data.target.epoch = getCurrentEpoch inclusion then
+          inclusion.currentJustifiedCheckpoint else inclusion.previousJustifiedCheckpoint) ∧
+      getIndexedAttestation recorded attestation = .ok indexed ∧
+      indexed.data = pending.data ∧
+      isValidIndexedAttestation config checks recorded indexed = .ok true := by
+  obtain ⟨_, _, _, _, _, _, attestation, _, inclusion, recorded, _, _, _, _, _, _, _,
+    computed, data, bits⟩ := included
+  obtain ⟨_, _, _, _, _, _, indexed, indexedOk, valid⟩ :=
+    processAttestation_records before computed
+  refine ⟨inclusion, recorded, attestation, indexed, computed, data, bits, ?_,
+    indexedOk, ?_, valid⟩
+  · rw [data]
+    exact (processAttestation_checks before computed).2.2.2.2.2.2
+  · simp only [getIndexedAttestation, bind_ok_iff] at indexedOk
+    obtain ⟨_, _, result⟩ := indexedOk
+    split at result
+    · cases result
+      exact data.symm
+    · cases result
+
+/-- Every new pending record of a state transition has an inclusion in its signed block. -/
+theorem stateTransition_pending_origin (before : fork < .altair)
+    {block : SignedBeaconBlock preset fork} {pending : PendingAttestation preset}
+    {validateResult : Bool}
+    (computed : stateTransition config checks engine state block validateResult = .ok after)
+    (member : pending ∈ (after.currentEpochAttestations before).data ∨
+      pending ∈ (after.previousEpochAttestations before).data) :
+    (pending ∈ (state.currentEpochAttestations before).data ∨
+      pending ∈ (state.previousEpochAttestations before).data) ∨
+    ∃ atSlot, processSlots config state block.message.slot = .ok atSlot ∧
+      PendingIncludedInBlock config checks before atSlot block.message pending := by
+  simp only [stateTransition, bind_ok_iff] at computed
+  obtain ⟨atSlot, slots, applied⟩ := computed
+  simp only [applySignedBlock, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at applied
+  obtain ⟨_, _, _, processed, _, _, rfl⟩ := applied
+  rcases processBlock_pending_origin before processed member with old | included
+  · apply Or.inl
+    simp only [processSlots, bind_ok_iff, ensure_ok_iff] at slots
+    obtain ⟨_, _, advanced⟩ := slots
+    exact advanceSlots_pending_mem before _ advanced old
+  · exact .inr ⟨atSlot, slots, included⟩
+
+/-- A pending record after a chain was already present or was included in one of its blocks.
+
+The successful block prefix identifies the state whose committees checked the inclusion. -/
+theorem stateTransition_chain_pending_origin (before : fork < .altair)
+    {blocks : List (SignedBeaconBlock preset fork)} {pending : PendingAttestation preset}
+    {validateResult : Bool}
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block validateResult)
+        state = .ok after)
+    (member : pending ∈ (after.currentEpochAttestations before).data ∨
+      pending ∈ (after.previousEpochAttestations before).data) :
+    (pending ∈ (state.currentEpochAttestations before).data ∨
+      pending ∈ (state.previousEpochAttestations before).data) ∨
+    ∃ earlier block later atBlock atSlot,
+      blocks = earlier ++ block :: later ∧
+      earlier.foldlM
+        (fun state block => stateTransition config checks engine state block validateResult)
+          state = .ok atBlock ∧
+      processSlots config atBlock block.message.slot = .ok atSlot ∧
+      PendingIncludedInBlock config checks before atSlot block.message pending := by
+  induction blocks generalizing state with
+  | nil =>
+    cases computed
+    exact .inl member
+  | cons first rest ih =>
+    simp only [List.foldlM_cons, bind_ok_iff] at computed
+    obtain ⟨middle, firstOk, restOk⟩ := computed
+    rcases ih restOk with old | ⟨earlier, block, later, atBlock, atSlot,
+        split, earlierOk, slots, included⟩
+    · rcases stateTransition_pending_origin before firstOk old with old | ⟨atSlot, slots, included⟩
+      · exact .inl old
+      · exact .inr ⟨[], first, rest, state, atSlot, rfl, rfl, slots, included⟩
+    · refine .inr ⟨first :: earlier, block, later, atBlock, atSlot,
+        by simp [split], ?_, slots, included⟩
+      simp only [List.foldlM_cons, bind_ok_iff]
+      exact ⟨middle, firstOk, earlierOk⟩
 
 /-- A slot that changes finalization contains an actual epoch and justification computation.
 

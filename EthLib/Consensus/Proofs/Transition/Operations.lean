@@ -128,6 +128,20 @@ theorem sameSizes_recordPendingAttestation {before : fork < .altair} {current : 
     simp only [recordPendingAttestation, Bool.false_eq_true, ↓reduceIte] at computed <;>
     split at computed <;> cases computed <;> exact SameSizes.refl _
 
+/-- Recording an attestation changes neither its committee nor its indexed form.
+
+Signature validation after recording therefore authenticates the inclusion-time committee. -/
+theorem recordPendingAttestation_indexed {before : fork < .altair} {current : Bool}
+    {pending : PendingAttestation preset} (attestation : Attestation preset fork)
+    (computed : recordPendingAttestation state before current pending = .ok after) :
+    getIndexedAttestation after attestation = getIndexedAttestation state attestation := by
+  have notElectra : ¬Fork.pectra ≤ fork :=
+    Nat.not_le_of_lt (Nat.lt_trans before (by decide))
+  cases current <;>
+    simp only [recordPendingAttestation, Bool.false_eq_true, ↓reduceIte] at computed <;>
+    split at computed <;> cases computed <;>
+    simp only [getIndexedAttestation, getAttestingIndices, notElectra, ↓reduceDIte] <;> rfl
+
 /-- The sources stored for each epoch equal the state's corresponding justified checkpoint.
 
 Inclusion checks the source before recording a pending attestation.
