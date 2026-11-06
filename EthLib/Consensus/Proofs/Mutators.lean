@@ -134,6 +134,34 @@ theorem slashValidator_last {last after : BeaconState preset fork} {index : Vali
   subst done
   split <;> exact ⟨rfl, rfl⟩
 
+/-- Before Altair the two slashing credits share one whistleblower reward.
+
+The quotient is applied to the slashed validator's effective balance, not the registry's stake. -/
+theorem proposerShare_phase0_credits (preset : Preset) (effectiveBalance : Gwei) :
+    ∃ proposerReward,
+      proposerShare preset .phase0
+        (effectiveBalance / (parameters preset .phase0).WHISTLEBLOWER_REWARD_QUOTIENT) =
+          .ok proposerReward ∧
+      proposerReward.toNat +
+        ((effectiveBalance / (parameters preset .phase0).WHISTLEBLOWER_REWARD_QUOTIENT) -
+          proposerReward).toNat =
+        effectiveBalance.toNat /
+          (parameters preset .phase0).WHISTLEBLOWER_REWARD_QUOTIENT.toNat := by
+  let reward := effectiveBalance /
+    (parameters preset .phase0).WHISTLEBLOWER_REWARD_QUOTIENT
+  refine ⟨reward / preset.PROPOSER_REWARD_QUOTIENT, rfl, ?_⟩
+  have shareLe : reward / preset.PROPOSER_REWARD_QUOTIENT ≤ reward := by
+    rw [UInt64.le_iff_toNat_le, UInt64.toNat_div]
+    exact Nat.div_le_self _ _
+  rw [UInt64.toNat_sub_of_le _ _ shareLe]
+  change (reward / preset.PROPOSER_REWARD_QUOTIENT).toNat +
+    (reward.toNat - (reward / preset.PROPOSER_REWARD_QUOTIENT).toNat) = _
+  have shareNat := UInt64.le_iff_toNat_le.mp shareLe
+  have rewardNat : reward.toNat = effectiveBalance.toNat /
+      (parameters preset .phase0).WHISTLEBLOWER_REWARD_QUOTIENT.toNat :=
+    UInt64.toNat_div _ _
+  omega
+
 /-- Slashing a validator keeps the sizes. -/
 theorem sameSizes_slashValidator {config : Config} {state after : BeaconState preset fork}
     {slashedIndex : ValidatorIndex} {whistleblowerIndex : Option ValidatorIndex}
