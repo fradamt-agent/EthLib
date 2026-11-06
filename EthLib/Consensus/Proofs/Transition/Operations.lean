@@ -128,6 +128,42 @@ theorem sameSizes_recordPendingAttestation {before : fork < .altair} {current : 
     simp only [recordPendingAttestation, Bool.false_eq_true, ↓reduceIte] at computed <;>
     split at computed <;> cases computed <;> exact SameSizes.refl _
 
+/-- The sources stored for each epoch equal the state's corresponding justified checkpoint.
+
+Inclusion checks the source before recording a pending attestation.
+
+At an epoch boundary the current list and its justified source must move together. -/
+def PendingSourcesMatch (state : BeaconState preset fork) (before : fork < .altair) : Prop :=
+  (∀ pending ∈ (state.currentEpochAttestations before).data,
+    pending.data.source = state.currentJustifiedCheckpoint) ∧
+  (∀ pending ∈ (state.previousEpochAttestations before).data,
+    pending.data.source = state.previousJustifiedCheckpoint)
+
+/-- Appending an attestation with the checked source preserves the pending-source invariant. -/
+theorem recordPendingAttestation_sources {before : fork < .altair} {current : Bool}
+    {pending : PendingAttestation preset} (holds : PendingSourcesMatch state before)
+    (source : pending.data.source = if current then state.currentJustifiedCheckpoint
+      else state.previousJustifiedCheckpoint)
+    (computed : recordPendingAttestation state before current pending = .ok after) :
+    PendingSourcesMatch after before := by
+  cases current <;>
+    simp only [recordPendingAttestation, Bool.false_eq_true, ↓reduceIte] at computed <;>
+    split at computed <;> cases computed
+  all_goals
+    simp only [PendingSourcesMatch] at holds ⊢
+    simp only [Bool.false_eq_true, ↓reduceIte] at source
+    obtain ⟨current, previous⟩ := holds
+    constructor
+    all_goals
+      intro entry member
+      try simp only [Array.mem_push] at member
+      first
+      | exact current entry member
+      | exact previous entry member
+      | rcases member with member | rfl
+        · first | exact current entry member | exact previous entry member
+        · exact source
+
 /-- Before Altair, what a valid attestation satisfies.
 
 Its target is the current or the previous epoch, and the epoch of its slot.
@@ -194,6 +230,16 @@ theorem processAttestation_records {attestation : Attestation preset fork}
     updated, recorded, indexed, indexedOk, valid, validOk, _, validTrue, rfl⟩ := computed
   subst validTrue
   exact ⟨_, rfl, rfl, rfl, proposerOk, recorded, indexed, indexedOk, validOk⟩
+
+/-- Successful Phase 0 attestation processing preserves both stored source equalities. -/
+theorem processAttestation_sources {attestation : Attestation preset fork}
+    (before : fork < .altair) (holds : PendingSourcesMatch state before)
+    (computed : processAttestation config checks state attestation = .ok after) :
+    PendingSourcesMatch after before := by
+  have source := (processAttestation_checks before computed).2.2.2.2.2.2
+  obtain ⟨pending, _, data, _, _, recorded, _⟩ := processAttestation_records before computed
+  apply recordPendingAttestation_sources holds _ recorded
+  simpa only [data, beq_iff_eq] using source
 
 /-- From Altair, writing the flags of an epoch keeps the sizes of the registry and the balances.
 -/

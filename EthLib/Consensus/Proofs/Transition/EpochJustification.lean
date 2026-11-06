@@ -1,6 +1,7 @@
 module
 
 public import EthLib.Consensus.Proofs.Transition.Block
+public import EthLib.Consensus.Proofs.Transition.Operations
 public import EthLib.Consensus.Transition.EpochJustification
 import all Init.Data.List.Control
 
@@ -31,6 +32,21 @@ namespace EthLib.Consensus
 open Base Uint64 Serialization.Ssz
 
 variable {preset : Preset} {fork : Base.Fork} {state after : BeaconState preset fork}
+
+/-- Source matching is unchanged when both pending lists and justified checkpoints are unchanged.
+
+Registry and balance updates can use this without assumptions about validator weights. -/
+theorem pendingSourcesMatch_of_fields {before : fork < .altair}
+    (holds : PendingSourcesMatch state before)
+    (current : after.currentJustifiedCheckpoint = state.currentJustifiedCheckpoint)
+    (previous : after.previousJustifiedCheckpoint = state.previousJustifiedCheckpoint)
+    (currentPending : after.currentEpochAttestations before = state.currentEpochAttestations before)
+    (previousPending : after.previousEpochAttestations before =
+      state.previousEpochAttestations before) :
+    PendingSourcesMatch after before := by
+  unfold PendingSourcesMatch at holds ⊢
+  rw [current, previous, currentPending, previousPending]
+  exact holds
 
 /-- The extra balance that the increment floor adds to a raw sum of effective balances.
 
@@ -84,6 +100,25 @@ theorem getMatchingSourceAttestations_epoch {before : fork < .altair} {epoch : E
   simp only [getMatchingSourceAttestations, bind_ok_iff, ensure_ok_iff] at computed
   obtain ⟨_, recent, _⟩ := computed
   exact recent
+
+/-- Every matching source query reads the source checkpoint assigned to its epoch's pending list.
+
+This uses source matching, not a new source check in the balance calculation. -/
+theorem getMatchingSourceAttestations_source {before : fork < .altair} {epoch : Epoch}
+    {attestations : Array (PendingAttestation preset)} {pending : PendingAttestation preset}
+    (holds : PendingSourcesMatch state before)
+    (computed : getMatchingSourceAttestations state before epoch = .ok attestations)
+    (member : pending ∈ attestations) :
+    pending.data.source = if epoch = getCurrentEpoch state then
+      state.currentJustifiedCheckpoint else state.previousJustifiedCheckpoint := by
+  simp only [getMatchingSourceAttestations, bind_ok_iff, ensure_ok_iff, pure, Except.pure,
+    Except.ok.injEq] at computed
+  obtain ⟨_, _, rfl⟩ := computed
+  by_cases same : epoch = getCurrentEpoch state
+  · simp only [same, ↓reduceIte] at member ⊢
+    exact holds.1 pending member
+  · simp only [same, ↓reduceIte] at member ⊢
+    exact holds.2 pending member
 
 /-- An unslashed signer returned by the filter belongs to its input and has a clear flag. -/
 private theorem mem_filterAuxM_unslashed {indices accumulator result : List ValidatorIndex}
@@ -180,6 +215,23 @@ theorem justifyCheckpoint_ok {justified : Bool} {epoch : Epoch} {checkpoint resu
     obtain ⟨_, _, rfl⟩ := computed
     exact .inl ⟨rfl, rfl⟩
 
+/-- A changed justified checkpoint contains exactly the root read for its target epoch.
+
+No block identity or hash injectivity is assumed by this accessor-level statement. -/
+theorem justifyCheckpoint_changed {justified : Bool} {epoch : Epoch}
+    {checkpoint result : Checkpoint}
+    (computed : justifyCheckpoint state justified epoch checkpoint = .ok result)
+    (changed : result ≠ checkpoint) :
+    justified = true ∧ result.epoch = epoch ∧ getBlockRoot state epoch = .ok result.root := by
+  cases justified
+  · simp only [justifyCheckpoint, Bool.false_eq_true, ↓reduceIte, pure, Except.pure,
+      Except.ok.injEq] at computed
+    exact (changed computed.symm).elim
+  · simp only [justifyCheckpoint, ↓reduceIte, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+      Except.ok.injEq] at computed
+    obtain ⟨root, found, rfl⟩ := computed
+    exact ⟨rfl, rfl, found⟩
+
 /-- A changed justified checkpoint requires two thirds of a target balance.
 
 The current epoch wins when both target balances reach the threshold.
@@ -236,6 +288,19 @@ theorem getMatchingTargetAttestations_mem {before : fork < .altair} {epoch : Epo
     exact ⟨sources, root, sourceOk, rootOk, (Array.mem_filter.mp member).1,
       by simpa using (Array.mem_filter.mp member).2⟩
 
+/-- A target balance with source matching counts attestations from the stored justified source.
+
+The source is the previous checkpoint for previous-epoch targets and the current one otherwise. -/
+theorem getMatchingTargetAttestations_source {before : fork < .altair} {epoch : Epoch}
+    {attestations : Array (PendingAttestation preset)} {pending : PendingAttestation preset}
+    (holds : PendingSourcesMatch state before)
+    (computed : getMatchingTargetAttestations state before epoch = .ok attestations)
+    (member : pending ∈ attestations) :
+    pending.data.source = if epoch = getCurrentEpoch state then
+      state.currentJustifiedCheckpoint else state.previousJustifiedCheckpoint := by
+  obtain ⟨_, _, sources, _, included, _⟩ := getMatchingTargetAttestations_mem computed member
+  exact getMatchingSourceAttestations_source holds sources included
+
 /-- Before Altair, a changed justified checkpoint has a computed target balance above threshold.
 
 The attestations and balances here are exactly those read by the epoch transition. -/
@@ -264,6 +329,46 @@ theorem processJustificationAndFinalization_target_balance (before : fork < .alt
         currentBalanceOk, epoch, enough⟩
     · exact ⟨_, previous, total, previousBalance, .inl rfl, previousOk, totalOk,
         previousBalanceOk, epoch, enough⟩
+
+/-- A changed justified checkpoint has enough concrete pending signers, up to the target floor.
+
+Each counted index belongs to a pending attestation with the epoch's block root.
+
+The signer is active at the attestation slot's epoch and is not slashed.
+
+The source and signature provenance still require the history of attestation processing. -/
+theorem processJustificationAndFinalization_pending_signers (before : fork < .altair)
+    (computed : processJustificationAndFinalization state = .ok after)
+    (changed : after.currentJustifiedCheckpoint ≠ state.currentJustifiedCheckpoint) :
+    ∃ epoch attestations indices,
+      (epoch = getPreviousEpoch state ∨ epoch = getCurrentEpoch state) ∧
+      getMatchingTargetAttestations state before epoch = .ok attestations ∧
+      getUnslashedAttestingIndices state attestations = .ok indices ∧
+      after.currentJustifiedCheckpoint.epoch = epoch ∧
+      2 * sumMarked state.validators.data
+          (markIndices state.validators.data.size
+            (getActiveValidatorIndices state (getCurrentEpoch state))) ≤
+        3 * sumMarked state.validators.data (markIndices state.validators.data.size indices) +
+          3 * totalBalanceFloor state indices ∧
+      (∀ index ∈ indices,
+        (∃ attestation ∈ attestations, ∃ signers root,
+          getPendingAttestingIndices state attestation = .ok signers ∧ index ∈ signers ∧
+          getBlockRoot state epoch = .ok root ∧ attestation.data.target.root = root ∧
+          index ∈ getActiveValidatorIndices state
+            (computeEpochAtSlot preset attestation.data.slot)) ∧
+        ∃ validator, getValidator state index = .ok validator ∧ validator.slashed = false) := by
+  obtain ⟨epoch, attestations, total, target, recent, matching, active, attesting,
+    epochEq, enough⟩ := processJustificationAndFinalization_target_balance before computed changed
+  simp only [getAttestingBalance, bind_ok_iff] at attesting
+  obtain ⟨indices, indicesOk, targetOk⟩ := attesting
+  refine ⟨epoch, attestations, indices, recent, matching, indicesOk, epochEq,
+    getTotalBalance_threshold_raw active targetOk enough, ?_⟩
+  intro index member
+  obtain ⟨⟨attestation, pending, signers, signersOk, signer⟩, validator⟩ :=
+    mem_getUnslashedAttestingIndices indicesOk member
+  obtain ⟨_, root, _, rootOk, _, rootEq⟩ := getMatchingTargetAttestations_mem matching pending
+  exact ⟨⟨attestation, pending, signers, root, signersOk, signer, rootOk, rootEq,
+    mem_getActiveValidatorIndices_of_pending signersOk signer⟩, validator⟩
 
 /-- The newest bit records this call's current threshold.
 

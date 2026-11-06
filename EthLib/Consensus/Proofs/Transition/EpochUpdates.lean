@@ -346,6 +346,28 @@ theorem getValidatorActivationChurnLimit_le {config : Config} :
       getValidatorActivationChurnLimit config state ≤ getValidatorChurnLimit config state :=
   ⟨Std.min_le_left, Std.min_le_right⟩
 
+/-- A successful Phase 0 registry pass schedules at most its computed validator churn limit.
+
+The limit is read after eligibility updates and ejections, as in the transition.
+
+These are scheduled activations, not validators whose activation epoch is reached now. -/
+theorem processRegistryUpdates_activation_budget {config : Config}
+    (before : fork < .altair)
+    (computed : processRegistryUpdates config state = .ok after) :
+    ∃ updated indices,
+      (List.range state.validators.data.size).foldlM (updateRegistryEntry config) state =
+        .ok updated ∧
+      indices = (activationQueue updated).take (getValidatorChurnLimit config updated).toNat ∧
+      indices.length ≤ (getValidatorChurnLimit config updated).toNat ∧
+      indices.foldlM activateValidator updated = .ok after := by
+  have notElectra : ¬Fork.pectra ≤ fork := fun le =>
+    Nat.not_lt_of_ge le (Nat.lt_trans before (by decide))
+  have notDeneb : ¬Fork.dencun ≤ fork := fun le =>
+    Nat.not_lt_of_ge le (Nat.lt_trans before (by decide))
+  simp only [processRegistryUpdates, notElectra, notDeneb, ↓reduceIte, bind_ok_iff] at computed
+  obtain ⟨updated, updatedOk, activated⟩ := computed
+  exact ⟨updated, _, updatedOk, rfl, List.length_take_le _ _, activated⟩
+
 /-- The registry updates succeed only before Electra, and keep the sizes. -/
 theorem processRegistryUpdates_ok {config : Config}
     (computed : processRegistryUpdates config state = .ok after) :
@@ -435,5 +457,29 @@ theorem processParticipationRecordUpdates_eq (before : fork < .altair) :
     currentEpochAttestations := fun _ => ⟨#[], by simp⟩ }, ?_, rfl, rfl, rfl⟩
   simp only [processParticipationRecordUpdates, notAltair, ↓reduceIte]
   try rfl
+
+/-- Rotation restores source matching when the new previous checkpoint names the old source.
+
+Justification changes the current checkpoint before this rotation.
+
+Only the previous checkpoint must still equal the source of the current pending list. -/
+theorem processParticipationRecordUpdates_sources (before : fork < .altair)
+    (sources : ∀ pending ∈ (state.currentEpochAttestations before).data,
+      pending.data.source = state.previousJustifiedCheckpoint)
+    (computed : processParticipationRecordUpdates state = .ok after) :
+    PendingSourcesMatch after before := by
+  obtain ⟨rotated, rotatedOk, previous, current, unchanged⟩ :=
+    processParticipationRecordUpdates_eq (state := state) before
+  rw [rotatedOk] at computed
+  cases computed
+  have previousCheckpoint := congrArg BeaconState.previousJustifiedCheckpoint unchanged
+  constructor
+  · intro pending member
+    rw [current] at member
+    simp at member
+  · intro pending member
+    rw [previous] at member
+    rw [previousCheckpoint]
+    exact sources pending member
 
 end EthLib.Consensus
