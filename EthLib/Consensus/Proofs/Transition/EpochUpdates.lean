@@ -37,6 +37,13 @@ The update rounds down and caps the balance, so this is an upper bound on its he
 def effectiveBalanceHeadroom (balance effectiveBalance : Gwei) : Nat :=
   balance.toNat - effectiveBalance.toNat
 
+/-- Stored balance can fund growth only up to the Phase 0 effective-balance cap.
+
+Balance above the cap cannot increase justification weight. -/
+def cappedEffectiveBalanceHeadroom (preset : Preset) (balance effectiveBalance : Gwei) : Nat :=
+  min (effectiveBalanceHeadroom balance effectiveBalance)
+    (preset.MAX_EFFECTIVE_BALANCE.toNat - effectiveBalance.toNat)
+
 /-- An updated effective balance is the old one, or the balance rounded down and capped. -/
 theorem updatedEffectiveBalance_cases {balance effectiveBalance result : Gwei}
     (computed : updatedEffectiveBalance preset balance effectiveBalance = .ok result) :
@@ -69,6 +76,23 @@ theorem updatedEffectiveBalance_increase_le {balance effectiveBalance result : G
     rw [UInt64.toNat_sub_of_le _ _ remainder, UInt64.toNat_mod] at bound
     omega
 
+/-- A single update cannot use stored balance above the effective-balance cap. -/
+theorem updatedEffectiveBalance_increase_le_capped_headroom
+    {balance effectiveBalance result : Gwei}
+    (computed : updatedEffectiveBalance preset balance effectiveBalance = .ok result) :
+    result.toNat - effectiveBalance.toNat ≤
+      cappedEffectiveBalanceHeadroom preset balance effectiveBalance := by
+  have balanceBound := updatedEffectiveBalance_increase_le computed
+  have capBound : result.toNat - effectiveBalance.toNat ≤
+      preset.MAX_EFFECTIVE_BALANCE.toNat - effectiveBalance.toNat := by
+    rcases updatedEffectiveBalance_cases computed with rfl | rfl
+    · omega
+    · have capped := UInt64.le_iff_toNat_le.mp
+        (Std.min_le_right (a := balance - balance % preset.EFFECTIVE_BALANCE_INCREMENT)
+          (b := preset.MAX_EFFECTIVE_BALANCE))
+      omega
+  exact Nat.le_min.mpr ⟨balanceBound, capBound⟩
+
 /-- Credits after the reference state and its stored headroom cover an effective-balance increase.
 
 The caller must bound credits from deposits and rewards separately.
@@ -92,6 +116,26 @@ theorem updatedEffectiveBalance_increase_le_headroom_add
         balance - balance % preset.EFFECTIVE_BALANCE_INCREMENT := Std.min_le_left
     have bound := UInt64.le_iff_toNat_le.mp capped
     rw [UInt64.toNat_sub_of_le _ _ remainder, UInt64.toNat_mod] at bound
+    omega
+
+/-- Reference headroom is capped even when later deposits or rewards supply more credits.
+
+The separate old-effective-balance term permits an update after earlier growth. -/
+theorem updatedEffectiveBalance_increase_le_capped_headroom_add
+    {referenceBalance referenceEffective balance effectiveBalance result : Gwei} {credits : Nat}
+    (balanceBound : balance.toNat ≤ referenceBalance.toNat + credits)
+    (computed : updatedEffectiveBalance preset balance effectiveBalance = .ok result) :
+    result.toNat - referenceEffective.toNat ≤
+      cappedEffectiveBalanceHeadroom preset referenceBalance referenceEffective + credits +
+        (effectiveBalance.toNat - referenceEffective.toNat) := by
+  have uncapped := updatedEffectiveBalance_increase_le_headroom_add
+    (referenceEffective := referenceEffective) balanceBound computed
+  unfold cappedEffectiveBalanceHeadroom effectiveBalanceHeadroom at *
+  rcases updatedEffectiveBalance_cases computed with rfl | rfl
+  · omega
+  · have capped := UInt64.le_iff_toNat_le.mp
+      (Std.min_le_right (a := balance - balance % preset.EFFECTIVE_BALANCE_INCREMENT)
+        (b := preset.MAX_EFFECTIVE_BALANCE))
     omega
 
 /-- Every effective balance is a whole number of increments, and at most the largest. -/
