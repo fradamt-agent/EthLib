@@ -1151,13 +1151,16 @@ theorem processBlock_active_indices (before : fork < .altair)
   rw [processOperations_active_indices before recent operationsOk]
   simp only [getActiveValidatorIndices, eth1Registry, randaoRegistry, headerRegistry]
 
-/-- Mainnet Phase 0 block processing preserves recent attester seeds.
+/-- Phase 0 block processing preserves recent attester seeds.
 
 The reveal changes only the current mix, while recent committees read an older mix. -/
-theorem processBlock_mainnet_attester_seed
-    {state after : BeaconState Preset.mainnet .phase0}
-    {engine : ExecutionEngine Preset.mainnet .phase0}
-    {block : BeaconBlock Preset.mainnet .phase0} {epoch : Epoch}
+theorem processBlock_attester_seed
+    {state after : BeaconState preset .phase0}
+    {engine : ExecutionEngine preset .phase0}
+    {block : BeaconBlock preset .phase0} {epoch : Epoch}
+    (positive : 0 < preset.MIN_SEED_LOOKAHEAD.toNat)
+    (history : preset.MIN_SEED_LOOKAHEAD.toNat + 3 <
+      preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (recent : epoch = getCurrentEpoch state ∨ epoch.toNat + 1 = (getCurrentEpoch state).toNat)
     (computed : processBlock config checks engine state block = .ok after) :
     getSeed after epoch DOMAIN_BEACON_ATTESTER =
@@ -1172,7 +1175,7 @@ theorem processBlock_mainnet_attester_seed
   have eth1Mixes : eth1.randaoMixes = randao.randaoMixes := by
     obtain ⟨_, _, rest⟩ := processEth1Data_eq eth1Ok
     rw [← rest]
-  have seed := processRandao_mainnet_attester_seed randaoOk
+  have seed := processRandao_attester_seed positive history randaoOk
     (by simpa only [getCurrentEpoch, headerSlot] using recent)
   have preserved := processOperations_randao (by decide) operationsOk
   have lastSeed : getSeed after epoch DOMAIN_BEACON_ATTESTER =
@@ -1187,15 +1190,18 @@ theorem processBlock_mainnet_attester_seed
     simp only [getRandaoMix, headerMixes]
   exact lastSeed.trans (seed.trans firstSeed)
 
-/-- A mainnet Phase 0 block preserves committees for attestations it can include.
+/-- A Phase 0 block preserves committees for attestations it can include.
 
 Both the ordered active population and its shuffle seed are unchanged. -/
-theorem processBlock_mainnet_committee
-    {state after : BeaconState Preset.mainnet .phase0}
-    {engine : ExecutionEngine Preset.mainnet .phase0}
-    {block : BeaconBlock Preset.mainnet .phase0} {slot : Slot} {index : CommitteeIndex}
-    (recent : computeEpochAtSlot Preset.mainnet slot = getCurrentEpoch state ∨
-      (computeEpochAtSlot Preset.mainnet slot).toNat + 1 = (getCurrentEpoch state).toNat)
+theorem processBlock_committee
+    {state after : BeaconState preset .phase0}
+    {engine : ExecutionEngine preset .phase0}
+    {block : BeaconBlock preset .phase0} {slot : Slot} {index : CommitteeIndex}
+    (positive : 0 < preset.MIN_SEED_LOOKAHEAD.toNat)
+    (history : preset.MIN_SEED_LOOKAHEAD.toNat + 3 <
+      preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (recent : computeEpochAtSlot preset slot = getCurrentEpoch state ∨
+      (computeEpochAtSlot preset slot).toNat + 1 = (getCurrentEpoch state).toNat)
     (computed : processBlock config checks engine state block = .ok after) :
     getBeaconCommittee after slot index = getBeaconCommittee state slot index := by
   apply getBeaconCommittee_congr
@@ -1205,7 +1211,45 @@ theorem processBlock_mainnet_committee
       exact UInt64.le_refl _
     · rw [UInt64.le_iff_toNat_le]
       omega
-  · exact processBlock_mainnet_attester_seed recent computed
+  · exact processBlock_attester_seed positive history recent computed
+
+/-- A Phase 0 attestation preserves every committee query, not just its own. -/
+theorem processAttestation_committee (before : fork < .altair)
+    {attestation : Attestation preset fork} (slot : Slot) (index : CommitteeIndex)
+    (computed : processAttestation config checks state attestation = .ok after) :
+    getBeaconCommittee after slot index = getBeaconCommittee state slot index := by
+  obtain ⟨_, _, _, _, _, recorded, _, _, _⟩ := processAttestation_records before computed
+  exact recordPendingAttestation_committee slot index recorded
+
+/-- A proposer slashing preserves committees for current and previous attestations. -/
+theorem processProposerSlashing_committee
+    {state after : BeaconState preset .phase0} {slashing : ProposerSlashing}
+    {slot : Slot} {index : CommitteeIndex}
+    (past : computeEpochAtSlot preset slot ≤ getCurrentEpoch state)
+    (computed : processProposerSlashing config checks state slashing = .ok after) :
+    getBeaconCommittee after slot index = getBeaconCommittee state slot index := by
+  apply getBeaconCommittee_congr
+  · exact active_indices_of_validator_queries
+      (state.validators.bound (by decide)) (after.validators.bound (by decide))
+      (processProposerSlashing_active (by decide) past computed)
+  · apply getSeed_congr
+    intro shifted _
+    simp only [getRandaoMix, processProposerSlashing_randao (by decide) computed]
+
+/-- An attester slashing preserves committees for every epoch already reached. -/
+theorem processAttesterSlashing_committee
+    {state after : BeaconState preset .phase0}
+    {slashing : AttesterSlashing preset .phase0} {slot : Slot} {index : CommitteeIndex}
+    (past : computeEpochAtSlot preset slot ≤ getCurrentEpoch state)
+    (computed : processAttesterSlashing config checks state slashing = .ok after) :
+    getBeaconCommittee after slot index = getBeaconCommittee state slot index := by
+  apply getBeaconCommittee_congr
+  · exact active_indices_of_validator_queries
+      (state.validators.bound (by decide)) (after.validators.bound (by decide))
+      (processAttesterSlashing_active (by decide) past computed)
+  · apply getSeed_congr
+    intro shifted _
+    simp only [getRandaoMix, processAttesterSlashing_randao (by decide) computed]
 
 /-- A frame that preserves the pending lists preserves their checked sources. -/
 theorem PendingUnchanged.sources {before : fork < .altair}
@@ -1771,11 +1815,15 @@ theorem processEpoch_invariant (altair : fork < .altair) (holds : Invariant stat
     rw [EffectiveBalancesBounded, validators]
     exact holds.effectiveBalancesBounded
 
-/-- A mainnet Phase 0 epoch transition preserves the current and previous attester seeds.
+/-- A Phase 0 epoch transition preserves the current and previous attester seeds.
 
 The only mix write is to the next epoch's circular-buffer position. -/
-theorem processEpoch_mainnet_attester_seed
-    {state after : BeaconState Preset.mainnet .phase0} (holds : Invariant state)
+theorem processEpoch_attester_seed
+    {state after : BeaconState preset .phase0}
+    (positive : 0 < preset.MIN_SEED_LOOKAHEAD.toNat)
+    (history : preset.MIN_SEED_LOOKAHEAD.toNat + 3 <
+      preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (holds : Invariant state)
     {epoch : Epoch}
     (recent : epoch = getCurrentEpoch state ∨ epoch.toNat + 1 = (getCurrentEpoch state).toNat)
     (computed : processEpoch config state = .ok after) :
@@ -1805,7 +1853,7 @@ theorem processEpoch_mainnet_attester_seed
     (frame_processEth1DataReset resetOk).trans <|
     (frame_processEffectiveBalanceUpdates balancedOk).trans <|
     frame_processSlashingsReset clearedOk
-  have seed := processRandaoMixesReset_mainnet_attester_seed mixedOk
+  have seed := processRandaoMixesReset_attester_seed positive history mixedOk
     (by simpa only [getCurrentEpoch, frame.slot, slot] using recent)
   have beforeSeed : getSeed cleared epoch DOMAIN_BEACON_ATTESTER =
       getSeed state epoch DOMAIN_BEACON_ATTESTER := by
@@ -2296,6 +2344,140 @@ theorem PendingIncludedInBlock.checked {before : fork < .altair}
       exact data.symm
     · cases result
 
+/-- A pending record's inclusion checked the same committee as its block's input state.
+
+Slashings and earlier attestations in the block do not change historical assignments. -/
+theorem PendingIncludedInBlock.committee
+    {atSlot : BeaconState preset .phase0}
+    {block : BeaconBlock preset .phase0} {pending : PendingAttestation preset}
+    (positive : 0 < preset.MIN_SEED_LOOKAHEAD.toNat)
+    (history : preset.MIN_SEED_LOOKAHEAD.toNat + 3 <
+      preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (included : PendingIncludedInBlock config checks (by decide) atSlot block pending) :
+    ∃ (inclusion recorded : BeaconState preset .phase0)
+      (attestation : Attestation preset .phase0),
+      processAttestation config checks inclusion attestation = .ok recorded ∧
+      pending.data = attestation.data ∧
+      pending.aggregationBits.bits = attestation.aggregationBits.bits ∧
+      (computeEpochAtSlot preset pending.data.slot = getCurrentEpoch atSlot ∨
+        (computeEpochAtSlot preset pending.data.slot).toNat + 1 =
+          (getCurrentEpoch atSlot).toNat) ∧
+      getBeaconCommittee recorded pending.data.slot pending.data.index =
+        getBeaconCommittee atSlot pending.data.slot pending.data.index := by
+  obtain ⟨header, randao, eth1, proposers, attesters, earlier, attestation, later,
+    inclusion, recorded, headerOk, randaoOk, eth1Ok, proposersOk, attestersOk,
+    _, earlierOk, attestationOk, data, bits⟩ := included
+  have attChecks := processAttestation_checks (by decide) attestationOk
+  have inclusionPast : computeEpochAtSlot preset pending.data.slot ≤
+      getCurrentEpoch inclusion := by
+    rw [data, ← attChecks.2.1]
+    rcases attChecks.1 with previous | current
+    · rw [previous]
+      exact getPreviousEpoch_le _
+    · rw [current]
+      exact UInt64.le_refl _
+  have earlierFrame := Frame.foldlM
+    (fun _ _ _ ok => frame_processAttestation (by decide) ok) earlierOk
+  have attestersFrame := Frame.foldlM
+    (fun _ _ _ ok => frame_processAttesterSlashing ok) attestersOk
+  have proposersFrame := Frame.foldlM
+    (fun _ _ _ ok => frame_processProposerSlashing ok) proposersOk
+  have headerFrame := frame_processBlockHeader headerOk
+  have randaoFrame := frame_processRandao randaoOk
+  have eth1Frame := frame_processEth1Data eth1Ok
+  have inputRecent : computeEpochAtSlot preset pending.data.slot =
+        getCurrentEpoch atSlot ∨
+      (computeEpochAtSlot preset pending.data.slot).toNat + 1 =
+        (getCurrentEpoch atSlot).toNat := by
+    have same : getCurrentEpoch inclusion = getCurrentEpoch atSlot := by
+      simp only [getCurrentEpoch, earlierFrame.slot, attestersFrame.slot,
+        proposersFrame.slot, eth1Frame.slot, randaoFrame.slot, headerFrame.slot]
+    rw [data, ← attChecks.2.1]
+    rcases attChecks.1 with previous | current
+    · rw [previous, getPreviousEpoch_toNat, same]
+      by_cases zero : (getCurrentEpoch atSlot).toNat = 0
+      · left
+        apply UInt64.toNat_inj.mp
+        simp only [getPreviousEpoch_toNat, same, zero, Nat.zero_sub]
+      · right
+        omega
+    · exact .inl (current.trans same)
+  have earlierCommittee := foldlM_ok_invariant
+    (fun s => getBeaconCommittee s pending.data.slot pending.data.index =
+      getBeaconCommittee attesters pending.data.slot pending.data.index)
+    (fun _ _ _ prior ok =>
+      (processAttestation_committee (by decide) _ _ ok).trans prior) rfl earlierOk
+  have attestersCommittee := foldlM_ok_invariant
+    (fun s => s.slot = proposers.slot ∧
+      getBeaconCommittee s pending.data.slot pending.data.index =
+        getBeaconCommittee proposers pending.data.slot pending.data.index)
+    (fun s _ _ prior ok => by
+      have past : computeEpochAtSlot preset pending.data.slot ≤ getCurrentEpoch s := by
+        simpa only [getCurrentEpoch, prior.1, earlierFrame.slot, attestersFrame.slot] using
+          inclusionPast
+      exact ⟨(frame_processAttesterSlashing ok).slot.trans prior.1,
+        (processAttesterSlashing_committee past ok).trans prior.2⟩)
+    (show proposers.slot = proposers.slot ∧ _ from ⟨rfl, rfl⟩) attestersOk
+  have proposersCommittee := foldlM_ok_invariant
+    (fun s => s.slot = eth1.slot ∧
+      getBeaconCommittee s pending.data.slot pending.data.index =
+        getBeaconCommittee eth1 pending.data.slot pending.data.index)
+    (fun s _ _ prior ok => by
+      have past : computeEpochAtSlot preset pending.data.slot ≤ getCurrentEpoch s := by
+        simpa only [getCurrentEpoch, prior.1, earlierFrame.slot, attestersFrame.slot,
+          proposersFrame.slot] using inclusionPast
+      exact ⟨(frame_processProposerSlashing ok).slot.trans prior.1,
+        (processProposerSlashing_committee past ok).trans prior.2⟩)
+    (show eth1.slot = eth1.slot ∧ _ from ⟨rfl, rfl⟩) proposersOk
+  have eth1Committee : getBeaconCommittee eth1 pending.data.slot pending.data.index =
+      getBeaconCommittee randao pending.data.slot pending.data.index := by
+    obtain ⟨_, _, rest⟩ := processEth1Data_eq eth1Ok
+    rw [← rest]
+    rfl
+  have headerCommittee : getBeaconCommittee header pending.data.slot pending.data.index =
+      getBeaconCommittee atSlot pending.data.slot pending.data.index := by
+    obtain ⟨_, _, rfl⟩ := processBlockHeader_eq headerOk
+    rfl
+  have randaoCommittee : getBeaconCommittee randao pending.data.slot pending.data.index =
+      getBeaconCommittee header pending.data.slot pending.data.index := by
+    apply getBeaconCommittee_congr
+    · obtain ⟨_, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq randaoOk
+      rfl
+    · exact processRandao_attester_seed positive history randaoOk
+        (by simpa only [getCurrentEpoch, headerFrame.slot] using inputRecent)
+  exact ⟨inclusion, recorded, attestation, attestationOk, data, bits, inputRecent,
+    (processAttestation_committee (by decide) _ _ attestationOk).trans
+      (earlierCommittee.trans (attestersCommittee.2.trans
+        (proposersCommittee.2.trans (eth1Committee.trans
+          (randaoCommittee.trans headerCommittee)))))⟩
+
+/-- Pending indices reconstructed at a block's input are its authenticated signer indices.
+
+The inclusion witness supplies the actual signature check, rather than a separate vote premise. -/
+theorem PendingIncludedInBlock.signers
+    {atSlot : BeaconState preset .phase0}
+    {block : BeaconBlock preset .phase0} {pending : PendingAttestation preset}
+    {indices : List ValidatorIndex}
+    (positive : 0 < preset.MIN_SEED_LOOKAHEAD.toNat)
+    (history : preset.MIN_SEED_LOOKAHEAD.toNat + 3 <
+      preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (included : PendingIncludedInBlock config checks (by decide) atSlot block pending)
+    (computed : getPendingAttestingIndices atSlot pending = .ok indices) :
+    ∃ (recorded : BeaconState preset .phase0)
+      (attestation : Attestation preset .phase0)
+      (indexed : IndexedAttestation preset .phase0),
+      getIndexedAttestation recorded attestation = .ok indexed ∧
+      indexed.attestingIndices.data = (sortedSet indices).toArray ∧
+      indexed.data = pending.data ∧ indexed.signature = attestation.signature ∧
+      isValidIndexedAttestation config checks recorded indexed = .ok true := by
+  obtain ⟨inclusion, recorded, attestation, processed, data, bits, _, committee⟩ :=
+    included.committee positive history
+  obtain ⟨_, _, _, _, _, _, indexed, indexedOk, valid⟩ :=
+    processAttestation_records (by decide) processed
+  obtain ⟨listed, indexedData, signature⟩ :=
+    getPendingAttestingIndices_eq_included (by decide) data bits committee computed indexedOk
+  exact ⟨recorded, attestation, indexed, indexedOk, listed, indexedData, signature, valid⟩
+
 /-- Every new pending record of a state transition has an inclusion in its signed block. -/
 theorem stateTransition_pending_origin (before : fork < .altair)
     {block : SignedBeaconBlock preset fork} {pending : PendingAttestation preset}
@@ -2587,9 +2769,13 @@ theorem advanceSlots_active_indices (before : fork < .altair) {epoch : Epoch} :
       (advanceSlot_invariant before holds first).1 (UInt64.le_trans past later) tail).trans
       (advanceSlot_active_indices before holds past first)
 
-/-- A mainnet Phase 0 slot step preserves the seeds of its input's recent epochs. -/
-theorem advanceSlot_mainnet_attester_seed
-    {state after : BeaconState Preset.mainnet .phase0} (holds : Invariant state)
+/-- A Phase 0 slot step preserves the seeds of its input's recent epochs. -/
+theorem advanceSlot_attester_seed
+    {state after : BeaconState preset .phase0}
+    (positive : 0 < preset.MIN_SEED_LOOKAHEAD.toNat)
+    (history : preset.MIN_SEED_LOOKAHEAD.toNat + 3 <
+      preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (holds : Invariant state)
     {epoch : Epoch}
     (recent : epoch = getCurrentEpoch state ∨ epoch.toNat + 1 = (getCurrentEpoch state).toNat)
     (computed : advanceSlot config state = .ok after) :
@@ -2609,7 +2795,7 @@ theorem advanceSlot_mainnet_attester_seed
       getSeed cached epoch DOMAIN_BEACON_ATTESTER := by
     unfold epochIfLast at epochedOk
     split at epochedOk
-    · exact processEpoch_mainnet_attester_seed (frame.invariant holds) recent' epochedOk
+    · exact processEpoch_attester_seed positive history (frame.invariant holds) recent' epochedOk
     · cases epochedOk
       rfl
   have cachedSeed : getSeed cached epoch DOMAIN_BEACON_ATTESTER =
@@ -2620,9 +2806,12 @@ theorem advanceSlot_mainnet_attester_seed
   change getSeed epoched epoch DOMAIN_BEACON_ATTESTER = _
   exact kept.trans cachedSeed
 
-/-- A mainnet Phase 0 slot run preserves a reached epoch's seed while it remains recent. -/
-theorem advanceSlots_mainnet_attester_seed {epoch : Epoch} :
-    ∀ (count : Nat) {state after : BeaconState Preset.mainnet .phase0}, Invariant state →
+/-- A Phase 0 slot run preserves a reached epoch's seed while it remains recent. -/
+theorem advanceSlots_attester_seed {epoch : Epoch}
+    (positive : 0 < preset.MIN_SEED_LOOKAHEAD.toNat)
+    (history : preset.MIN_SEED_LOOKAHEAD.toNat + 3 <
+      preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat) :
+    ∀ (count : Nat) {state after : BeaconState preset .phase0}, Invariant state →
       epoch ≤ getCurrentEpoch state → (getCurrentEpoch after).toNat ≤ epoch.toNat + 1 →
       advanceSlots config count state = .ok after →
       getSeed after epoch DOMAIN_BEACON_ATTESTER =
@@ -2648,10 +2837,10 @@ theorem advanceSlots_mainnet_attester_seed {epoch : Epoch} :
       by_cases same : epoch.toNat = (getCurrentEpoch state).toNat
       · exact .inl (UInt64.toNat_inj.mp same)
       · exact .inr (by omega)
-    exact (advanceSlots_mainnet_attester_seed count
+    exact (advanceSlots_attester_seed positive history count
       (advanceSlot_invariant (by decide) holds first).1
       (UInt64.le_trans past lower) recentAfter tail).trans
-      (advanceSlot_mainnet_attester_seed holds recent first)
+      (advanceSlot_attester_seed positive history holds recent first)
 
 /-- Before Altair, advancing to a later slot keeps the invariant.
 
@@ -2702,11 +2891,14 @@ theorem stateTransition_active_indices (before : fork < .altair) (holds : Invari
   obtain ⟨_, _, advancedOk⟩ := slotsOk
   exact blockKept.trans (advanceSlots_active_indices before _ holds past advancedOk)
 
-/-- A mainnet Phase 0 block transition preserves a reached epoch's seed while it remains recent. -/
-theorem stateTransition_mainnet_attester_seed
-    {state after : BeaconState Preset.mainnet .phase0}
-    {engine : ExecutionEngine Preset.mainnet .phase0}
-    {signed : SignedBeaconBlock Preset.mainnet .phase0} {epoch : Epoch}
+/-- A Phase 0 block transition preserves a reached epoch's seed while it remains recent. -/
+theorem stateTransition_attester_seed
+    {state after : BeaconState preset .phase0}
+    {engine : ExecutionEngine preset .phase0}
+    {signed : SignedBeaconBlock preset .phase0} {epoch : Epoch}
+    (positive : 0 < preset.MIN_SEED_LOOKAHEAD.toNat)
+    (history : preset.MIN_SEED_LOOKAHEAD.toNat + 3 <
+      preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (holds : Invariant state) (past : epoch ≤ getCurrentEpoch state)
     (recentAfter : (getCurrentEpoch after).toNat ≤ epoch.toNat + 1)
     (computed : stateTransition config checks engine state signed true = .ok after) :
@@ -2728,17 +2920,20 @@ theorem stateTransition_mainnet_attester_seed
     by_cases same : epoch.toNat = (getCurrentEpoch advanced).toNat
     · exact .inl (UInt64.toNat_inj.mp same)
     · exact .inr (by omega)
-  have seed := processBlock_mainnet_attester_seed recent blockOk
+  have seed := processBlock_attester_seed positive history recent blockOk
   simp only [processSlots, bind_ok_iff, ensure_ok_iff] at slotsOk
   obtain ⟨_, _, advancedOk⟩ := slotsOk
-  exact seed.trans (advanceSlots_mainnet_attester_seed _ holds past
+  exact seed.trans (advanceSlots_attester_seed positive history _ holds past
     (by simpa only [sameEpoch] using recentAfter) advancedOk)
 
-/-- A mainnet Phase 0 chain preserves a reached epoch's seed while it remains recent. -/
-theorem stateTransition_chain_mainnet_attester_seed
-    {state after : BeaconState Preset.mainnet .phase0}
-    {engine : ExecutionEngine Preset.mainnet .phase0}
-    {blocks : List (SignedBeaconBlock Preset.mainnet .phase0)} {epoch : Epoch}
+/-- A Phase 0 chain preserves a reached epoch's seed while it remains recent. -/
+theorem stateTransition_chain_attester_seed
+    {state after : BeaconState preset .phase0}
+    {engine : ExecutionEngine preset .phase0}
+    {blocks : List (SignedBeaconBlock preset .phase0)} {epoch : Epoch}
+    (positive : 0 < preset.MIN_SEED_LOOKAHEAD.toNat)
+    (history : preset.MIN_SEED_LOOKAHEAD.toNat + 3 <
+      preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (holds : Invariant state) (past : epoch ≤ getCurrentEpoch state)
     (recentAfter : (getCurrentEpoch after).toNat ≤ epoch.toNat + 1)
     (computed : blocks.foldlM
@@ -2752,8 +2947,8 @@ theorem stateTransition_chain_mainnet_attester_seed
   | cons block rest ih =>
     simp only [List.foldlM_cons, bind_ok_iff] at computed
     obtain ⟨middle, first, tail⟩ := computed
-    have transitionEpoch {s t : BeaconState Preset.mainnet .phase0}
-        {block : SignedBeaconBlock Preset.mainnet .phase0}
+    have transitionEpoch {s t : BeaconState preset .phase0}
+        {block : SignedBeaconBlock preset .phase0}
         (ok : stateTransition config checks engine s block true = .ok t) :
         getCurrentEpoch s ≤ getCurrentEpoch t := by
       obtain ⟨advanced, slotsOk, _, _, blockOk, _⟩ := stateTransition_ok ok
@@ -2773,7 +2968,7 @@ theorem stateTransition_chain_mainnet_attester_seed
       omega
     exact (ih (stateTransition_invariant (by decide) holds first).1
       (UInt64.le_trans past lower) tail).trans
-      (stateTransition_mainnet_attester_seed holds past recentMiddle first)
+      (stateTransition_attester_seed positive history holds past recentMiddle first)
 
 /-- Actual Phase 0 chains preserve active indices at every epoch reached before the chain. -/
 theorem stateTransition_chain_active_indices (before : fork < .altair)
@@ -2800,24 +2995,27 @@ theorem stateTransition_chain_active_indices (before : fork < .altair)
     ⟨holds, past, rfl⟩ computed
   exact result.2.2
 
-/-- Mainnet Phase 0 chains preserve a reached epoch's committees while that epoch stays recent.
+/-- Phase 0 chains preserve a reached epoch's committees while that epoch stays recent.
 
 This compares the actual committee function at the two execution states. -/
-theorem stateTransition_chain_mainnet_committee
-    {state after : BeaconState Preset.mainnet .phase0}
-    {engine : ExecutionEngine Preset.mainnet .phase0}
-    {blocks : List (SignedBeaconBlock Preset.mainnet .phase0)}
+theorem stateTransition_chain_committee
+    {state after : BeaconState preset .phase0}
+    {engine : ExecutionEngine preset .phase0}
+    {blocks : List (SignedBeaconBlock preset .phase0)}
     {slot : Slot} {index : CommitteeIndex}
+    (positive : 0 < preset.MIN_SEED_LOOKAHEAD.toNat)
+    (history : preset.MIN_SEED_LOOKAHEAD.toNat + 3 <
+      preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (holds : Invariant state)
-    (past : computeEpochAtSlot Preset.mainnet slot ≤ getCurrentEpoch state)
+    (past : computeEpochAtSlot preset slot ≤ getCurrentEpoch state)
     (recentAfter : (getCurrentEpoch after).toNat ≤
-      (computeEpochAtSlot Preset.mainnet slot).toNat + 1)
+      (computeEpochAtSlot preset slot).toNat + 1)
     (computed : blocks.foldlM
       (fun s block => stateTransition config checks engine s block true) state = .ok after) :
     getBeaconCommittee after slot index = getBeaconCommittee state slot index := by
   apply getBeaconCommittee_congr
   · exact stateTransition_chain_active_indices (by decide) holds past computed
-  · exact stateTransition_chain_mainnet_attester_seed holds past recentAfter computed
+  · exact stateTransition_chain_attester_seed positive history holds past recentAfter computed
 
 /-- A changed finalized checkpoint after a block comes from a justification call in its slot run.
 

@@ -206,6 +206,22 @@ theorem processRandao_mix_of_ne {config : Config} {checks : SignatureChecks}
   · congr 1
     exact Vector.getElem_set!_ne (toNat_mod_lt ‹_›) (Ne.symm distinct)
 
+/-- Block randomness preserves recent attester seeds when the lookahead separates mix writes. -/
+theorem processRandao_attester_seed {config : Config} {checks : SignatureChecks}
+    {state after : BeaconState preset fork}
+    {body : BeaconBlockBody preset fork} {epoch : Epoch}
+    (positive : 0 < preset.MIN_SEED_LOOKAHEAD.toNat)
+    (history : preset.MIN_SEED_LOOKAHEAD.toNat + 3 <
+      preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (computed : processRandao config checks state body = .ok after)
+    (recent : epoch = getCurrentEpoch state ∨ epoch.toNat + 1 = (getCurrentEpoch state).toNat) :
+    getSeed after epoch DOMAIN_BEACON_ATTESTER =
+      getSeed state epoch DOMAIN_BEACON_ATTESTER := by
+  apply getSeed_congr
+  intro shifted shiftedOk
+  exact processRandao_mix_of_ne computed
+    (attester_seed_positions positive history recent shiftedOk).1
+
 /-- Mainnet block randomness preserves the attester seed of the current or previous epoch. -/
 theorem processRandao_mainnet_attester_seed {config : Config} {checks : SignatureChecks}
     {state after : BeaconState Preset.mainnet fork}

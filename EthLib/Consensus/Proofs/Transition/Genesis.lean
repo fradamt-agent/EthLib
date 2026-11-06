@@ -389,6 +389,144 @@ theorem currentJustification_included_of_initialized_chain
     (getMatchingTargetAttestations_slot_epoch epochs matching pendingMember).1,
     split, earlierOk, slots, included⟩
 
+/-- Pending signers on an initialized Phase 0 chain were checked at inclusion.
+
+The reconstructed indices equal the sorted signer indices of the checked indexed attestation.
+
+No committee-equality hypothesis is required from the caller. -/
+theorem pending_signers_of_initialized_chain
+    {engine : ExecutionEngine preset .phase0}
+    {genesis after : BeaconState preset .phase0}
+    {eth1BlockHash : Hash32} {eth1Timestamp : UInt64} {deposits : Array Deposit}
+    {blocks : List (SignedBeaconBlock preset .phase0)}
+    {pending : PendingAttestation preset} {indices : List ValidatorIndex}
+    (positive : 0 < preset.MIN_SEED_LOOKAHEAD.toNat)
+    (history : preset.MIN_SEED_LOOKAHEAD.toNat + 3 <
+      preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (initialized : initializeBeaconStateFromEth1 config checks eth1BlockHash eth1Timestamp
+      deposits = .ok genesis)
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block true) genesis =
+        .ok after)
+    (member : pending ∈ (after.currentEpochAttestations (by decide)).data ∨
+      pending ∈ (after.previousEpochAttestations (by decide)).data)
+    (signers : getPendingAttestingIndices after pending = .ok indices) :
+    ∃ (recorded : BeaconState preset .phase0)
+      (attestation : Attestation preset .phase0)
+      (indexed : IndexedAttestation preset .phase0),
+      getIndexedAttestation recorded attestation = .ok indexed ∧
+      indexed.attestingIndices.data = (sortedSet indices).toArray ∧
+      indexed.data = pending.data ∧ indexed.signature = attestation.signature ∧
+      isValidIndexedAttestation config checks recorded indexed = .ok true := by
+  obtain ⟨earlier, block, later, atBlock, atSlot, split, earlierOk, slots, included⟩ :=
+    pendingIncludedInBlock_of_initialized_chain (by decide) initialized computed member
+  have epochs := pendingEpochsMatch_of_initialized_chain (by decide) initialized computed
+  have recentAfter : (getCurrentEpoch after).toNat ≤
+      (computeEpochAtSlot preset pending.data.slot).toNat + 1 := by
+    rcases member with current | previous
+    · rw [(epochs.1 pending current).2]
+      omega
+    · rw [(epochs.2 pending previous).2, getPreviousEpoch_toNat]
+      omega
+  obtain ⟨_, _, _, _, _, _, recent, _⟩ := included.committee positive history
+  have past : computeEpochAtSlot preset pending.data.slot ≤ getCurrentEpoch atSlot := by
+    rcases recent with current | previous
+    · rw [current]
+      exact UInt64.le_refl _
+    · rw [UInt64.le_iff_toNat_le]
+      omega
+  rw [split, List.foldlM_append, earlierOk] at computed
+  simp only [bind_ok_iff, List.foldlM_cons] at computed
+  obtain ⟨_, first, afterBlock, blockOk, tail⟩ := computed
+  cases first
+  obtain ⟨advanced, advancedOk, _, _, processed, _⟩ := stateTransition_ok blockOk
+  have equal : advanced = atSlot := Except.ok.inj (advancedOk.symm.trans slots)
+  subst advanced
+  have genesisInvariant := (initializeBeaconStateFromEth1_invariant initialized).2
+  have beforeInvariant := foldlM_ok_invariant Invariant
+    (fun _ _ _ prior ok => (stateTransition_invariant (by decide) prior ok).1)
+    genesisInvariant earlierOk
+  have atInvariant := (processSlots_invariant (by decide) beforeInvariant slots).1
+  have afterInvariant := (frame_processBlock (by decide) processed).invariant atInvariant
+  have blockFrame := frame_processBlock (by decide) processed
+  have pastBlock : computeEpochAtSlot preset pending.data.slot ≤
+      getCurrentEpoch afterBlock := by
+    simpa only [getCurrentEpoch, blockFrame.slot] using past
+  have tailCommittee := stateTransition_chain_committee
+    (index := pending.data.index) positive history afterInvariant pastBlock recentAfter tail
+  have blockCommittee := processBlock_committee
+    (index := pending.data.index) positive history recent processed
+  have atSigners : getPendingAttestingIndices atSlot pending = .ok indices := by
+    simpa only [getPendingAttestingIndices, tailCommittee, blockCommittee] using signers
+  exact included.signers positive history atSigners
+
+/-- Signers reconstructed where an initialized Phase 0 chain weighs votes were checked at inclusion.
+
+Empty slots and root caching preserve the committees of pending records that remain recent. -/
+theorem pending_signers_at_cached_slot_of_initialized_chain
+    {engine : ExecutionEngine preset .phase0}
+    {genesis after atStep cached : BeaconState preset .phase0}
+    {eth1BlockHash : Hash32} {eth1Timestamp : UInt64} {deposits : Array Deposit}
+    {blocks : List (SignedBeaconBlock preset .phase0)} {count : Nat}
+    {pending : PendingAttestation preset} {indices : List ValidatorIndex}
+    (positive : 0 < preset.MIN_SEED_LOOKAHEAD.toNat)
+    (history : preset.MIN_SEED_LOOKAHEAD.toNat + 3 <
+      preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (initialized : initializeBeaconStateFromEth1 config checks eth1BlockHash eth1Timestamp
+      deposits = .ok genesis)
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block true) genesis =
+        .ok after)
+    (advanced : advanceSlots config count after = .ok atStep)
+    (cachedOk : processSlot atStep = .ok cached)
+    (member : pending ∈ (cached.currentEpochAttestations (by decide)).data ∨
+      pending ∈ (cached.previousEpochAttestations (by decide)).data)
+    (signers : getPendingAttestingIndices cached pending = .ok indices) :
+    ∃ (recorded : BeaconState preset .phase0)
+      (attestation : Attestation preset .phase0)
+      (indexed : IndexedAttestation preset .phase0),
+      getIndexedAttestation recorded attestation = .ok indexed ∧
+      indexed.attestingIndices.data = (sortedSet indices).toArray ∧
+      indexed.data = pending.data ∧ indexed.signature = attestation.signature ∧
+      isValidIndexedAttestation config checks recorded indexed = .ok true := by
+  have frame := frame_processSlot cachedOk
+  have kept := pendingUnchanged_processSlot (before := by decide) cachedOk
+  have oldMember := advanceSlots_pending_mem (by decide) count advanced
+    ((kept.mem_iff pending).mp member)
+  have oldEpochs := pendingEpochsMatch_of_initialized_chain (by decide) initialized computed
+  have cachedEpochs :=
+    (pending_invariants_at_cached_slot_of_initialized_chain (by decide)
+      initialized computed advanced cachedOk).2
+  have past : computeEpochAtSlot preset pending.data.slot ≤ getCurrentEpoch after := by
+    rcases oldMember with current | previous
+    · rw [(oldEpochs.1 pending current).2]
+      exact UInt64.le_refl _
+    · rw [(oldEpochs.2 pending previous).2]
+      exact getPreviousEpoch_le _
+  have recent : (getCurrentEpoch atStep).toNat ≤
+      (computeEpochAtSlot preset pending.data.slot).toNat + 1 := by
+    have same : getCurrentEpoch cached = getCurrentEpoch atStep := by
+      simp only [getCurrentEpoch, frame.slot]
+    rcases member with current | previous
+    · rw [(cachedEpochs.1 pending current).2, same]
+      omega
+    · rw [(cachedEpochs.2 pending previous).2, getPreviousEpoch_toNat, same]
+      omega
+  have invariant := foldlM_ok_invariant Invariant
+    (fun _ _ _ prior ok => (stateTransition_invariant (by decide) prior ok).1)
+    (initializeBeaconStateFromEth1_invariant initialized).2 computed
+  have population := advanceSlots_active_indices (by decide) count invariant past advanced
+  have seed := advanceSlots_attester_seed positive history count invariant past recent advanced
+  have committee := getBeaconCommittee_congr (index := pending.data.index) population seed
+  have cachedCommittee : getBeaconCommittee cached pending.data.slot pending.data.index =
+      getBeaconCommittee atStep pending.data.slot pending.data.index := by
+    obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+    rfl
+  have oldSigners : getPendingAttestingIndices after pending = .ok indices := by
+    simpa only [getPendingAttestingIndices, cachedCommittee, committee] using signers
+  exact pending_signers_of_initialized_chain positive history initialized computed oldMember
+    oldSigners
+
 /-- Every Phase 0 state reached from initialized genesis keeps the effective-balance cap.
 
 The block list uses the actual state transition, including result validation. -/

@@ -914,6 +914,20 @@ theorem processRandaoMixesReset_mix_of_ne {epoch : Epoch}
   · congr 1
     exact Vector.getElem_set!_ne (toNat_mod_lt ‹_›) (Ne.symm (distinct next nextEq))
 
+/-- Epoch rotation preserves recent attester seeds when the lookahead separates mix writes. -/
+theorem processRandaoMixesReset_attester_seed {epoch : Epoch}
+    (positive : 0 < preset.MIN_SEED_LOOKAHEAD.toNat)
+    (history : preset.MIN_SEED_LOOKAHEAD.toNat + 3 <
+      preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (computed : processRandaoMixesReset state = .ok after)
+    (recent : epoch = getCurrentEpoch state ∨ epoch.toNat + 1 = (getCurrentEpoch state).toNat) :
+    getSeed after epoch DOMAIN_BEACON_ATTESTER =
+      getSeed state epoch DOMAIN_BEACON_ATTESTER := by
+  apply getSeed_congr
+  intro shifted shiftedOk
+  exact processRandaoMixesReset_mix_of_ne computed
+    (attester_seed_positions positive history recent shiftedOk).2
+
 /-- Mainnet epoch rotation preserves the attester seed of the current or previous epoch. -/
 theorem processRandaoMixesReset_mainnet_attester_seed
     {state after : BeaconState Preset.mainnet fork} {epoch : Epoch}

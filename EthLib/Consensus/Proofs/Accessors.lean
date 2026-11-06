@@ -383,6 +383,61 @@ theorem getSeed_congr {state after : BeaconState preset fork} {epoch : Epoch}
     simp only [liftArith, Except.mapError, bind, Except.bind]
     rw [mix shifted computed]
 
+/-- A sufficiently long mix history separates recent attester seeds from both write positions.
+
+The lookahead is positive and leaves space for the previous target and the next mix reset. -/
+theorem attester_seed_positions {epoch current shifted : Epoch}
+    (positive : 0 < preset.MIN_SEED_LOOKAHEAD.toNat)
+    (history : preset.MIN_SEED_LOOKAHEAD.toNat + 3 <
+      preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (recent : epoch = current ∨ epoch.toNat + 1 = current.toNat)
+    (computed : (do
+      subChecked (← subChecked (← addChecked epoch preset.EPOCHS_PER_HISTORICAL_VECTOR)
+        preset.MIN_SEED_LOOKAHEAD) 1) = .ok shifted) :
+    (shifted % preset.EPOCHS_PER_HISTORICAL_VECTOR).toNat ≠
+        (current % preset.EPOCHS_PER_HISTORICAL_VECTOR).toNat ∧
+      ∀ next : Epoch, next.toNat = current.toNat + 1 →
+        (shifted % preset.EPOCHS_PER_HISTORICAL_VECTOR).toNat ≠
+          (next % preset.EPOCHS_PER_HISTORICAL_VECTOR).toNat := by
+  simp only [bind_ok_iff, addChecked_ok_iff, subChecked_ok_iff] at computed
+  obtain ⟨sum, summed, difference, subtracted, last⟩ := computed
+  have exactShift : shifted.toNat + (preset.MIN_SEED_LOOKAHEAD.toNat + 1) =
+      epoch.toNat + preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat := by
+    simp only [UInt64.toNat_one] at last
+    omega
+  have distinct (other : Epoch) (near : other.toNat = epoch.toNat ∨
+      other.toNat = epoch.toNat + 1 ∨ other.toNat = epoch.toNat + 2) :
+      shifted.toNat % preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat ≠
+        other.toNat % preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat := by
+    intro equal
+    have added := Nat.add_mod_eq_add_mod_right (preset.MIN_SEED_LOOKAHEAD.toNat + 1) equal
+    rw [exactShift, Nat.add_mod_right] at added
+    have total : other.toNat + (preset.MIN_SEED_LOOKAHEAD.toNat + 1) =
+        epoch.toNat + (other.toNat - epoch.toNat +
+          (preset.MIN_SEED_LOOKAHEAD.toNat + 1)) := by
+      rcases near with same | same | same <;> omega
+    have offset : 0 < other.toNat - epoch.toNat +
+        (preset.MIN_SEED_LOOKAHEAD.toNat + 1) := by omega
+    have small : other.toNat - epoch.toNat +
+        (preset.MIN_SEED_LOOKAHEAD.toNat + 1) <
+        preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat := by
+      rcases near with same | same | same <;> omega
+    rw [total, Nat.add_mod_eq_ite, Nat.mod_eq_of_lt small] at added
+    have remainder := Nat.mod_lt epoch.toNat
+      (show 0 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat by omega)
+    split at added <;> omega
+  simp only [UInt64.toNat_mod]
+  constructor
+  · apply distinct current
+    rcases recent with rfl | previous
+    · exact .inl rfl
+    · exact .inr (.inl (by omega))
+  · intro next nextEq
+    apply distinct next
+    rcases recent with rfl | previous
+    · exact .inr (.inl nextEq)
+    · exact .inr (.inr (by omega))
+
 /-- On mainnet, an attester seed for the current or previous epoch reads neither reset position.
 
 The seed looks back two epochs and the circular buffer has 65536 entries.
