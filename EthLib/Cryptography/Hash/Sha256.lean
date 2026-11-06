@@ -1,5 +1,7 @@
 module
 
+public import EthLib.Base.Bytes
+
 /-!
 # SHA-256
 
@@ -7,9 +9,9 @@ SHA-256, as FIPS 180-4 defines it, for messages of whole bytes.
 
 Each step of the standard is one definition, from the padding of §5.1.1 to the hash of §6.2.
 
-The words of the state and of the schedule are record fields, and the message is a list.
+The words of the state and of the schedule are record fields.
 
-So the kernel evaluates the hash in time linear in the message.
+The hash reads blocks in place from the padded byte array.
 
 BLS hash-to-curve, the Fiat-Shamir challenges of KZG and SSZ merkleization use it.
 
@@ -95,6 +97,11 @@ def pad (message : ByteArray) : List UInt8 :=
   message.data.toList ++ 0x80 :: List.replicate (paddingZeros message.size) 0 ++
     (lengthBytes message.size).data.toList
 
+/-- The padded bytes of FIPS 180-4 §5.1.1, kept in an array for in-place block reads. -/
+def padBytes (message : ByteArray) : ByteArray :=
+  message ++ ⟨#[0x80]⟩ ++ ⟨Array.replicate (paddingZeros message.size) 0⟩ ++
+    lengthBytes message.size
+
 /-! ## Parsing -/
 
 /-- Four bytes read as one big-endian word, FIPS 180-4 §3.1. -/
@@ -123,6 +130,17 @@ structure Window where
 def Window.ofWords (block : List UInt32) : Window :=
   ⟨block[0]!, block[1]!, block[2]!, block[3]!, block[4]!, block[5]!, block[6]!, block[7]!,
     block[8]!, block[9]!, block[10]!, block[11]!, block[12]!, block[13]!, block[14]!, block[15]!⟩
+
+/-- Read the sixteen words at a block offset, FIPS 180-4 §5.2.1 and §6.2.2, step 1.
+
+The hash supplies whole blocks, so every byte read is inside the padded message.
+-/
+def Window.ofBlock (bytes : ByteArray) (start : Nat) : Window :=
+  let word (i : Nat) :=
+    big32 (Base.byteAt bytes (start + 4 * i)) (Base.byteAt bytes (start + 4 * i + 1))
+      (Base.byteAt bytes (start + 4 * i + 2)) (Base.byteAt bytes (start + 4 * i + 3))
+  ⟨word 0, word 1, word 2, word 3, word 4, word 5, word 6, word 7,
+    word 8, word 9, word 10, word 11, word 12, word 13, word 14, word 15⟩
 
 /--
 The schedule one word later, FIPS 180-4 §6.2.2, step 1.
@@ -162,6 +180,21 @@ def chain (step : State → List UInt8 → State) : (count : Nat) → List UInt8
   | 0, _, s => s
   | count + 1, block, s => chain step count (block.drop 64) (step s block)
 
+/-- Compress the block at a byte offset, FIPS 180-4 §6.2.2, steps 2 to 4. -/
+def compressBlock (s : State) (bytes : ByteArray) (start : Nat) : State :=
+  let r := rounds K.toList (Window.ofBlock bytes start) s
+  ⟨s.a + r.a, s.b + r.b, s.c + r.c, s.d + r.d, s.e + r.e, s.f + r.f, s.g + r.g, s.h + r.h⟩
+
+/-- Process consecutive blocks in place, in order, as in FIPS 180-4 §6.2.2.
+
+Tail recursion keeps the stack bounded independently of the message size.
+-/
+def chainBlocks (step : State → ByteArray → Nat → State) (bytes : ByteArray) :
+    Nat → Nat → State → State
+  | 0, _, s => s
+  | count + 1, start, s =>
+    chainBlocks step bytes count (start + 64) (step s bytes start)
+
 /-! ## The hash -/
 
 /-- One word as four big-endian bytes, FIPS 180-4 §3.1. -/
@@ -175,8 +208,8 @@ def digest (s : State) : ByteArray :=
 
 /-- SHA-256 of a message, FIPS 180-4 §6.2: every block of the padded message, in order. -/
 def hash (message : ByteArray) : ByteArray :=
-  let padded := pad message
-  digest (chain compress (padded.length / 64) padded initial)
+  let padded := padBytes message
+  digest (chainBlocks compressBlock padded (padded.size / 64) 0 initial)
 
 end EthLib.Cryptography.Hash.Sha256
 

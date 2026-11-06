@@ -419,6 +419,56 @@ theorem pad_eq_spec (message : ByteArray) (admitted : message.size < 2 ^ 61) :
 
 /-! ## The hash -/
 
+/-- Array padding has exactly the bytes of the list padding. -/
+theorem padBytes_toList (message : ByteArray) : (padBytes message).data.toList = pad message := by
+  simp [padBytes, pad, ByteArray.data_append, List.append_assoc]
+
+/-- Reading a whole block in place gives the same schedule as parsing its list of bytes. -/
+theorem ofBlock_eq_ofWords (bytes : ByteArray) (start : Nat)
+    (whole : start + 64 ≤ bytes.size) :
+    Window.ofBlock bytes start =
+      Window.ofWords (words ((bytes.data.toList.drop start).take 64)) := by
+  have word (i : Nat) (within : i < 16) :
+      (words ((bytes.data.toList.drop start).take 64))[i]! =
+        big32 (Base.byteAt bytes (start + 4 * i)) (Base.byteAt bytes (start + 4 * i + 1))
+          (Base.byteAt bytes (start + 4 * i + 2))
+          (Base.byteAt bytes (start + 4 * i + 3)) := by
+    rw [words_getElem! _ i (by simp; omega)]
+    simp (disch := omega) only [getElem!_take, getElem!_drop]
+    simp [Base.byteAt, getElem!_pos, show start + 4 * i < bytes.size by omega,
+      show start + (4 * i + 1) < bytes.size by omega,
+      show start + (4 * i + 2) < bytes.size by omega,
+      show start + (4 * i + 3) < bytes.size by omega, Nat.add_assoc]
+  simp (disch := decide) only [Window.ofBlock, Window.ofWords, word]
+
+/-- In-place compression agrees with list compression on every whole block. -/
+theorem compressBlock_eq_compress (s : State) (bytes : ByteArray) (start : Nat)
+    (whole : start + 64 ≤ bytes.size) :
+    compressBlock s bytes start = compress s (bytes.data.toList.drop start) := by
+  exact congrArg (fun w =>
+    let r := rounds K.toList w s
+    State.mk (s.a + r.a) (s.b + r.b) (s.c + r.c) (s.d + r.d)
+      (s.e + r.e) (s.f + r.f) (s.g + r.g) (s.h + r.h))
+    (ofBlock_eq_ofWords bytes start whole)
+
+/-- The in-place chain agrees with the list chain on every sequence of whole blocks. -/
+theorem chainBlocks_eq_chain (bytes : ByteArray) (count start : Nat) (s : State)
+    (whole : start + 64 * count ≤ bytes.size) :
+    chainBlocks compressBlock bytes count start s =
+      chain compress count (bytes.data.toList.drop start) s := by
+  induction count generalizing start s with
+  | zero => rfl
+  | succ count ih =>
+    rw [chainBlocks, chain, compressBlock_eq_compress s bytes start (by omega),
+      ih (start + 64) _ (by omega), List.drop_drop]
+
+/-- The array-based hash equals the list formulation on every message. -/
+theorem hash_eq_chain (message : ByteArray) :
+    hash message = digest (chain compress ((pad message).length / 64) (pad message) initial) := by
+  have size : (padBytes message).size = (pad message).length := by
+    rw [← padBytes_toList, Array.length_toList, ByteArray.size_data]
+  rw [hash, chainBlocks_eq_chain _ _ _ _ (by omega), List.drop_zero, size, padBytes_toList]
+
 /-- Every digest is 32 bytes long, whatever the message. -/
 @[simp] theorem hash_size (message : ByteArray) : (hash message).size = 32 := by
   simp only [hash, digest, wordBytes, ByteArray.size, List.size_toArray, List.length_append,
@@ -465,7 +515,7 @@ theorem hash_eq_spec (message : ByteArray) (admitted : message.size < 2 ^ 61) :
   have whole := chain_toState (Spec.padded message) Spec.initial
     ((Spec.padded message).size / 64) 0 initial (by omega) start
   simp only [Nat.mul_zero, List.drop_zero, Nat.zero_add] at whole
-  simp only [hash, size, digest_eq_spec, Spec.hash]
+  simp only [hash_eq_chain, size, digest_eq_spec, Spec.hash]
   rw [pad_eq_spec message admitted, whole]
 
 end EthLib.Cryptography.Hash.Sha256
