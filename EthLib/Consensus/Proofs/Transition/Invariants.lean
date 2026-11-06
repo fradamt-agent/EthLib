@@ -531,6 +531,27 @@ theorem frame_processParticipationRecordUpdates
 def JustifiedSettled (state : BeaconState preset fork) : Prop :=
   state.currentJustifiedCheckpoint.epoch ≤ getPreviousEpoch state
 
+/-- The checked source of a Phase 0 attestation is no later than its target epoch.
+
+For a current target, settledness puts the source in the previous epoch or earlier.
+
+For a previous target, checkpoint order gives the same bound for the previous source. -/
+theorem processAttestation_source_le_target (before : fork < .altair)
+    (ordered : CheckpointsOrdered state) (settled : JustifiedSettled state)
+    {attestation : Attestation preset fork}
+    (computed : processAttestation config checks state attestation = .ok after) :
+    attestation.data.source.epoch ≤ attestation.data.target.epoch := by
+  obtain ⟨recent, _, _, _, _, _, source⟩ := processAttestation_checks before computed
+  by_cases current : attestation.data.target.epoch = getCurrentEpoch state
+  · simp only [current, ↓reduceIte] at source
+    rw [source, current]
+    exact UInt64.le_trans settled (getPreviousEpoch_le state)
+  · simp only [current, ↓reduceIte] at source
+    have previous : attestation.data.target.epoch = getPreviousEpoch state :=
+      recent.resolve_right current
+    rw [source, previous]
+    exact UInt64.le_trans ordered.2 settled
+
 /-- The properties that each valid block keeps before Altair. -/
 structure Invariant (state : BeaconState preset fork) : Prop where
   balancesMatch : BalancesMatch state
@@ -661,6 +682,64 @@ theorem frame_processSlot (computed : processSlot state = .ok after) : Frame sta
   obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok computed
   exact Frame.of_validators ⟨rfl, rfl⟩ rfl rfl rfl rfl rfl
 
+/-- A slot that stays in the same epoch cannot change the finalized checkpoint.
+
+The epoch transition runs only at a boundary, where the epoch quotient increases by one. -/
+theorem advanceSlot_finalized_of_same_epoch
+    (computed : advanceSlot config state = .ok after)
+    (sameEpoch : getCurrentEpoch after = getCurrentEpoch state) :
+    after.finalizedCheckpoint = state.finalizedCheckpoint := by
+  simp only [advanceSlot, bind_ok_iff, liftAccessor_ok, liftArith, mapError_ok_iff,
+    addChecked_ok_iff, pure, Except.pure, Except.ok.injEq] at computed
+  obtain ⟨next, ⟨_, sum⟩, cached, cachedOk, epoched, epochedOk, rfl⟩ := computed
+  have cachedFrame := frame_processSlot cachedOk
+  simp only [UInt64.toNat_one] at sum
+  unfold epochIfLast at epochedOk
+  split at epochedOk
+  · rename_i boundary
+    have boundary' : next.toNat % preset.SLOTS_PER_EPOCH.toNat = 0 := by
+      simpa [UInt64.toNat_mod] using congrArg UInt64.toNat boundary
+    have step := Nat.succ_div_of_dvd (Nat.dvd_of_mod_eq_zero (sum ▸ boundary'))
+    have epochs := congrArg UInt64.toNat sameEpoch
+    simp only [getCurrentEpoch_toNat] at epochs
+    rw [sum] at epochs
+    omega
+  · simp only [pure, Except.pure, Except.ok.injEq] at epochedOk
+    subst epochedOk
+    exact cachedFrame.finalized
+
+/-- Advancing within one epoch leaves the finalized checkpoint unchanged.
+
+This applies without a checkpoint invariant or a signature assumption. -/
+theorem advanceSlots_finalized_of_same_epoch :
+    ∀ {count : Nat} {state after : BeaconState preset fork},
+      advanceSlots config count state = .ok after →
+      getCurrentEpoch after = getCurrentEpoch state →
+      after.finalizedCheckpoint = state.finalizedCheckpoint
+  | 0, _, _, computed, _ => by
+    simp only [advanceSlots, pure, Except.pure, Except.ok.injEq] at computed
+    subst computed
+    rfl
+  | count + 1, state, after, computed, sameEpoch => by
+    simp only [advanceSlots, bind_ok_iff] at computed
+    obtain ⟨middle, first, rest⟩ := computed
+    have firstSlot := advanceSlot_slot first
+    have restSlots := advanceSlots_slot count rest
+    have lower : state.slot.toNat / preset.SLOTS_PER_EPOCH.toNat ≤
+        middle.slot.toNat / preset.SLOTS_PER_EPOCH.toNat :=
+      Nat.div_le_div_right (by omega)
+    have upper : middle.slot.toNat / preset.SLOTS_PER_EPOCH.toNat ≤
+        after.slot.toNat / preset.SLOTS_PER_EPOCH.toNat :=
+      Nat.div_le_div_right (by omega)
+    have epochNats := congrArg UInt64.toNat sameEpoch
+    simp only [getCurrentEpoch_toNat] at epochNats
+    have middleEpoch : getCurrentEpoch middle = getCurrentEpoch state := by
+      apply UInt64.toNat_inj.mp
+      simp only [getCurrentEpoch_toNat]
+      omega
+    exact (advanceSlots_finalized_of_same_epoch rest (sameEpoch.trans middleEpoch.symm)).trans
+      (advanceSlot_finalized_of_same_epoch first middleEpoch)
+
 /-- Before Altair, one slot keeps the invariant, and the finalized epoch does not decrease.
 
 When the slot ends an epoch, the current justified epoch is at most that epoch.
@@ -764,5 +843,100 @@ theorem stateTransition_invariant (altair : fork < .altair)
   refine ⟨frame.invariant advancedHolds, ?_⟩
   rw [frame.finalized]
   exact finalized
+
+/-- A valid block in the same epoch cannot change Phase 0's finalized checkpoint. -/
+theorem stateTransition_finalized_of_same_epoch (before : fork < .altair)
+    {signed : SignedBeaconBlock preset fork} {validateResult : Bool}
+    (computed : stateTransition config checks engine state signed validateResult = .ok after)
+    (sameEpoch : getCurrentEpoch after = getCurrentEpoch state) :
+    after.finalizedCheckpoint = state.finalizedCheckpoint := by
+  obtain ⟨advanced, slotsOk, _, _, blockOk, _⟩ := stateTransition_ok computed
+  have frame := frame_processBlock before blockOk
+  have same : getCurrentEpoch advanced = getCurrentEpoch state := by
+    simpa only [getCurrentEpoch, frame.slot] using sameEpoch
+  simp only [processSlots, bind_ok_iff, ensure_ok_iff] at slotsOk
+  obtain ⟨_, _, advancedOk⟩ := slotsOk
+  exact frame.finalized.trans (advanceSlots_finalized_of_same_epoch advancedOk same)
+
+/-- The epoch of a valid block transition cannot decrease. -/
+theorem stateTransition_epoch_le (before : fork < .altair)
+    {signed : SignedBeaconBlock preset fork} {validateResult : Bool}
+    (computed : stateTransition config checks engine state signed validateResult = .ok after) :
+    getCurrentEpoch state ≤ getCurrentEpoch after := by
+  obtain ⟨advanced, slotsOk, _, _, blockOk, _⟩ := stateTransition_ok computed
+  have frame := frame_processBlock before blockOk
+  have slots := (processSlots_slot slotsOk).1
+  rw [UInt64.le_iff_toNat_le, getCurrentEpoch_toNat, getCurrentEpoch_toNat, frame.slot]
+  have earlier := UInt64.lt_iff_toNat_lt.mp slots
+  rw [(processSlots_slot slotsOk).2]
+  exact Nat.div_le_div_right (by omega)
+
+/-- The epoch cannot decrease along a chain of successful state transitions. -/
+theorem stateTransition_chain_epoch_le (before : fork < .altair)
+    {blocks : List (SignedBeaconBlock preset fork)}
+    {validateResult : Bool}
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block validateResult)
+        state = .ok after) :
+    getCurrentEpoch state ≤ getCurrentEpoch after := by
+  induction blocks generalizing state with
+  | nil =>
+    simp only [List.foldlM_nil, pure, Except.pure, Except.ok.injEq] at computed
+    subst computed
+    exact UInt64.le_refl _
+  | cons first rest ih =>
+    simp only [List.foldlM_cons, bind_ok_iff] at computed
+    obtain ⟨middle, firstOk, restOk⟩ := computed
+    exact UInt64.le_trans (stateTransition_epoch_le before firstOk) (ih restOk)
+
+/-- A Phase 0 chain that stays in its starting epoch leaves finalization unchanged.
+
+This establishes the zero-epoch boundary case without any drift or signature hypothesis. -/
+theorem stateTransition_chain_finalized_of_same_epoch (before : fork < .altair)
+    {blocks : List (SignedBeaconBlock preset fork)} {validateResult : Bool}
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block validateResult)
+        state = .ok after)
+    (sameEpoch : getCurrentEpoch after = getCurrentEpoch state) :
+    after.finalizedCheckpoint = state.finalizedCheckpoint := by
+  induction blocks generalizing state with
+  | nil =>
+    simp only [List.foldlM_nil, pure, Except.pure, Except.ok.injEq] at computed
+    subst computed
+    rfl
+  | cons first rest ih =>
+    simp only [List.foldlM_cons, bind_ok_iff] at computed
+    obtain ⟨middle, firstOk, restOk⟩ := computed
+    have lower := stateTransition_epoch_le before firstOk
+    have upper := stateTransition_chain_epoch_le before restOk
+    have same : getCurrentEpoch middle = getCurrentEpoch state := by
+      apply UInt64.toNat_inj.mp
+      rw [UInt64.le_iff_toNat_le] at lower upper
+      rw [sameEpoch] at upper
+      omega
+    exact (ih restOk (sameEpoch.trans same.symm)).trans
+      (stateTransition_finalized_of_same_epoch before firstOk same)
+
+/-- Two Phase 0 suffixes within zero epochs have the same finalized checkpoint.
+
+The epoch differences use natural subtraction, so monotonicity is needed before cancelling them. -/
+theorem stateTransition_chains_finalized_eq_of_zero_epochs (before : fork < .altair)
+    {left right : BeaconState preset fork}
+    {leftBlocks rightBlocks : List (SignedBeaconBlock preset fork)}
+    (leftRun : leftBlocks.foldlM
+      (fun state block => stateTransition config checks engine state block true) state = .ok left)
+    (rightRun : rightBlocks.foldlM
+      (fun state block => stateTransition config checks engine state block true) state = .ok right)
+    (leftHorizon : (getCurrentEpoch left).toNat - (getCurrentEpoch state).toNat ≤ 0)
+    (rightHorizon : (getCurrentEpoch right).toNat - (getCurrentEpoch state).toNat ≤ 0) :
+    left.finalizedCheckpoint = right.finalizedCheckpoint := by
+  have leftLe := UInt64.le_iff_toNat_le.mp (stateTransition_chain_epoch_le before leftRun)
+  have rightLe := UInt64.le_iff_toNat_le.mp (stateTransition_chain_epoch_le before rightRun)
+  have leftEpoch : getCurrentEpoch left = getCurrentEpoch state :=
+    UInt64.toNat_inj.mp (by omega)
+  have rightEpoch : getCurrentEpoch right = getCurrentEpoch state :=
+    UInt64.toNat_inj.mp (by omega)
+  exact (stateTransition_chain_finalized_of_same_epoch before leftRun leftEpoch).trans
+    (stateTransition_chain_finalized_of_same_epoch before rightRun rightEpoch).symm
 
 end EthLib.Consensus
