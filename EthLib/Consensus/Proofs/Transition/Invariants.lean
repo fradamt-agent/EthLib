@@ -740,6 +740,62 @@ theorem frame_processSlot (computed : processSlot state = .ok after) : Frame sta
   obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok computed
   exact Frame.of_validators ⟨rfl, rfl⟩ rfl rfl rfl rfl rfl rfl
 
+/-- A slot that changes finalization contains an actual epoch and justification computation.
+
+Caching precedes that computation and preserves the old finalized checkpoint. -/
+theorem advanceSlot_finalized_origin (before : fork < .altair)
+    (computed : advanceSlot config state = .ok after)
+    (changed : after.finalizedCheckpoint ≠ state.finalizedCheckpoint) :
+    ∃ cached epoched justified,
+      processSlot state = .ok cached ∧ processEpoch config cached = .ok epoched ∧
+      processJustificationAndFinalization cached = .ok justified ∧
+      after.finalizedCheckpoint = justified.finalizedCheckpoint ∧
+      justified.finalizedCheckpoint ≠ cached.finalizedCheckpoint := by
+  simp only [advanceSlot, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+    Except.ok.injEq] at computed
+  obtain ⟨next, _, cached, cachedOk, epoched, epochedOk, rfl⟩ := computed
+  have cachedFrame := frame_processSlot cachedOk
+  unfold epochIfLast at epochedOk
+  split at epochedOk
+  · obtain ⟨justified, justifiedOk, _, _, _, finalized⟩ :=
+      processEpoch_justification before epochedOk
+    refine ⟨cached, epoched, justified, cachedOk, epochedOk, justifiedOk, finalized, ?_⟩
+    intro same
+    apply changed
+    exact finalized.trans (same.trans cachedFrame.finalized)
+  · simp only [pure, Except.pure, Except.ok.injEq] at epochedOk
+    subst epochedOk
+    exact (changed cachedFrame.finalized).elim
+
+/-- A changed final checkpoint in a slot run was assigned at a particular slot step.
+
+The successful prefix identifies that step on the actual execution.
+
+The selected step assigns the terminal checkpoint, not merely some intermediate checkpoint. -/
+theorem advanceSlots_finalized_origin {count : Nat}
+    (computed : advanceSlots config count state = .ok after)
+    (changed : after.finalizedCheckpoint ≠ state.finalizedCheckpoint) :
+    ∃ offset atStep next, offset < count ∧
+      advanceSlots config offset state = .ok atStep ∧
+      advanceSlot config atStep = .ok next ∧
+      next.finalizedCheckpoint = after.finalizedCheckpoint ∧
+      next.finalizedCheckpoint ≠ atStep.finalizedCheckpoint := by
+  induction count generalizing state with
+  | zero =>
+    simp only [advanceSlots, pure, Except.pure, Except.ok.injEq] at computed
+    exact (changed (congrArg BeaconState.finalizedCheckpoint computed.symm)).elim
+  | succ count ih =>
+    simp only [advanceSlots, bind_ok_iff] at computed
+    obtain ⟨middle, firstOk, restOk⟩ := computed
+    by_cases same : after.finalizedCheckpoint = middle.finalizedCheckpoint
+    · exact ⟨0, state, middle, by omega, rfl, firstOk, same.symm, fun equal =>
+        changed (same.trans equal)⟩
+    · obtain ⟨offset, atStep, next, inside, prefixOk, stepOk, finalEq, changedStep⟩ :=
+        ih restOk same
+      refine ⟨offset + 1, atStep, next, by omega, ?_, stepOk, finalEq, changedStep⟩
+      simp only [advanceSlots, bind_ok_iff]
+      exact ⟨middle, firstOk, prefixOk⟩
+
 /-- A slot that stays in the same epoch cannot change the finalized checkpoint.
 
 The epoch transition runs only at a boundary, where the epoch quotient increases by one. -/
@@ -902,6 +958,35 @@ theorem stateTransition_invariant (altair : fork < .altair)
   rw [frame.finalized]
   exact finalized
 
+/-- A changed finalized checkpoint after a block comes from a justification call in its slot run.
+
+The offset identifies the weighing state before that slot's epoch transition. -/
+theorem stateTransition_finalized_origin (before : fork < .altair)
+    {signed : SignedBeaconBlock preset fork} {validateResult : Bool}
+    (computed : stateTransition config checks engine state signed validateResult = .ok after)
+    (changed : after.finalizedCheckpoint ≠ state.finalizedCheckpoint) :
+    ∃ offset atStep next cached epoched justified,
+      offset < signed.message.slot.toNat - state.slot.toNat ∧
+      advanceSlots config offset state = .ok atStep ∧
+      advanceSlot config atStep = .ok next ∧
+      processSlot atStep = .ok cached ∧ processEpoch config cached = .ok epoched ∧
+      processJustificationAndFinalization cached = .ok justified ∧
+      after.finalizedCheckpoint = justified.finalizedCheckpoint ∧
+      justified.finalizedCheckpoint ≠ cached.finalizedCheckpoint := by
+  obtain ⟨advanced, slotsOk, _, _, blockOk, _⟩ := stateTransition_ok computed
+  have frame := frame_processBlock before blockOk
+  have changedSlots : advanced.finalizedCheckpoint ≠ state.finalizedCheckpoint := by
+    simpa only [frame.finalized] using changed
+  simp only [processSlots, bind_ok_iff, ensure_ok_iff] at slotsOk
+  obtain ⟨_, _, advancedOk⟩ := slotsOk
+  obtain ⟨offset, atStep, next, inside, prefixOk, stepOk, finalEq, changedStep⟩ :=
+    advanceSlots_finalized_origin advancedOk changedSlots
+  obtain ⟨cached, epoched, justified, cachedOk, epochOk, justifiedOk, assigned, changedEpoch⟩ :=
+    advanceSlot_finalized_origin before stepOk changedStep
+  exact ⟨offset, atStep, next, cached, epoched, justified, inside, prefixOk, stepOk,
+    cachedOk, epochOk, justifiedOk, frame.finalized.trans (finalEq.symm.trans assigned),
+    changedEpoch⟩
+
 /-- A valid block in the same epoch cannot change Phase 0's finalized checkpoint. -/
 theorem stateTransition_finalized_of_same_epoch (before : fork < .altair)
     {signed : SignedBeaconBlock preset fork} {validateResult : Bool}
@@ -946,6 +1031,56 @@ theorem stateTransition_chain_epoch_le (before : fork < .altair)
     simp only [List.foldlM_cons, bind_ok_iff] at computed
     obtain ⟨middle, firstOk, restOk⟩ := computed
     exact UInt64.le_trans (stateTransition_epoch_le before firstOk) (ih restOk)
+
+/-- A changed terminal checkpoint of a chain was assigned during one of its blocks' slot runs.
+
+The witness gives the successful block prefix and the successful slot prefix within that block.
+
+Its justification result has the terminal checkpoint, even if later blocks retain it. -/
+theorem stateTransition_chain_finalized_origin (before : fork < .altair)
+    {blocks : List (SignedBeaconBlock preset fork)} {validateResult : Bool}
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block validateResult)
+        state = .ok after)
+    (changed : after.finalizedCheckpoint ≠ state.finalizedCheckpoint) :
+    ∃ earlier block later atBlock offset atStep next cached epoched justified,
+      blocks = earlier ++ block :: later ∧
+      earlier.foldlM
+        (fun state block => stateTransition config checks engine state block validateResult)
+          state = .ok atBlock ∧
+      (∃ afterBlock, stateTransition config checks engine atBlock block validateResult =
+        .ok afterBlock) ∧
+      offset < block.message.slot.toNat - atBlock.slot.toNat ∧
+      advanceSlots config offset atBlock = .ok atStep ∧
+      advanceSlot config atStep = .ok next ∧
+      processSlot atStep = .ok cached ∧ processEpoch config cached = .ok epoched ∧
+      processJustificationAndFinalization cached = .ok justified ∧
+      after.finalizedCheckpoint = justified.finalizedCheckpoint ∧
+      justified.finalizedCheckpoint ≠ cached.finalizedCheckpoint := by
+  induction blocks generalizing state with
+  | nil =>
+    simp only [List.foldlM_nil, pure, Except.pure, Except.ok.injEq] at computed
+    exact (changed (congrArg BeaconState.finalizedCheckpoint computed.symm)).elim
+  | cons first rest ih =>
+    simp only [List.foldlM_cons, bind_ok_iff] at computed
+    obtain ⟨middle, firstOk, restOk⟩ := computed
+    by_cases same : after.finalizedCheckpoint = middle.finalizedCheckpoint
+    · have changedFirst : middle.finalizedCheckpoint ≠ state.finalizedCheckpoint :=
+        fun equal => changed (same.trans equal)
+      obtain ⟨offset, atStep, next, cached, epoched, justified, inside, prefixOk, stepOk,
+        cachedOk, epochOk, justifiedOk, assigned, changedEpoch⟩ :=
+        stateTransition_finalized_origin before firstOk changedFirst
+      exact ⟨[], first, rest, state, offset, atStep, next, cached, epoched, justified,
+        rfl, rfl, ⟨middle, firstOk⟩, inside, prefixOk, stepOk, cachedOk, epochOk, justifiedOk,
+        same.trans assigned, changedEpoch⟩
+    · obtain ⟨earlier, block, later, atBlock, offset, atStep, next, cached, epoched, justified,
+        split, blocksOk, blockOk, inside, prefixOk, stepOk, cachedOk, epochOk, justifiedOk,
+        assigned, changedEpoch⟩ := ih restOk same
+      refine ⟨first :: earlier, block, later, atBlock, offset, atStep, next, cached, epoched,
+        justified, by simp [split], ?_, blockOk, inside, prefixOk, stepOk, cachedOk, epochOk,
+        justifiedOk, assigned, changedEpoch⟩
+      simp only [List.foldlM_cons, bind_ok_iff]
+      exact ⟨middle, firstOk, blocksOk⟩
 
 /-- A Phase 0 chain that stays in its starting epoch leaves finalization unchanged.
 

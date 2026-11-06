@@ -110,6 +110,22 @@ theorem advanceSlots_slot :
     rw [advanceSlots_slot count rest, advanceSlot_slot first]
     omega
 
+/-- A successful slot run splits at any prescribed initial number of steps. -/
+theorem advanceSlots_add {first rest : Nat}
+    (computed : advanceSlots config (first + rest) state = .ok after) :
+    ∃ middle, advanceSlots config first state = .ok middle ∧
+      advanceSlots config rest middle = .ok after := by
+  induction first generalizing state with
+  | zero => exact ⟨state, rfl, by simpa using computed⟩
+  | succ first ih =>
+    rw [Nat.succ_add] at computed
+    simp only [advanceSlots, bind_ok_iff] at computed
+    obtain ⟨next, firstOk, restOk⟩ := computed
+    obtain ⟨middle, prefixOk, suffixOk⟩ := ih restOk
+    refine ⟨middle, ?_, suffixOk⟩
+    simp only [advanceSlots, bind_ok_iff]
+    exact ⟨next, firstOk, prefixOk⟩
+
 /-- Advancing to a slot that is not after the slot of the state fails. -/
 theorem processSlots_of_le {slot : Slot} (notAfter : slot ≤ state.slot) :
     processSlots config state slot = .error (.slotNotAfter slot state.slot) := by
