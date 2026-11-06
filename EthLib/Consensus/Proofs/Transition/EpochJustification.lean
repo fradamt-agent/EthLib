@@ -158,6 +158,41 @@ theorem validator_active_two_thirds_comparison (reference left right : Validator
     cases leftMarked <;> cases rightMarked <;>
     simp_all only [Bool.false_and, Bool.true_and, Bool.false_eq_true, ↓reduceIte] <;> omega
 
+/-- Two thresholds on aligned registry entries bound their reference-weight intersection.
+
+The exact corrections to the thresholds remain explicit.
+
+The initial deficit has coefficient two, and each validator's largest loss has coefficient three.
+
+This is only the weight calculation, not the extraction of slashable data from finalization. -/
+theorem validators_two_thirds_drift
+    (entries : List (Validator × Validator × Validator × Bool × Bool))
+    (bounded : ∀ entry ∈ entries,
+      entry.1.effectiveBalance ≤ preset.MAX_EFFECTIVE_BALANCE ∧
+      entry.2.1.effectiveBalance ≤ preset.MAX_EFFECTIVE_BALANCE ∧
+      entry.2.2.1.effectiveBalance ≤ preset.MAX_EFFECTIVE_BALANCE)
+    (leftCorrection rightCorrection : Nat)
+    (leftEnough :
+      2 * (entries.map fun entry => entry.2.1.effectiveBalance.toNat).sum ≤
+        3 * (entries.map fun entry =>
+          if entry.2.2.2.1 then entry.2.1.effectiveBalance.toNat else 0).sum + leftCorrection)
+    (rightEnough :
+      2 * (entries.map fun entry => entry.2.2.1.effectiveBalance.toNat).sum ≤
+        3 * (entries.map fun entry =>
+          if entry.2.2.2.2 then entry.2.2.1.effectiveBalance.toNat else 0).sum +
+            rightCorrection) :
+    (entries.map fun entry => entry.1.effectiveBalance.toNat).sum ≤
+      3 * (entries.map fun entry =>
+          if entry.2.2.2.1 && entry.2.2.2.2 then entry.1.effectiveBalance.toNat else 0).sum +
+        3 * (entries.map fun entry =>
+          max (entry.1.effectiveBalance.toNat - entry.2.1.effectiveBalance.toNat)
+            (entry.1.effectiveBalance.toNat - entry.2.2.1.effectiveBalance.toNat)).sum +
+        2 * (entries.map fun entry =>
+          preset.MAX_EFFECTIVE_BALANCE.toNat - entry.1.effectiveBalance.toNat).sum +
+        leftCorrection + rightCorrection := by
+  have compared := validators_two_thirds_comparison entries bounded
+  omega
+
 /-- The marked sum is a sum of the effective balances paired with true marks.
 
 The array zip discards any unmatched suffix, exactly as `sumMarked` does. -/

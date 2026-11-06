@@ -527,6 +527,183 @@ theorem pending_signers_at_cached_slot_of_initialized_chain
   exact pending_signers_of_initialized_chain positive history initialized computed oldMember
     oldSigners
 
+/-- A current justification at an epoch boundary counts authenticated included signers.
+
+The source is the stored current justified checkpoint and the target is the cached epoch root.
+
+The threshold retains the exact artificial balance from the increment floor. -/
+theorem currentJustification_authenticated_at_cached_slot
+    {engine : ExecutionEngine preset .phase0}
+    {genesis after atStep cached justified : BeaconState preset .phase0}
+    {eth1BlockHash : Hash32} {eth1Timestamp : UInt64} {deposits : Array Deposit}
+    {blocks : List (SignedBeaconBlock preset .phase0)} {count : Nat}
+    (positive : 0 < preset.MIN_SEED_LOOKAHEAD.toNat)
+    (history : preset.MIN_SEED_LOOKAHEAD.toNat + 3 <
+      preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (initialized : initializeBeaconStateFromEth1 config checks eth1BlockHash eth1Timestamp
+      deposits = .ok genesis)
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block true) genesis =
+        .ok after)
+    (advanced : advanceSlots config count after = .ok atStep)
+    (cachedOk : processSlot atStep = .ok cached)
+    (weighed : processJustificationAndFinalization cached = .ok justified)
+    (eligible : ¬getCurrentEpoch cached ≤ GENESIS_EPOCH + 1)
+    (bit : justified.justificationBits.bits[0] = true) :
+    ∃ attestations indices,
+      getMatchingTargetAttestations cached (by decide) (getCurrentEpoch cached) =
+        .ok attestations ∧
+      getUnslashedAttestingIndices cached attestations = .ok indices ∧
+      2 * sumMarked cached.validators.data
+          (markIndices cached.validators.data.size
+            (getActiveValidatorIndices cached (getCurrentEpoch cached))) ≤
+        3 * sumMarked cached.validators.data (markIndices cached.validators.data.size indices) +
+          3 * totalBalanceFloor cached indices ∧
+      ∀ index ∈ indices,
+        ∃ pending ∈ attestations, ∃ earlier block later atBlock atSlot,
+          blocks = earlier ++ block :: later ∧
+          earlier.foldlM
+            (fun state block => stateTransition config checks engine state block true)
+              genesis = .ok atBlock ∧
+          processSlots config atBlock block.message.slot = .ok atSlot ∧
+          PendingIncludedInBlock config checks (by decide) atSlot block.message pending ∧
+        ∃ (recorded : BeaconState preset .phase0)
+          (attestation : Attestation preset .phase0)
+          (indexed : IndexedAttestation preset .phase0) (root : Root),
+          indexed.data = pending.data ∧
+          getIndexedAttestation recorded attestation = .ok indexed ∧
+          index ∈ indexed.attestingIndices.data ∧
+          indexed.data.source = cached.currentJustifiedCheckpoint ∧
+          indexed.data.target.epoch = getCurrentEpoch cached ∧
+          getBlockRoot cached (getCurrentEpoch cached) = .ok root ∧
+          indexed.data.target.root = root ∧
+          isValidIndexedAttestation config checks recorded indexed = .ok true := by
+  obtain ⟨sources, epochs⟩ := pending_invariants_at_cached_slot_of_initialized_chain
+    (by decide) initialized computed advanced cachedOk
+  obtain ⟨attestations, indices, matching, indicesOk, threshold, witnesses⟩ :=
+    processJustificationAndFinalization_current_bit_signers (by decide)
+      weighed eligible bit sources
+  refine ⟨attestations, indices, matching, indicesOk, threshold, ?_⟩
+  intro index member
+  obtain ⟨⟨pending, pendingMember, signers, root, signersOk, signer, source, rootOk, rootEq⟩,
+    _⟩ := witnesses index member
+  obtain ⟨_, _, sourceOk, _, sourceMember, _⟩ :=
+    getMatchingTargetAttestations_mem matching pendingMember
+  have pendingMember' : pending ∈ (cached.currentEpochAttestations (by decide)).data ∨
+      pending ∈ (cached.previousEpochAttestations (by decide)).data := by
+    simp only [getMatchingSourceAttestations, bind_ok_iff, ensure_ok_iff, pure, Except.pure,
+      Except.ok.injEq] at sourceOk
+    obtain ⟨_, _, rfl⟩ := sourceOk
+    split at sourceMember
+    · exact .inl sourceMember
+    · exact .inr sourceMember
+  obtain ⟨recorded, attestation, indexed, indexedOk, listed, data, _, valid⟩ :=
+    pending_signers_at_cached_slot_of_initialized_chain positive history
+      initialized computed advanced cachedOk pendingMember' signersOk
+  obtain ⟨earlier, block, later, atBlock, atSlot, split, prefixOk, slotsOk, included⟩ :=
+    pendingIncluded_at_cached_slot_of_initialized_chain (by decide)
+      initialized computed advanced cachedOk pendingMember'
+  refine ⟨pending, pendingMember, earlier, block, later, atBlock, atSlot,
+    split, prefixOk, slotsOk, included, recorded, attestation, indexed, root,
+    data, indexedOk, ?_, ?_, ?_, rootOk, ?_, valid⟩
+  · rw [listed]
+    simpa only [List.mem_toArray] using mem_sortedSet.mpr signer
+  · rw [data]
+    exact source
+  · rw [data]
+    exact (getMatchingTargetAttestations_slot_epoch epochs matching pendingMember).1
+  · rw [data]
+    exact rootEq
+
+/-- A new previous justification at an epoch boundary counts authenticated included signers.
+
+The source is the stored previous justified checkpoint, not the current one.
+
+An inherited previous bit is excluded because its threshold was checked in an earlier call. -/
+theorem previousJustification_authenticated_at_cached_slot
+    {engine : ExecutionEngine preset .phase0}
+    {genesis after atStep cached justified : BeaconState preset .phase0}
+    {eth1BlockHash : Hash32} {eth1Timestamp : UInt64} {deposits : Array Deposit}
+    {blocks : List (SignedBeaconBlock preset .phase0)} {count : Nat}
+    (positive : 0 < preset.MIN_SEED_LOOKAHEAD.toNat)
+    (history : preset.MIN_SEED_LOOKAHEAD.toNat + 3 <
+      preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (initialized : initializeBeaconStateFromEth1 config checks eth1BlockHash eth1Timestamp
+      deposits = .ok genesis)
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block true) genesis =
+        .ok after)
+    (advanced : advanceSlots config count after = .ok atStep)
+    (cachedOk : processSlot atStep = .ok cached)
+    (weighed : processJustificationAndFinalization cached = .ok justified)
+    (eligible : ¬getCurrentEpoch cached ≤ GENESIS_EPOCH + 1)
+    (bit : justified.justificationBits.bits[1] = true)
+    (notInherited : cached.justificationBits.bits[0] = false) :
+    ∃ attestations indices,
+      getMatchingTargetAttestations cached (by decide) (getPreviousEpoch cached) =
+        .ok attestations ∧
+      getUnslashedAttestingIndices cached attestations = .ok indices ∧
+      2 * sumMarked cached.validators.data
+          (markIndices cached.validators.data.size
+            (getActiveValidatorIndices cached (getCurrentEpoch cached))) ≤
+        3 * sumMarked cached.validators.data (markIndices cached.validators.data.size indices) +
+          3 * totalBalanceFloor cached indices ∧
+      ∀ index ∈ indices,
+        ∃ pending ∈ attestations, ∃ earlier block later atBlock atSlot,
+          blocks = earlier ++ block :: later ∧
+          earlier.foldlM
+            (fun state block => stateTransition config checks engine state block true)
+              genesis = .ok atBlock ∧
+          processSlots config atBlock block.message.slot = .ok atSlot ∧
+          PendingIncludedInBlock config checks (by decide) atSlot block.message pending ∧
+        ∃ (recorded : BeaconState preset .phase0)
+          (attestation : Attestation preset .phase0)
+          (indexed : IndexedAttestation preset .phase0) (root : Root),
+          indexed.data = pending.data ∧
+          getIndexedAttestation recorded attestation = .ok indexed ∧
+          index ∈ indexed.attestingIndices.data ∧
+          indexed.data.source = cached.previousJustifiedCheckpoint ∧
+          indexed.data.target.epoch = getPreviousEpoch cached ∧
+          getBlockRoot cached (getPreviousEpoch cached) = .ok root ∧
+          indexed.data.target.root = root ∧
+          isValidIndexedAttestation config checks recorded indexed = .ok true := by
+  obtain ⟨sources, epochs⟩ := pending_invariants_at_cached_slot_of_initialized_chain
+    (by decide) initialized computed advanced cachedOk
+  obtain ⟨attestations, indices, matching, indicesOk, threshold, witnesses⟩ :=
+    processJustificationAndFinalization_previous_bit_signers (by decide)
+      weighed eligible bit notInherited sources
+  refine ⟨attestations, indices, matching, indicesOk, threshold, ?_⟩
+  intro index member
+  obtain ⟨⟨pending, pendingMember, signers, root, signersOk, signer, source, rootOk, rootEq⟩,
+    _⟩ := witnesses index member
+  obtain ⟨_, _, sourceOk, _, sourceMember, _⟩ :=
+    getMatchingTargetAttestations_mem matching pendingMember
+  have pendingMember' : pending ∈ (cached.currentEpochAttestations (by decide)).data ∨
+      pending ∈ (cached.previousEpochAttestations (by decide)).data := by
+    simp only [getMatchingSourceAttestations, bind_ok_iff, ensure_ok_iff, pure, Except.pure,
+      Except.ok.injEq] at sourceOk
+    obtain ⟨_, _, rfl⟩ := sourceOk
+    split at sourceMember
+    · exact .inl sourceMember
+    · exact .inr sourceMember
+  obtain ⟨recorded, attestation, indexed, indexedOk, listed, data, _, valid⟩ :=
+    pending_signers_at_cached_slot_of_initialized_chain positive history
+      initialized computed advanced cachedOk pendingMember' signersOk
+  obtain ⟨earlier, block, later, atBlock, atSlot, split, prefixOk, slotsOk, included⟩ :=
+    pendingIncluded_at_cached_slot_of_initialized_chain (by decide)
+      initialized computed advanced cachedOk pendingMember'
+  refine ⟨pending, pendingMember, earlier, block, later, atBlock, atSlot,
+    split, prefixOk, slotsOk, included, recorded, attestation, indexed, root,
+    data, indexedOk, ?_, ?_, ?_, rootOk, ?_, valid⟩
+  · rw [listed]
+    simpa only [List.mem_toArray] using mem_sortedSet.mpr signer
+  · rw [data]
+    exact source
+  · rw [data]
+    exact (getMatchingTargetAttestations_slot_epoch epochs matching pendingMember).1
+  · rw [data]
+    exact rootEq
+
 /-- Every Phase 0 state reached from initialized genesis keeps the effective-balance cap.
 
 The block list uses the actual state transition, including result validation. -/
