@@ -40,6 +40,341 @@ variable {preset : Preset} {fork : Base.Fork} {config : Config} {checks : Signat
   {engine : ExecutionEngine preset fork}
   {state after : BeaconState preset fork}
 
+/-- A balance credit does not change the RANDAO mixes used to reconstruct committees. -/
+theorem increaseBalance_randao {index : ValidatorIndex} {delta : Gwei}
+    (computed : increaseBalance state index delta = .ok after) :
+    after.randaoMixes = state.randaoMixes := by
+  simp only [increaseBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at computed
+  obtain ⟨_, _, _, _, rfl⟩ := computed
+  rfl
+
+/-- A balance deduction does not change the RANDAO mixes. -/
+theorem decreaseBalance_randao {index : ValidatorIndex} {delta : Gwei}
+    (computed : decreaseBalance state index delta = .ok after) :
+    after.randaoMixes = state.randaoMixes := by
+  simp only [decreaseBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at computed
+  obtain ⟨_, _, rfl⟩ := computed
+  rfl
+
+/-- Before Electra, allocating an exit epoch leaves the state unchanged. -/
+theorem exitQueue_state (before : fork < .pectra) {balance : Gwei} {epoch : Epoch}
+    (computed : exitQueue config state balance = .ok (after, epoch)) : after = state := by
+  have notElectra : ¬Fork.pectra ≤ fork := Nat.not_le_of_lt before
+  simp only [exitQueue, notElectra, ↓reduceDIte, bind_ok_iff, pure,
+    Except.pure, Except.ok.injEq, Prod.mk.injEq] at computed
+  obtain ⟨_, _, rfl, _⟩ := computed
+  rfl
+
+/-- Exit scheduling before Electra preserves the mixes used by historical committees. -/
+theorem initiateValidatorExit_randao (before : fork < .pectra) {index : ValidatorIndex}
+    (computed : initiateValidatorExit config state index = .ok after) :
+    after.randaoMixes = state.randaoMixes := by
+  obtain ⟨_, _, ⟨_, rfl⟩ | ⟨_, queued, _, _, queue, _, rfl⟩⟩ :=
+    initiateValidatorExit_ok computed
+  · rfl
+  · change queued.randaoMixes = state.randaoMixes
+    rw [exitQueue_state before queue]
+
+/-- Slashing before Electra preserves the mixes despite its balance and registry changes. -/
+theorem slashValidator_randao (before : fork < .pectra)
+    {index : ValidatorIndex} {whistleblower : Option ValidatorIndex}
+    (computed : slashValidator config state index whistleblower = .ok after) :
+    after.randaoMixes = state.randaoMixes := by
+  simp only [slashValidator, bind_ok_iff, liftArith, mapError_ok_iff] at computed
+  obtain ⟨exited, exitedOk, _, _, _, _, _, _, _, _, lowered, loweredOk,
+    _, _, _, _, raised, raisedOk, last, lastOk, done⟩ := computed
+  have exitedMixes := initiateValidatorExit_randao before exitedOk
+  have loweredMixes := decreaseBalance_randao loweredOk
+  have raisedMixes := increaseBalance_randao raisedOk
+  have lastMixes := increaseBalance_randao lastOk
+  have notGloas : ¬Fork.glamsterdam ≤ fork :=
+    Nat.not_le_of_lt (Nat.lt_trans before (by decide))
+  simp only [notGloas, ↓reduceDIte, pure, Except.pure, Except.ok.injEq] at done
+  subst done
+  exact lastMixes.trans (raisedMixes.trans (loweredMixes.trans exitedMixes))
+
+/-- A proposer slashing before Electra preserves the committee seed buffer. -/
+theorem processProposerSlashing_randao (before : fork < .pectra)
+    {slashing : ProposerSlashing}
+    (computed : processProposerSlashing config checks state slashing = .ok after) :
+    after.randaoMixes = state.randaoMixes := by
+  simp only [processProposerSlashing, bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at computed
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, slashed⟩ := computed
+  exact slashValidator_randao before slashed
+
+/-- An individual attester-slashing step preserves the committee seed buffer. -/
+theorem slashIfSlashable_randao (before : fork < .pectra)
+    {step next : BeaconState preset fork × Bool} {index : ValidatorIndex}
+    (computed : slashIfSlashable config step index = .ok next) :
+    next.1.randaoMixes = step.1.randaoMixes := by
+  obtain ⟨state, flag⟩ := step
+  simp only [slashIfSlashable, bind_ok_iff, liftAccessor_ok] at computed
+  obtain ⟨_, _, computed⟩ := computed
+  split at computed
+  · simp only [bind_ok_iff, liftAccessor_ok, pure, Except.pure, Except.ok.injEq] at computed
+    obtain ⟨_, slashed, rfl⟩ := computed
+    exact slashValidator_randao before slashed
+  · cases computed
+    rfl
+
+/-- The full attester-slashing operation preserves the committee seed buffer. -/
+theorem processAttesterSlashing_randao (before : fork < .pectra)
+    {slashing : AttesterSlashing preset fork}
+    (computed : processAttesterSlashing config checks state slashing = .ok after) :
+    after.randaoMixes = state.randaoMixes := by
+  simp only [processAttesterSlashing, bind_ok_iff, ensure_ok_iff, pure, Except.pure,
+    Except.ok.injEq] at computed
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, folded, _, _, rfl⟩ := computed
+  exact foldlM_ok_invariant (fun step => step.1.randaoMixes = state.randaoMixes)
+    (fun _ _ _ prior ok => (slashIfSlashable_randao before ok).trans prior) rfl folded
+
+/-- Recording a Phase 0 attestation leaves the committee seed buffer unchanged. -/
+theorem processAttestation_randao (before : fork < .altair)
+    {attestation : Attestation preset fork}
+    (computed : processAttestation config checks state attestation = .ok after) :
+    after.randaoMixes = state.randaoMixes := by
+  obtain ⟨_, _, _, _, _, recorded, _, _, _⟩ := processAttestation_records before computed
+  cases current : attestation.data.target.epoch == getCurrentEpoch state <;>
+    simp only [recordPendingAttestation, current, Bool.false_eq_true, ↓reduceIte] at recorded <;>
+    split at recorded <;> cases recorded <;> rfl
+
+/-- Phase 0 registry insertion leaves the committee seed buffer unchanged. -/
+theorem addValidatorToRegistry_randao (before : fork < .altair)
+    {pubkey : BLSPubkey} {credentials : Bytes32} {amount : Gwei}
+    (computed : addValidatorToRegistry state pubkey credentials amount = .ok after) :
+    after.randaoMixes = state.randaoMixes := by
+  unfold addValidatorToRegistry at computed
+  split at computed
+  · exact absurd ‹_› (Nat.not_le_of_lt before)
+  split at computed <;> cases computed
+  rfl
+
+/-- A Phase 0 deposit credit leaves the committee seed buffer unchanged. -/
+theorem applyDeposit_randao (before : fork < .altair)
+    {pubkey : BLSPubkey} {credentials : Bytes32} {amount : Gwei} {signature : BLSSignature}
+    (computed : applyDeposit config checks state pubkey credentials amount signature =
+      .ok after) : after.randaoMixes = state.randaoMixes := by
+  have notElectra : ¬Fork.pectra ≤ fork := Nat.not_le_of_lt (Nat.lt_trans before (by decide))
+  simp only [applyDeposit, notElectra, ↓reduceDIte, applyPendingDeposit] at computed
+  split at computed
+  · simp only [bind_ok_iff] at computed
+    obtain ⟨_, _, computed⟩ := computed
+    split at computed
+    · exact addValidatorToRegistry_randao before computed
+    · cases computed
+      rfl
+  · exact increaseBalance_randao (liftAccessor_ok.mp computed)
+
+/-- The complete Phase 0 deposit operation leaves the committee seed buffer unchanged. -/
+theorem processDeposit_randao (before : fork < .altair)
+    {beforeHeze : fork < .hegota} {deposit : Deposit}
+    (computed : processDeposit config checks beforeHeze state deposit = .ok after) :
+    after.randaoMixes = state.randaoMixes := by
+  obtain ⟨_, _, next, _, applied⟩ := processDeposit_ok computed
+  exact applyDeposit_randao (state := { state with eth1DepositIndex := fun _ => next })
+    before applied
+
+/-- A voluntary exit before Electra preserves the committee seed buffer. -/
+theorem processVoluntaryExit_randao (before : fork < .pectra)
+    {signed : SignedVoluntaryExit}
+    (computed : processVoluntaryExit config checks state signed = .ok after) :
+    after.randaoMixes = state.randaoMixes := by
+  unfold processVoluntaryExit at computed
+  split at computed
+  · cases computed
+  simp only [bind_ok_iff, ensure_ok_iff, liftAccessor_ok, liftSsz_ok] at computed
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, exited⟩ := computed
+  exact initiateValidatorExit_randao before exited
+
+/-- Phase 0 block operations preserve all RANDAO mixes.
+
+Only the separate reveal-processing step can change the buffer within a block. -/
+theorem processOperations_randao (before : fork < .altair)
+    {body : BeaconBlockBody preset fork}
+    (computed : processOperations config checks state body = .ok after) :
+    after.randaoMixes = state.randaoMixes := by
+  unfold processOperations at computed
+  split at computed
+  · cases computed
+  simp only [bind_ok_iff, ensure_ok_iff, ← Array.foldlM_toList] at computed
+  obtain ⟨_, _, _, _, proposers, proposersOk, attesters, attestersOk, attested, attestedOk,
+    deposited, depositedOk, exited, exitsOk, changesOk⟩ := computed
+  have capella : ¬Fork.shapella ≤ fork := Nat.not_le_of_lt (Nat.lt_trans before (by decide))
+  simp only [capella, ↓reduceDIte, pure, Except.pure, Except.ok.injEq] at changesOk
+  subst changesOk
+  have earlier : fork < .pectra := Nat.lt_trans before (by decide)
+  have p := foldlM_ok_invariant (fun s => s.randaoMixes = state.randaoMixes)
+    (fun _ _ _ prior ok => (processProposerSlashing_randao earlier ok).trans prior)
+    rfl proposersOk
+  have a := foldlM_ok_invariant (fun s => s.randaoMixes = proposers.randaoMixes)
+    (fun _ _ _ prior ok => (processAttesterSlashing_randao earlier ok).trans prior)
+    rfl attestersOk
+  have t := foldlM_ok_invariant (fun s => s.randaoMixes = attesters.randaoMixes)
+    (fun _ _ _ prior ok => (processAttestation_randao before ok).trans prior)
+    rfl attestedOk
+  have d := foldlM_ok_invariant (fun s => s.randaoMixes = attested.randaoMixes)
+    (fun _ _ _ prior ok => (processDeposit_randao before ok).trans prior)
+    rfl depositedOk
+  have e := foldlM_ok_invariant (fun s => s.randaoMixes = deposited.randaoMixes)
+    (fun _ _ _ prior ok => (processVoluntaryExit_randao earlier ok).trans prior)
+    rfl exitsOk
+  exact e.trans (d.trans (t.trans (a.trans p)))
+
+/-- Applying one reward/penalty pair preserves the seed buffer. -/
+theorem applyDeltas_randao {rewards penalties : Array Gwei} {index : Nat}
+    (computed : applyDeltas rewards penalties state index = .ok after) :
+    after.randaoMixes = state.randaoMixes := by
+  simp only [applyDeltas, bind_ok_iff, liftAccessor_ok] at computed
+  obtain ⟨_, raised, lowered⟩ := computed
+  exact (decreaseBalance_randao lowered).trans (increaseBalance_randao raised)
+
+/-- Applying all epoch deltas preserves the seed buffer. -/
+theorem applyAllDeltas_randao {deltas : Array Gwei × Array Gwei}
+    (computed : applyAllDeltas state deltas = .ok after) :
+    after.randaoMixes = state.randaoMixes :=
+  foldlM_ok_invariant (fun s => s.randaoMixes = state.randaoMixes)
+    (fun _ _ _ prior ok => (applyDeltas_randao ok).trans prior) rfl computed
+
+/-- Phase 0 rewards and penalties do not reseed committees. -/
+theorem processRewardsAndPenalties_randao (before : fork < .altair)
+    (computed : processRewardsAndPenalties config state = .ok after) :
+    after.randaoMixes = state.randaoMixes := by
+  unfold processRewardsAndPenalties at computed
+  split at computed
+  · cases computed
+    rfl
+  split at computed
+  · exact absurd ‹_› (Nat.not_le_of_lt before)
+  · obtain ⟨_, _, applied⟩ := bind_ok_iff.mp computed
+    exact applyAllDeltas_randao applied
+
+/-- Eligibility and ejection processing before Electra preserve the seed buffer. -/
+theorem updateRegistryEntry_randao (before : fork < .pectra) {index : Nat}
+    (computed : updateRegistryEntry config state index = .ok after) :
+    after.randaoMixes = state.randaoMixes := by
+  simp only [updateRegistryEntry, bind_ok_iff, liftAccessor_ok] at computed
+  obtain ⟨_, _, queued, _, computed⟩ := computed
+  split at computed
+  · exact initiateValidatorExit_randao (state := state.setValidator index queued)
+      before (liftAccessor_ok.mp computed)
+  · cases computed
+    rfl
+
+/-- Scheduling an activation preserves the seed buffer. -/
+theorem activateValidator_randao {index : ValidatorIndex}
+    (computed : activateValidator state index = .ok after) :
+    after.randaoMixes = state.randaoMixes := by
+  simp only [activateValidator, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+    Except.ok.injEq] at computed
+  obtain ⟨_, _, _, _, rfl⟩ := computed
+  rfl
+
+/-- The Phase 0 registry pass preserves the seed buffer. -/
+theorem processRegistryUpdates_randao (before : fork < .pectra)
+    (computed : processRegistryUpdates config state = .ok after) :
+    after.randaoMixes = state.randaoMixes := by
+  unfold processRegistryUpdates at computed
+  split at computed
+  · cases computed
+  simp only [bind_ok_iff] at computed
+  obtain ⟨updated, updatedOk, activated⟩ := computed
+  have first := foldlM_ok_invariant (fun s => s.randaoMixes = state.randaoMixes)
+    (fun _ _ _ prior ok => (updateRegistryEntry_randao before ok).trans prior) rfl updatedOk
+  have second := foldlM_ok_invariant (fun s => s.randaoMixes = updated.randaoMixes)
+    (fun _ _ _ prior ok => (activateValidator_randao ok).trans prior) rfl activated
+  exact second.trans first
+
+/-- The delayed slashing penalty changes balances, not the seed buffer. -/
+theorem applySlashingPenalty_randao {total adjusted : Gwei} {index : Nat}
+    (computed : applySlashingPenalty state total adjusted index = .ok after) :
+    after.randaoMixes = state.randaoMixes := by
+  simp only [applySlashingPenalty, bind_ok_iff, liftAccessor_ok] at computed
+  obtain ⟨_, _, computed⟩ := computed
+  split at computed
+  · simp only [bind_ok_iff] at computed
+    obtain ⟨_, _, computed⟩ := computed
+    split at computed
+    · simp only [bind_ok_iff, liftAccessor_ok] at computed
+      obtain ⟨_, _, _, _, lowered⟩ := computed
+      exact decreaseBalance_randao lowered
+    · cases computed
+      rfl
+  · cases computed
+    rfl
+
+/-- Applying the epoch slashing penalties preserves the seed buffer. -/
+theorem processSlashings_randao (computed : processSlashings state = .ok after) :
+    after.randaoMixes = state.randaoMixes := by
+  unfold processSlashings at computed
+  split at computed
+  · cases computed
+  simp only [bind_ok_iff] at computed
+  obtain ⟨_, _, _, _, _, _, applied⟩ := computed
+  exact foldlM_ok_invariant (fun s => s.randaoMixes = state.randaoMixes)
+    (fun _ _ _ prior ok => (applySlashingPenalty_randao ok).trans prior) rfl applied
+
+/-- Resetting deposit-contract votes preserves the seed buffer. -/
+theorem processEth1DataReset_randao {before : fork < .hegota}
+    (computed : processEth1DataReset before state = .ok after) :
+    after.randaoMixes = state.randaoMixes := by
+  simp only [processEth1DataReset, bind_ok_iff, liftAccessor_ok] at computed
+  obtain ⟨_, _, computed⟩ := computed
+  split at computed <;> cases computed <;> rfl
+
+/-- Updating one effective balance preserves the seed buffer. -/
+theorem updateEffectiveBalance_randao {index : Nat}
+    (computed : updateEffectiveBalance state index = .ok after) :
+    after.randaoMixes = state.randaoMixes := by
+  simp only [updateEffectiveBalance, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+    Except.ok.injEq] at computed
+  obtain ⟨_, _, _, _, _, _, rfl⟩ := computed
+  rfl
+
+/-- Updating all effective balances preserves the seed buffer. -/
+theorem processEffectiveBalanceUpdates_randao
+    (computed : processEffectiveBalanceUpdates state = .ok after) :
+    after.randaoMixes = state.randaoMixes := by
+  unfold processEffectiveBalanceUpdates at computed
+  split at computed
+  · cases computed
+  exact foldlM_ok_invariant (fun s => s.randaoMixes = state.randaoMixes)
+    (fun _ _ _ prior ok => (updateEffectiveBalance_randao ok).trans prior) rfl computed
+
+/-- Updating historical roots preserves the seed buffer. -/
+theorem processHistoricalRootsUpdate_randao
+    (computed : processHistoricalRootsUpdate state = .ok after) :
+    after.randaoMixes = state.randaoMixes := by
+  unfold processHistoricalRootsUpdate at computed
+  split at computed
+  · cases computed
+  simp only [bind_ok_iff, liftAccessor_ok] at computed
+  obtain ⟨_, _, rest⟩ := computed
+  split at rest
+  · simp only [bind_ok_iff, liftSsz_ok, pure, Except.pure, Except.ok.injEq] at rest
+    obtain ⟨_, _, _, _, rfl⟩ := rest
+    rfl
+  · cases rest
+    rfl
+
+/-- Rotating Phase 0 participation records preserves the seed buffer. -/
+theorem processParticipationRecordUpdates_randao
+    (computed : processParticipationRecordUpdates state = .ok after) :
+    after.randaoMixes = state.randaoMixes := by
+  unfold processParticipationRecordUpdates at computed
+  split at computed
+  · cases computed
+  cases computed
+  rfl
+
+/-- Justification changes checkpoints and bits, not the committee seed buffer. -/
+theorem processJustificationAndFinalization_randao
+    (computed : processJustificationAndFinalization state = .ok after) :
+    after.randaoMixes = state.randaoMixes := by
+  obtain same | ⟨_, _, _, weighed⟩ := processJustificationAndFinalization_ok computed
+  · rw [same]
+  · obtain ⟨_, _, _, rest⟩ := weighJustificationAndFinalization_checkpoints weighed
+    rw [← rest]
+
 /-- Each validator may withdraw no earlier than it exits. -/
 def ExitsOrdered (state : BeaconState preset fork) : Prop :=
   ∀ validator ∈ state.validators.data, validator.exitEpoch ≤ validator.withdrawableEpoch
@@ -816,6 +1151,62 @@ theorem processBlock_active_indices (before : fork < .altair)
   rw [processOperations_active_indices before recent operationsOk]
   simp only [getActiveValidatorIndices, eth1Registry, randaoRegistry, headerRegistry]
 
+/-- Mainnet Phase 0 block processing preserves recent attester seeds.
+
+The reveal changes only the current mix, while recent committees read an older mix. -/
+theorem processBlock_mainnet_attester_seed
+    {state after : BeaconState Preset.mainnet .phase0}
+    {engine : ExecutionEngine Preset.mainnet .phase0}
+    {block : BeaconBlock Preset.mainnet .phase0} {epoch : Epoch}
+    (recent : epoch = getCurrentEpoch state ∨ epoch.toNat + 1 = (getCurrentEpoch state).toNat)
+    (computed : processBlock config checks engine state block = .ok after) :
+    getSeed after epoch DOMAIN_BEACON_ATTESTER =
+      getSeed state epoch DOMAIN_BEACON_ATTESTER := by
+  simp only [processBlock, show ¬Fork.altair ≤ Fork.phase0 by decide, ↓reduceDIte,
+    bind_ok_iff] at computed
+  obtain ⟨header, headerOk, randao, randaoOk, eth1, eth1Ok, operationsOk⟩ := computed
+  have headerSlot := (frame_processBlockHeader headerOk).slot
+  have headerMixes : header.randaoMixes = state.randaoMixes := by
+    obtain ⟨_, _, rfl⟩ := processBlockHeader_eq headerOk
+    rfl
+  have eth1Mixes : eth1.randaoMixes = randao.randaoMixes := by
+    obtain ⟨_, _, rest⟩ := processEth1Data_eq eth1Ok
+    rw [← rest]
+  have seed := processRandao_mainnet_attester_seed randaoOk
+    (by simpa only [getCurrentEpoch, headerSlot] using recent)
+  have preserved := processOperations_randao (by decide) operationsOk
+  have lastSeed : getSeed after epoch DOMAIN_BEACON_ATTESTER =
+      getSeed randao epoch DOMAIN_BEACON_ATTESTER := by
+    apply getSeed_congr
+    intro shifted _
+    simp only [getRandaoMix, preserved, eth1Mixes]
+  have firstSeed : getSeed header epoch DOMAIN_BEACON_ATTESTER =
+      getSeed state epoch DOMAIN_BEACON_ATTESTER := by
+    apply getSeed_congr
+    intro shifted _
+    simp only [getRandaoMix, headerMixes]
+  exact lastSeed.trans (seed.trans firstSeed)
+
+/-- A mainnet Phase 0 block preserves committees for attestations it can include.
+
+Both the ordered active population and its shuffle seed are unchanged. -/
+theorem processBlock_mainnet_committee
+    {state after : BeaconState Preset.mainnet .phase0}
+    {engine : ExecutionEngine Preset.mainnet .phase0}
+    {block : BeaconBlock Preset.mainnet .phase0} {slot : Slot} {index : CommitteeIndex}
+    (recent : computeEpochAtSlot Preset.mainnet slot = getCurrentEpoch state ∨
+      (computeEpochAtSlot Preset.mainnet slot).toNat + 1 = (getCurrentEpoch state).toNat)
+    (computed : processBlock config checks engine state block = .ok after) :
+    getBeaconCommittee after slot index = getBeaconCommittee state slot index := by
+  apply getBeaconCommittee_congr
+  · apply processBlock_active_indices (by decide) _ computed
+    rcases recent with same | previous
+    · rw [same]
+      exact UInt64.le_refl _
+    · rw [UInt64.le_iff_toNat_le]
+      omega
+  · exact processBlock_mainnet_attester_seed recent computed
+
 /-- A frame that preserves the pending lists preserves their checked sources. -/
 theorem PendingUnchanged.sources {before : fork < .altair}
     (pending : PendingUnchanged state after before) (frame : Frame state after)
@@ -1379,6 +1770,55 @@ theorem processEpoch_invariant (altair : fork < .altair) (holds : Invariant stat
   · apply frame.effectiveBalancesBounded
     rw [EffectiveBalancesBounded, validators]
     exact holds.effectiveBalancesBounded
+
+/-- A mainnet Phase 0 epoch transition preserves the current and previous attester seeds.
+
+The only mix write is to the next epoch's circular-buffer position. -/
+theorem processEpoch_mainnet_attester_seed
+    {state after : BeaconState Preset.mainnet .phase0} (holds : Invariant state)
+    {epoch : Epoch}
+    (recent : epoch = getCurrentEpoch state ∨ epoch.toNat + 1 = (getCurrentEpoch state).toNat)
+    (computed : processEpoch config state = .ok after) :
+    getSeed after epoch DOMAIN_BEACON_ATTESTER =
+      getSeed state epoch DOMAIN_BEACON_ATTESTER := by
+  simp only [processEpoch, show ¬Fork.altair ≤ Fork.phase0 by decide, ↓reduceDIte,
+    bind_ok_iff] at computed
+  obtain ⟨justified, justifiedOk, rewarded, rewardedOk, registered, registeredOk, slashed,
+    slashedOk, reset, resetOk, balanced, balancedOk, cleared, clearedOk, mixed, mixedOk, rooted,
+    rootedOk, rotated⟩ := computed
+  have justifiedMixes := processJustificationAndFinalization_randao justifiedOk
+  have rewardedMixes := processRewardsAndPenalties_randao (by decide) rewardedOk
+  have registeredMixes := processRegistryUpdates_randao (by decide) registeredOk
+  have slashedMixes := processSlashings_randao slashedOk
+  have resetMixes := processEth1DataReset_randao resetOk
+  have balancedMixes := processEffectiveBalanceUpdates_randao balancedOk
+  have clearedMixes : cleared.randaoMixes = balanced.randaoMixes := by
+    obtain ⟨_, _, rfl⟩ := processSlashingsReset_eq clearedOk
+    rfl
+  have rootedMixes := processHistoricalRootsUpdate_randao rootedOk
+  have rotatedMixes := processParticipationRecordUpdates_randao rotated
+  have slot := (processJustificationAndFinalization_invariant
+    holds.ordered holds.settled justifiedOk).2.2.2.1
+  have frame := (frame_processRewardsAndPenalties rewardedOk).trans <|
+    (frame_processRegistryUpdates registeredOk).trans <|
+    (frame_processSlashings slashedOk).trans <|
+    (frame_processEth1DataReset resetOk).trans <|
+    (frame_processEffectiveBalanceUpdates balancedOk).trans <|
+    frame_processSlashingsReset clearedOk
+  have seed := processRandaoMixesReset_mainnet_attester_seed mixedOk
+    (by simpa only [getCurrentEpoch, frame.slot, slot] using recent)
+  have beforeSeed : getSeed cleared epoch DOMAIN_BEACON_ATTESTER =
+      getSeed state epoch DOMAIN_BEACON_ATTESTER := by
+    apply getSeed_congr
+    intro shifted _
+    simp only [getRandaoMix, clearedMixes, balancedMixes, resetMixes, slashedMixes,
+      registeredMixes, rewardedMixes, justifiedMixes]
+  have afterSeed : getSeed after epoch DOMAIN_BEACON_ATTESTER =
+      getSeed mixed epoch DOMAIN_BEACON_ATTESTER := by
+    apply getSeed_congr
+    intro shifted _
+    simp only [getRandaoMix, rotatedMixes, rootedMixes]
+  exact afterSeed.trans (seed.trans beforeSeed)
 
 /-- A Phase 0 epoch preserves committees for its current and all earlier epochs.
 
@@ -2147,6 +2587,72 @@ theorem advanceSlots_active_indices (before : fork < .altair) {epoch : Epoch} :
       (advanceSlot_invariant before holds first).1 (UInt64.le_trans past later) tail).trans
       (advanceSlot_active_indices before holds past first)
 
+/-- A mainnet Phase 0 slot step preserves the seeds of its input's recent epochs. -/
+theorem advanceSlot_mainnet_attester_seed
+    {state after : BeaconState Preset.mainnet .phase0} (holds : Invariant state)
+    {epoch : Epoch}
+    (recent : epoch = getCurrentEpoch state ∨ epoch.toNat + 1 = (getCurrentEpoch state).toNat)
+    (computed : advanceSlot config state = .ok after) :
+    getSeed after epoch DOMAIN_BEACON_ATTESTER =
+      getSeed state epoch DOMAIN_BEACON_ATTESTER := by
+  simp only [advanceSlot, bind_ok_iff, liftAccessor_ok, liftArith, mapError_ok_iff,
+    addChecked_ok_iff, pure, Except.pure, Except.ok.injEq] at computed
+  obtain ⟨_, _, cached, cachedOk, epoched, epochedOk, rfl⟩ := computed
+  have frame := frame_processSlot cachedOk
+  have sameMixes : cached.randaoMixes = state.randaoMixes := by
+    obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+    rfl
+  have recent' : epoch = getCurrentEpoch cached ∨
+      epoch.toNat + 1 = (getCurrentEpoch cached).toNat := by
+    simpa only [getCurrentEpoch, frame.slot] using recent
+  have kept : getSeed epoched epoch DOMAIN_BEACON_ATTESTER =
+      getSeed cached epoch DOMAIN_BEACON_ATTESTER := by
+    unfold epochIfLast at epochedOk
+    split at epochedOk
+    · exact processEpoch_mainnet_attester_seed (frame.invariant holds) recent' epochedOk
+    · cases epochedOk
+      rfl
+  have cachedSeed : getSeed cached epoch DOMAIN_BEACON_ATTESTER =
+      getSeed state epoch DOMAIN_BEACON_ATTESTER := by
+    apply getSeed_congr
+    intro shifted _
+    simp only [getRandaoMix, sameMixes]
+  change getSeed epoched epoch DOMAIN_BEACON_ATTESTER = _
+  exact kept.trans cachedSeed
+
+/-- A mainnet Phase 0 slot run preserves a reached epoch's seed while it remains recent. -/
+theorem advanceSlots_mainnet_attester_seed {epoch : Epoch} :
+    ∀ (count : Nat) {state after : BeaconState Preset.mainnet .phase0}, Invariant state →
+      epoch ≤ getCurrentEpoch state → (getCurrentEpoch after).toNat ≤ epoch.toNat + 1 →
+      advanceSlots config count state = .ok after →
+      getSeed after epoch DOMAIN_BEACON_ATTESTER =
+        getSeed state epoch DOMAIN_BEACON_ATTESTER
+  | 0, _, _, _, _, _, computed => by
+    cases computed
+    rfl
+  | count + 1, state, after, holds, past, recentAfter, computed => by
+    simp only [advanceSlots, bind_ok_iff] at computed
+    obtain ⟨middle, first, tail⟩ := computed
+    have firstSlot := advanceSlot_slot first
+    have tailSlot := advanceSlots_slot count tail
+    have lower : getCurrentEpoch state ≤ getCurrentEpoch middle := by
+      rw [UInt64.le_iff_toNat_le, getCurrentEpoch_toNat, getCurrentEpoch_toNat, firstSlot]
+      exact Nat.div_le_div_right (by omega)
+    have upper : (getCurrentEpoch middle).toNat ≤ (getCurrentEpoch after).toNat := by
+      rw [getCurrentEpoch_toNat, getCurrentEpoch_toNat, tailSlot]
+      exact Nat.div_le_div_right (by omega)
+    have recent : epoch = getCurrentEpoch state ∨
+        epoch.toNat + 1 = (getCurrentEpoch state).toNat := by
+      have lo := UInt64.le_iff_toNat_le.mp past
+      have hi := UInt64.le_iff_toNat_le.mp lower
+      by_cases same : epoch.toNat = (getCurrentEpoch state).toNat
+      · exact .inl (UInt64.toNat_inj.mp same)
+      · exact .inr (by omega)
+    exact (advanceSlots_mainnet_attester_seed count
+      (advanceSlot_invariant (by decide) holds first).1
+      (UInt64.le_trans past lower) recentAfter tail).trans
+      (advanceSlot_mainnet_attester_seed holds recent first)
+
 /-- Before Altair, advancing to a later slot keeps the invariant.
 
 The finalized epoch does not decrease. -/
@@ -2196,6 +2702,79 @@ theorem stateTransition_active_indices (before : fork < .altair) (holds : Invari
   obtain ⟨_, _, advancedOk⟩ := slotsOk
   exact blockKept.trans (advanceSlots_active_indices before _ holds past advancedOk)
 
+/-- A mainnet Phase 0 block transition preserves a reached epoch's seed while it remains recent. -/
+theorem stateTransition_mainnet_attester_seed
+    {state after : BeaconState Preset.mainnet .phase0}
+    {engine : ExecutionEngine Preset.mainnet .phase0}
+    {signed : SignedBeaconBlock Preset.mainnet .phase0} {epoch : Epoch}
+    (holds : Invariant state) (past : epoch ≤ getCurrentEpoch state)
+    (recentAfter : (getCurrentEpoch after).toNat ≤ epoch.toNat + 1)
+    (computed : stateTransition config checks engine state signed true = .ok after) :
+    getSeed after epoch DOMAIN_BEACON_ATTESTER =
+      getSeed state epoch DOMAIN_BEACON_ATTESTER := by
+  obtain ⟨advanced, slotsOk, _, _, blockOk, _⟩ := stateTransition_ok computed
+  have frame := frame_processBlock (by decide) blockOk
+  have sameEpoch : getCurrentEpoch after = getCurrentEpoch advanced := by
+    simp only [getCurrentEpoch, frame.slot]
+  have lower : getCurrentEpoch state ≤ getCurrentEpoch advanced := by
+    have slots := processSlots_slot slotsOk
+    rw [UInt64.le_iff_toNat_le, getCurrentEpoch_toNat, getCurrentEpoch_toNat, slots.2]
+    have less := UInt64.lt_iff_toNat_lt.mp slots.1
+    exact Nat.div_le_div_right (by omega)
+  have recent : epoch = getCurrentEpoch advanced ∨
+      epoch.toNat + 1 = (getCurrentEpoch advanced).toNat := by
+    have lo := UInt64.le_iff_toNat_le.mp (UInt64.le_trans past lower)
+    rw [sameEpoch] at recentAfter
+    by_cases same : epoch.toNat = (getCurrentEpoch advanced).toNat
+    · exact .inl (UInt64.toNat_inj.mp same)
+    · exact .inr (by omega)
+  have seed := processBlock_mainnet_attester_seed recent blockOk
+  simp only [processSlots, bind_ok_iff, ensure_ok_iff] at slotsOk
+  obtain ⟨_, _, advancedOk⟩ := slotsOk
+  exact seed.trans (advanceSlots_mainnet_attester_seed _ holds past
+    (by simpa only [sameEpoch] using recentAfter) advancedOk)
+
+/-- A mainnet Phase 0 chain preserves a reached epoch's seed while it remains recent. -/
+theorem stateTransition_chain_mainnet_attester_seed
+    {state after : BeaconState Preset.mainnet .phase0}
+    {engine : ExecutionEngine Preset.mainnet .phase0}
+    {blocks : List (SignedBeaconBlock Preset.mainnet .phase0)} {epoch : Epoch}
+    (holds : Invariant state) (past : epoch ≤ getCurrentEpoch state)
+    (recentAfter : (getCurrentEpoch after).toNat ≤ epoch.toNat + 1)
+    (computed : blocks.foldlM
+      (fun s block => stateTransition config checks engine s block true) state = .ok after) :
+    getSeed after epoch DOMAIN_BEACON_ATTESTER =
+      getSeed state epoch DOMAIN_BEACON_ATTESTER := by
+  induction blocks generalizing state with
+  | nil =>
+    cases computed
+    rfl
+  | cons block rest ih =>
+    simp only [List.foldlM_cons, bind_ok_iff] at computed
+    obtain ⟨middle, first, tail⟩ := computed
+    have transitionEpoch {s t : BeaconState Preset.mainnet .phase0}
+        {block : SignedBeaconBlock Preset.mainnet .phase0}
+        (ok : stateTransition config checks engine s block true = .ok t) :
+        getCurrentEpoch s ≤ getCurrentEpoch t := by
+      obtain ⟨advanced, slotsOk, _, _, blockOk, _⟩ := stateTransition_ok ok
+      have slots := processSlots_slot slotsOk
+      have frame := frame_processBlock (by decide) blockOk
+      rw [UInt64.le_iff_toNat_le, getCurrentEpoch_toNat, getCurrentEpoch_toNat,
+        frame.slot, slots.2]
+      have less := UInt64.lt_iff_toNat_lt.mp slots.1
+      exact Nat.div_le_div_right (by omega)
+    have lower := transitionEpoch first
+    have upper := foldlM_ok_invariant
+      (fun s => getCurrentEpoch middle ≤ getCurrentEpoch s)
+      (fun _ _ _ prior ok => UInt64.le_trans prior (transitionEpoch ok))
+      (UInt64.le_refl _) tail
+    have recentMiddle : (getCurrentEpoch middle).toNat ≤ epoch.toNat + 1 := by
+      have hi := UInt64.le_iff_toNat_le.mp upper
+      omega
+    exact (ih (stateTransition_invariant (by decide) holds first).1
+      (UInt64.le_trans past lower) tail).trans
+      (stateTransition_mainnet_attester_seed holds past recentMiddle first)
+
 /-- Actual Phase 0 chains preserve active indices at every epoch reached before the chain. -/
 theorem stateTransition_chain_active_indices (before : fork < .altair)
     (holds : Invariant state) {epoch : Epoch} (past : epoch ≤ getCurrentEpoch state)
@@ -2220,6 +2799,25 @@ theorem stateTransition_chain_active_indices (before : fork < .altair)
         (stateTransition_active_indices before prior.1 prior.2.1 ok).trans prior.2.2⟩)
     ⟨holds, past, rfl⟩ computed
   exact result.2.2
+
+/-- Mainnet Phase 0 chains preserve a reached epoch's committees while that epoch stays recent.
+
+This compares the actual committee function at the two execution states. -/
+theorem stateTransition_chain_mainnet_committee
+    {state after : BeaconState Preset.mainnet .phase0}
+    {engine : ExecutionEngine Preset.mainnet .phase0}
+    {blocks : List (SignedBeaconBlock Preset.mainnet .phase0)}
+    {slot : Slot} {index : CommitteeIndex}
+    (holds : Invariant state)
+    (past : computeEpochAtSlot Preset.mainnet slot ≤ getCurrentEpoch state)
+    (recentAfter : (getCurrentEpoch after).toNat ≤
+      (computeEpochAtSlot Preset.mainnet slot).toNat + 1)
+    (computed : blocks.foldlM
+      (fun s block => stateTransition config checks engine s block true) state = .ok after) :
+    getBeaconCommittee after slot index = getBeaconCommittee state slot index := by
+  apply getBeaconCommittee_congr
+  · exact stateTransition_chain_active_indices (by decide) holds past computed
+  · exact stateTransition_chain_mainnet_attester_seed holds past recentAfter computed
 
 /-- A changed finalized checkpoint after a block comes from a justification call in its slot run.
 
