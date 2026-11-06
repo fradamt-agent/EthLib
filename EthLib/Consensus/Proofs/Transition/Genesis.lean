@@ -729,7 +729,9 @@ theorem previousJustification_authenticated_at_cached_slot
 
 Genesis has no true bits, so an inherited bit cannot be the end of the search.
 
-The block prefix and slot offset locate the original computation in the concrete execution. -/
+The block prefix and slot offset locate the original computation in the concrete execution.
+
+The epoch equation retains the age of that computation through every intervening bit shift. -/
 theorem justificationBit_origin_of_initialized_chain
     {engine : ExecutionEngine preset .phase0}
     {genesis after : BeaconState preset .phase0}
@@ -747,7 +749,9 @@ theorem justificationBit_origin_of_initialized_chain
       earlier.foldlM
         (fun state block => stateTransition config checks engine state block true)
           genesis = .ok atBlock ∧
-      offset < block.message.slot.toNat - atBlock.slot.toNat ∧ origin.val ≤ index.val ∧
+      offset < block.message.slot.toNat - atBlock.slot.toNat ∧
+      (getCurrentEpoch after).toNat + origin.val =
+        (getCurrentEpoch cached).toNat + 1 + index.val ∧
       advanceSlots config offset atBlock = .ok atStep ∧
       advanceSlot config atStep = .ok next ∧
       processSlot atStep = .ok cached ∧ processEpoch config cached = .ok epoched ∧
@@ -756,7 +760,12 @@ theorem justificationBit_origin_of_initialized_chain
       ((origin.val = 0 ∧ 2 * total.toNat ≤ 3 * current.toNat) ∨
         (origin.val = 1 ∧ 2 * total.toNat ≤ 3 * previous.toNat ∧
           cached.justificationBits.bits[0] = false)) := by
-  rcases stateTransition_chain_bit_origin (by decide) computed bit with inherited | originated
+  have earlyBits : getCurrentEpoch genesis ≤ GENESIS_EPOCH + 1 →
+      ∀ index : Fin 4, genesis.justificationBits.bits[index] = false := by
+    intro _ index
+    exact initializeBeaconStateFromEth1_bits (by decide) initialized index
+  rcases stateTransition_chain_bit_epoch_origin (by decide) earlyBits computed bit with
+      inherited | originated
   · obtain ⟨earlier, _, earlierBit⟩ := inherited
     have cleared := initializeBeaconStateFromEth1_bits (by decide) initialized earlier
     rw [cleared] at earlierBit
