@@ -2615,6 +2615,34 @@ theorem advanceSlots_early_bits (before : fork < .altair) {count : Nat}
     obtain ⟨middle, firstOk, restOk⟩ := computed
     exact ih (advanceSlot_early_bits before holds firstOk) restOk
 
+/-- Epoch processing cannot lower a settled justified epoch. -/
+theorem processEpoch_justified_mono (before : fork < .altair)
+    (settled : state.currentJustifiedCheckpoint.epoch ≤ getPreviousEpoch state)
+    (computed : processEpoch config state = .ok after) :
+    state.currentJustifiedCheckpoint.epoch ≤ after.currentJustifiedCheckpoint.epoch := by
+  obtain ⟨justified, justifiedOk, _, current, _⟩ := processEpoch_justification before computed
+  rw [current]
+  exact processJustificationAndFinalization_justified_mono settled justifiedOk
+
+/-- One slot cannot lower the current justified epoch of a settled state. -/
+theorem advanceSlot_justified_mono (before : fork < .altair)
+    (settled : state.currentJustifiedCheckpoint.epoch ≤ getPreviousEpoch state)
+    (computed : advanceSlot config state = .ok after) :
+    state.currentJustifiedCheckpoint.epoch ≤ after.currentJustifiedCheckpoint.epoch := by
+  simp only [advanceSlot, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+    Except.ok.injEq] at computed
+  obtain ⟨next, _, cached, cachedOk, epoched, epochedOk, rfl⟩ := computed
+  have frame := frame_processSlot cachedOk
+  have cachedSettled : cached.currentJustifiedCheckpoint.epoch ≤ getPreviousEpoch cached := by
+    simpa only [frame.currentJustified, getPreviousEpoch, getCurrentEpoch, frame.slot] using settled
+  change state.currentJustifiedCheckpoint.epoch ≤ epoched.currentJustifiedCheckpoint.epoch
+  rw [← frame.currentJustified]
+  unfold epochIfLast at epochedOk
+  split at epochedOk
+  · exact processEpoch_justified_mono before cachedSettled epochedOk
+  · cases epochedOk
+    exact UInt64.le_refl _
+
 /-- A true bit after one slot is inherited or comes from a threshold at that slot.
 
 Inherited bits keep their index outside epoch processing and shift by one inside it.
@@ -2994,6 +3022,18 @@ theorem advanceSlots_invariant (altair : fork < .altair) :
     obtain ⟨afterHolds, second⟩ := advanceSlots_invariant altair nextHolds rest
     exact ⟨afterHolds, UInt64.le_trans first second⟩
 
+/-- Advancing slots cannot lower the current justified epoch of an invariant state. -/
+theorem advanceSlots_justified_mono (before : fork < .altair) {count : Nat}
+    (holds : Invariant state) (computed : advanceSlots config count state = .ok after) :
+    state.currentJustifiedCheckpoint.epoch ≤ after.currentJustifiedCheckpoint.epoch := by
+  induction count generalizing state with
+  | zero => cases computed; exact UInt64.le_refl _
+  | succ count ih =>
+    simp only [advanceSlots, bind_ok_iff] at computed
+    obtain ⟨middle, firstOk, restOk⟩ := computed
+    exact UInt64.le_trans (advanceSlot_justified_mono before holds.settled firstOk)
+      (ih (advanceSlot_invariant before holds firstOk).1 restOk)
+
 /-- Advancing one Phase 0 slot preserves active indices for every already reached epoch. -/
 theorem advanceSlot_active_indices (before : fork < .altair) (holds : Invariant state)
     {epoch : Epoch} (past : epoch ≤ getCurrentEpoch state)
@@ -3285,6 +3325,35 @@ theorem stateTransition_chain_committee
   apply getBeaconCommittee_congr
   · exact stateTransition_chain_active_indices (by decide) holds past computed
   · exact stateTransition_chain_attester_seed positive history holds past recentAfter computed
+
+/-- A block transition cannot lower the current justified epoch of an invariant state. -/
+theorem stateTransition_justified_mono (before : fork < .altair)
+    {signed : SignedBeaconBlock preset fork} {validateResult : Bool}
+    (holds : Invariant state)
+    (computed : stateTransition config checks engine state signed validateResult = .ok after) :
+    state.currentJustifiedCheckpoint.epoch ≤ after.currentJustifiedCheckpoint.epoch := by
+  obtain ⟨advanced, slotsOk, _, _, blockOk, _⟩ := stateTransition_ok computed
+  have frame := frame_processBlock before blockOk
+  rw [frame.currentJustified]
+  simp only [processSlots, bind_ok_iff, ensure_ok_iff] at slotsOk
+  obtain ⟨_, _, advancedOk⟩ := slotsOk
+  exact advanceSlots_justified_mono before holds advancedOk
+
+/-- The current justified epoch cannot decrease along a chain from an invariant state. -/
+theorem stateTransition_chain_justified_mono (before : fork < .altair)
+    {blocks : List (SignedBeaconBlock preset fork)} {validateResult : Bool}
+    (holds : Invariant state)
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block validateResult)
+        state = .ok after) :
+    state.currentJustifiedCheckpoint.epoch ≤ after.currentJustifiedCheckpoint.epoch := by
+  induction blocks generalizing state with
+  | nil => cases computed; exact UInt64.le_refl _
+  | cons block rest ih =>
+    simp only [List.foldlM_cons, bind_ok_iff] at computed
+    obtain ⟨middle, firstOk, restOk⟩ := computed
+    exact UInt64.le_trans (stateTransition_justified_mono before holds firstOk)
+      (ih (stateTransition_invariant before holds firstOk).1 restOk)
 
 /-- A true bit after a block is inherited or comes from a threshold in its slot run.
 

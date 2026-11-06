@@ -193,6 +193,102 @@ theorem validators_two_thirds_drift
   have compared := validators_two_thirds_comparison entries bounded
   omega
 
+/-- Sum the drift comparison with the actual current-active denominators.
+
+Reference validators absent from either denominator are charged once in the union of exits.
+
+Participants outside these denominators must first be removed and charged to the threshold. -/
+theorem validators_active_two_thirds_comparison
+    (entries : List (Validator × Validator × Validator × Bool × Bool))
+    (leftEpoch rightEpoch : Epoch)
+    (bounded : ∀ entry ∈ entries,
+      entry.1.effectiveBalance ≤ preset.MAX_EFFECTIVE_BALANCE ∧
+      entry.2.1.effectiveBalance ≤ preset.MAX_EFFECTIVE_BALANCE ∧
+      entry.2.2.1.effectiveBalance ≤ preset.MAX_EFFECTIVE_BALANCE)
+    (leftActive : ∀ entry ∈ entries, entry.2.2.2.1 = true →
+      isActiveValidator entry.2.1 leftEpoch = true)
+    (rightActive : ∀ entry ∈ entries, entry.2.2.2.2 = true →
+      isActiveValidator entry.2.2.1 rightEpoch = true) :
+    (entries.map fun entry => entry.1.effectiveBalance.toNat).sum +
+        3 * (entries.map fun entry =>
+          if entry.2.2.2.1 then entry.2.1.effectiveBalance.toNat else 0).sum +
+        3 * (entries.map fun entry =>
+          if entry.2.2.2.2 then entry.2.2.1.effectiveBalance.toNat else 0).sum ≤
+      3 * (entries.map fun entry =>
+          if entry.2.2.2.1 && entry.2.2.2.2 then entry.1.effectiveBalance.toNat else 0).sum +
+        3 * (entries.map fun entry =>
+          max (entry.1.effectiveBalance.toNat - entry.2.1.effectiveBalance.toNat)
+            (entry.1.effectiveBalance.toNat - entry.2.2.1.effectiveBalance.toNat)).sum +
+        2 * (entries.map fun entry =>
+          preset.MAX_EFFECTIVE_BALANCE.toNat - entry.1.effectiveBalance.toNat).sum +
+        2 * (entries.map fun entry =>
+          if isActiveValidator entry.2.1 leftEpoch then entry.2.1.effectiveBalance.toNat
+          else 0).sum +
+        2 * (entries.map fun entry =>
+          if isActiveValidator entry.2.2.1 rightEpoch then entry.2.2.1.effectiveBalance.toNat
+          else 0).sum +
+        2 * (entries.map fun entry =>
+          if isActiveValidator entry.2.1 leftEpoch && isActiveValidator entry.2.2.1 rightEpoch
+          then 0 else entry.1.effectiveBalance.toNat).sum := by
+  induction entries with
+  | nil => simp
+  | cons entry entries ih =>
+    have bounds := bounded entry List.mem_cons_self
+    have one := validator_active_two_thirds_comparison entry.1 entry.2.1 entry.2.2.1
+      leftEpoch rightEpoch entry.2.2.2.1 entry.2.2.2.2 bounds.1 bounds.2.1 bounds.2.2
+      (leftActive entry List.mem_cons_self) (rightActive entry List.mem_cons_self)
+    have rest := ih
+      (fun other member => bounded other (List.mem_cons_of_mem entry member))
+      (fun other member => leftActive other (List.mem_cons_of_mem entry member))
+      (fun other member => rightActive other (List.mem_cons_of_mem entry member))
+    simp only [List.map_cons, List.sum_cons, Nat.mul_add]
+    omega
+
+/-- Active-denominator thresholds bound the reference intersection with explicit exit drift.
+
+The exit coefficient is two for the union of absent reference validators, not twice per branch.
+
+Each threshold correction is retained once, without increasing its coefficient. -/
+theorem validators_active_two_thirds_drift
+    (entries : List (Validator × Validator × Validator × Bool × Bool))
+    (leftEpoch rightEpoch : Epoch)
+    (bounded : ∀ entry ∈ entries,
+      entry.1.effectiveBalance ≤ preset.MAX_EFFECTIVE_BALANCE ∧
+      entry.2.1.effectiveBalance ≤ preset.MAX_EFFECTIVE_BALANCE ∧
+      entry.2.2.1.effectiveBalance ≤ preset.MAX_EFFECTIVE_BALANCE)
+    (leftActive : ∀ entry ∈ entries, entry.2.2.2.1 = true →
+      isActiveValidator entry.2.1 leftEpoch = true)
+    (rightActive : ∀ entry ∈ entries, entry.2.2.2.2 = true →
+      isActiveValidator entry.2.2.1 rightEpoch = true)
+    (leftCorrection rightCorrection : Nat)
+    (leftEnough :
+      2 * (entries.map fun entry =>
+        if isActiveValidator entry.2.1 leftEpoch then entry.2.1.effectiveBalance.toNat
+        else 0).sum ≤
+      3 * (entries.map fun entry =>
+        if entry.2.2.2.1 then entry.2.1.effectiveBalance.toNat else 0).sum + leftCorrection)
+    (rightEnough :
+      2 * (entries.map fun entry =>
+        if isActiveValidator entry.2.2.1 rightEpoch then entry.2.2.1.effectiveBalance.toNat
+        else 0).sum ≤
+      3 * (entries.map fun entry =>
+        if entry.2.2.2.2 then entry.2.2.1.effectiveBalance.toNat else 0).sum + rightCorrection) :
+    (entries.map fun entry => entry.1.effectiveBalance.toNat).sum ≤
+      3 * (entries.map fun entry =>
+          if entry.2.2.2.1 && entry.2.2.2.2 then entry.1.effectiveBalance.toNat else 0).sum +
+        3 * (entries.map fun entry =>
+          max (entry.1.effectiveBalance.toNat - entry.2.1.effectiveBalance.toNat)
+            (entry.1.effectiveBalance.toNat - entry.2.2.1.effectiveBalance.toNat)).sum +
+        2 * (entries.map fun entry =>
+          preset.MAX_EFFECTIVE_BALANCE.toNat - entry.1.effectiveBalance.toNat).sum +
+        2 * (entries.map fun entry =>
+          if isActiveValidator entry.2.1 leftEpoch && isActiveValidator entry.2.2.1 rightEpoch
+          then 0 else entry.1.effectiveBalance.toNat).sum +
+        leftCorrection + rightCorrection := by
+  have compared := validators_active_two_thirds_comparison entries leftEpoch rightEpoch
+    bounded leftActive rightActive
+  omega
+
 /-- The marked sum is a sum of the effective balances paired with true marks.
 
 The array zip discards any unmatched suffix, exactly as `sumMarked` does. -/
@@ -562,6 +658,23 @@ theorem weighJustificationAndFinalization_justified_root {total previous current
     rw [same, epoch]
     exact root
 
+/-- Weighing cannot lower a settled current justified epoch.
+
+The previous epoch is weighed before the current one, and both are at least the stored epoch. -/
+theorem weighJustificationAndFinalization_justified_mono {total previous current : Gwei}
+    (settled : state.currentJustifiedCheckpoint.epoch ≤ getPreviousEpoch state)
+    (computed : weighJustificationAndFinalization state total previous current = .ok after) :
+    state.currentJustifiedCheckpoint.epoch ≤ after.currentJustifiedCheckpoint.epoch := by
+  by_cases unchanged : after.currentJustifiedCheckpoint = state.currentJustifiedCheckpoint
+  · rw [unchanged]
+    exact UInt64.le_refl _
+  · rcases weighJustificationAndFinalization_threshold computed unchanged with
+        ⟨epoch, _⟩ | ⟨epoch, _⟩
+    · rw [epoch]
+      exact UInt64.le_trans settled (getPreviousEpoch_le state)
+    · rw [epoch]
+      exact settled
+
 /-- A matching target attestation comes from the source list and has the epoch's block root.
 
 The source list itself relies on the source check at inclusion, not a second source check here. -/
@@ -732,6 +845,22 @@ theorem weighJustificationAndFinalization_bits {total previous current : Gwei}
   simp only [UInt64.reduceToNat] at pwOk thresholdOk cwOk
   rw [pwOk.2, thresholdOk.2, cwOk.2]
   simp [Nat.mul_comm]
+
+/-- A changed justified checkpoint has the true bit for its selected target epoch.
+
+The previous bit is allowed to be inherited here; the current threshold always sets bit zero. -/
+theorem weighJustificationAndFinalization_justified_bit {total previous current : Gwei}
+    (computed : weighJustificationAndFinalization state total previous current = .ok after)
+    (changed : after.currentJustifiedCheckpoint ≠ state.currentJustifiedCheckpoint) :
+    (after.currentJustifiedCheckpoint.epoch = getCurrentEpoch state ∧
+      after.justificationBits.bits[0] = true) ∨
+    (after.currentJustifiedCheckpoint.epoch = getPreviousEpoch state ∧
+      after.justificationBits.bits[1] = true) := by
+  have bits := weighJustificationAndFinalization_bits computed
+  rcases weighJustificationAndFinalization_threshold computed changed with
+      ⟨epoch, enough⟩ | ⟨epoch, enough⟩
+  · exact .inl ⟨epoch, bits.1.mpr enough⟩
+  · exact .inr ⟨epoch, bits.2.mpr (.inl enough)⟩
 
 /-- A newest true bit has an actual current-epoch threshold computation behind it.
 
@@ -1132,6 +1261,16 @@ theorem processJustificationAndFinalization_ordered (ordered : CheckpointsOrdere
   · subst same
     exact ⟨ordered, UInt64.le_refl _⟩
   · exact weighJustificationAndFinalization_ordered ordered settled weighed
+
+/-- A successful justification step cannot lower the settled justified epoch. -/
+theorem processJustificationAndFinalization_justified_mono
+    (settled : state.currentJustifiedCheckpoint.epoch ≤ getPreviousEpoch state)
+    (computed : processJustificationAndFinalization state = .ok after) :
+    state.currentJustifiedCheckpoint.epoch ≤ after.currentJustifiedCheckpoint.epoch := by
+  rcases processJustificationAndFinalization_ok computed with same | ⟨_, _, _, weighed⟩
+  · rw [same]
+    exact UInt64.le_refl _
+  · exact weighJustificationAndFinalization_justified_mono settled weighed
 
 theorem sameSizes_processJustificationAndFinalization
     (computed : processJustificationAndFinalization state = .ok after) :

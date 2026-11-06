@@ -725,6 +725,95 @@ theorem previousJustification_authenticated_at_cached_slot
   · rw [data]
     exact rootEq
 
+/-- Current justifications of different roots at one epoch expose double-vote evidence.
+
+The conclusion names checked indexed attestations for every index counted on both chains.
+
+Both thresholds use their own cached state's effective balances and retain their floors.
+
+This is the same-target case of Casper FFG §2, directly on Phase 0 justification calls. -/
+theorem currentJustifications_double_vote
+    {engine : ExecutionEngine preset .phase0}
+    {genesis left right leftStep rightStep leftCached rightCached leftJustified rightJustified :
+      BeaconState preset .phase0}
+    {eth1BlockHash : Hash32} {eth1Timestamp : UInt64} {deposits : Array Deposit}
+    {leftBlocks rightBlocks : List (SignedBeaconBlock preset .phase0)}
+    {leftCount rightCount : Nat} {leftRoot rightRoot : Root}
+    (positive : 0 < preset.MIN_SEED_LOOKAHEAD.toNat)
+    (history : preset.MIN_SEED_LOOKAHEAD.toNat + 3 <
+      preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (initialized : initializeBeaconStateFromEth1 config checks eth1BlockHash eth1Timestamp
+      deposits = .ok genesis)
+    (leftRun : leftBlocks.foldlM
+      (fun state block => stateTransition config checks engine state block true) genesis =
+        .ok left)
+    (rightRun : rightBlocks.foldlM
+      (fun state block => stateTransition config checks engine state block true) genesis =
+        .ok right)
+    (leftAdvanced : advanceSlots config leftCount left = .ok leftStep)
+    (rightAdvanced : advanceSlots config rightCount right = .ok rightStep)
+    (leftCache : processSlot leftStep = .ok leftCached)
+    (rightCache : processSlot rightStep = .ok rightCached)
+    (leftWeighed : processJustificationAndFinalization leftCached = .ok leftJustified)
+    (rightWeighed : processJustificationAndFinalization rightCached = .ok rightJustified)
+    (leftEligible : ¬getCurrentEpoch leftCached ≤ GENESIS_EPOCH + 1)
+    (rightEligible : ¬getCurrentEpoch rightCached ≤ GENESIS_EPOCH + 1)
+    (leftBit : leftJustified.justificationBits.bits[0] = true)
+    (rightBit : rightJustified.justificationBits.bits[0] = true)
+    (sameEpoch : getCurrentEpoch leftCached = getCurrentEpoch rightCached)
+    (leftRootOk : getBlockRoot leftCached (getCurrentEpoch leftCached) = .ok leftRoot)
+    (rightRootOk : getBlockRoot rightCached (getCurrentEpoch rightCached) = .ok rightRoot)
+    (different : leftRoot ≠ rightRoot) :
+    ∃ leftIndices rightIndices,
+      2 * sumMarked leftCached.validators.data
+          (markIndices leftCached.validators.data.size
+            (getActiveValidatorIndices leftCached (getCurrentEpoch leftCached))) ≤
+        3 * sumMarked leftCached.validators.data
+            (markIndices leftCached.validators.data.size leftIndices) +
+          3 * totalBalanceFloor leftCached leftIndices ∧
+      2 * sumMarked rightCached.validators.data
+          (markIndices rightCached.validators.data.size
+            (getActiveValidatorIndices rightCached (getCurrentEpoch rightCached))) ≤
+        3 * sumMarked rightCached.validators.data
+            (markIndices rightCached.validators.data.size rightIndices) +
+          3 * totalBalanceFloor rightCached rightIndices ∧
+      ∀ index ∈ leftIndices, index ∈ rightIndices →
+        ∃ (leftRecorded rightRecorded : BeaconState preset .phase0)
+          (leftIndexed rightIndexed : IndexedAttestation preset .phase0),
+          index ∈ leftIndexed.attestingIndices.data ∧
+          index ∈ rightIndexed.attestingIndices.data ∧
+          isValidIndexedAttestation config checks leftRecorded leftIndexed = .ok true ∧
+          isValidIndexedAttestation config checks rightRecorded rightIndexed = .ok true ∧
+          isSlashableAttestationData leftIndexed.data rightIndexed.data = true := by
+  obtain ⟨_, leftIndices, _, _, leftThreshold, leftWitness⟩ :=
+    currentJustification_authenticated_at_cached_slot positive history initialized leftRun
+      leftAdvanced leftCache leftWeighed leftEligible leftBit
+  obtain ⟨_, rightIndices, _, _, rightThreshold, rightWitness⟩ :=
+    currentJustification_authenticated_at_cached_slot positive history initialized rightRun
+      rightAdvanced rightCache rightWeighed rightEligible rightBit
+  refine ⟨leftIndices, rightIndices, leftThreshold, rightThreshold, ?_⟩
+  intro index leftMember rightMember
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, leftRecorded, _, leftIndexed, root1,
+    _, _, leftSigner, _, leftEpoch, root1Ok, leftTarget, leftValid⟩ :=
+    leftWitness index leftMember
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, rightRecorded, _, rightIndexed, root2,
+    _, _, rightSigner, _, rightEpoch, root2Ok, rightTarget, rightValid⟩ :=
+    rightWitness index rightMember
+  have root1Eq : root1 = leftRoot := by
+    simpa only [leftRootOk, Except.ok.injEq] using root1Ok.symm
+  have root2Eq : root2 = rightRoot := by
+    simpa only [rightRootOk, Except.ok.injEq] using root2Ok.symm
+  refine ⟨leftRecorded, rightRecorded, leftIndexed, rightIndexed,
+    leftSigner, rightSigner, leftValid, rightValid, ?_⟩
+  apply isSlashableAttestationData_of_double
+  · intro equal
+    apply different
+    calc
+      leftRoot = leftIndexed.data.target.root := (leftTarget.trans root1Eq).symm
+      _ = rightIndexed.data.target.root := congrArg (·.target.root) equal
+      _ = rightRoot := rightTarget.trans root2Eq
+  · exact leftEpoch.trans (sameEpoch.trans rightEpoch.symm)
+
 /-- A true bit on an initialized chain has an actual threshold computation behind it.
 
 Genesis has no true bits, so an inherited bit cannot be the end of the search.
