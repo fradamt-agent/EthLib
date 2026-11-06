@@ -299,6 +299,18 @@ theorem mem_getActiveValidatorIndices_of_getBeaconCommittee {state : BeaconState
   · cases computed
   simpa using mem_of_computeCommittee (mapError_ok_iff.mp computed) mem
 
+/-- A committee depends on the active indices and the attester seed for its epoch.
+
+Balance changes alone cannot change this assignment. -/
+theorem getBeaconCommittee_congr {state after : BeaconState preset fork}
+    {slot : Slot} {index : CommitteeIndex}
+    (active : getActiveValidatorIndices after (computeEpochAtSlot preset slot) =
+      getActiveValidatorIndices state (computeEpochAtSlot preset slot))
+    (seed : getSeed after (computeEpochAtSlot preset slot) DOMAIN_BEACON_ATTESTER =
+      getSeed state (computeEpochAtSlot preset slot) DOMAIN_BEACON_ATTESTER) :
+    getBeaconCommittee after slot index = getBeaconCommittee state slot index := by
+  simp only [getBeaconCommittee, getCommitteeCountPerSlot, active, seed]
+
 /-- One step of the pass that drops repeats keeps its list decreasing, below the rest. -/
 theorem keepNew_step {kept rest : List ValidatorIndex} {first : ValidatorIndex}
     (decreasing : kept.Pairwise (· > ·)) (keptLe : ∀ last ∈ kept, last ≤ first)

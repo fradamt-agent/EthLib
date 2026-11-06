@@ -139,6 +139,43 @@ def PendingSourcesMatch (state : BeaconState preset fork) (before : fork < .alta
   (∀ pending ∈ (state.previousEpochAttestations before).data,
     pending.data.source = state.previousJustifiedCheckpoint)
 
+/-- Each pending list contains attestations whose target and slot belong to that list's epoch.
+
+The target-epoch and slot-epoch checks at inclusion establish both equalities. -/
+def PendingEpochsMatch (state : BeaconState preset fork) (before : fork < .altair) : Prop :=
+  (∀ pending ∈ (state.currentEpochAttestations before).data,
+    pending.data.target.epoch = getCurrentEpoch state ∧
+      computeEpochAtSlot preset pending.data.slot = getCurrentEpoch state) ∧
+  (∀ pending ∈ (state.previousEpochAttestations before).data,
+    pending.data.target.epoch = getPreviousEpoch state ∧
+      computeEpochAtSlot preset pending.data.slot = getPreviousEpoch state)
+
+/-- Recording a checked target preserves the epochs of both pending lists. -/
+theorem recordPendingAttestation_epochs {before : fork < .altair} {current : Bool}
+    {pending : PendingAttestation preset} (holds : PendingEpochsMatch state before)
+    (target : pending.data.target.epoch =
+      if current then getCurrentEpoch state else getPreviousEpoch state)
+    (slot : computeEpochAtSlot preset pending.data.slot = pending.data.target.epoch)
+    (computed : recordPendingAttestation state before current pending = .ok after) :
+    PendingEpochsMatch after before := by
+  cases current <;>
+    simp only [recordPendingAttestation, Bool.false_eq_true, ↓reduceIte] at computed <;>
+    split at computed <;> cases computed
+  all_goals
+    simp only [PendingEpochsMatch] at holds ⊢
+    simp only [Bool.false_eq_true, ↓reduceIte] at target
+    obtain ⟨current, previous⟩ := holds
+    constructor
+    all_goals
+      intro entry member
+      try simp only [Array.mem_push] at member
+      first
+      | exact current entry member
+      | exact previous entry member
+      | rcases member with member | rfl
+        · first | exact current entry member | exact previous entry member
+        · exact ⟨target, slot.trans target⟩
+
 /-- Appending an attestation with the checked source preserves the pending-source invariant. -/
 theorem recordPendingAttestation_sources {before : fork < .altair} {current : Bool}
     {pending : PendingAttestation preset} (holds : PendingSourcesMatch state before)
@@ -240,6 +277,22 @@ theorem processAttestation_sources {attestation : Attestation preset fork}
   obtain ⟨pending, _, data, _, _, recorded, _⟩ := processAttestation_records before computed
   apply recordPendingAttestation_sources holds _ recorded
   simpa only [data, beq_iff_eq] using source
+
+/-- Successful inclusion keeps each pending target and slot in its assigned epoch. -/
+theorem processAttestation_epochs {attestation : Attestation preset fork}
+    (before : fork < .altair) (holds : PendingEpochsMatch state before)
+    (computed : processAttestation config checks state attestation = .ok after) :
+    PendingEpochsMatch after before := by
+  obtain ⟨recent, slot, _⟩ := processAttestation_checks before computed
+  obtain ⟨pending, _, data, _, _, recorded, _⟩ := processAttestation_records before computed
+  apply recordPendingAttestation_epochs holds _ _ recorded
+  · rw [data]
+    simp only [beq_iff_eq]
+    split
+    · exact ‹_›
+    · exact recent.resolve_right ‹_›
+  · rw [data]
+    exact slot.symm
 
 /-- Every pending record after inclusion was already stored or records this attestation.
 

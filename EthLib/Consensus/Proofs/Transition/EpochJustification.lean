@@ -48,6 +48,18 @@ theorem pendingSourcesMatch_of_fields {before : fork < .altair}
   rw [current, previous, currentPending, previousPending]
   exact holds
 
+/-- Pending epochs are unchanged when the slot and both pending lists are unchanged. -/
+theorem pendingEpochsMatch_of_fields {before : fork < .altair}
+    (holds : PendingEpochsMatch state before)
+    (slot : after.slot = state.slot)
+    (currentPending : after.currentEpochAttestations before = state.currentEpochAttestations before)
+    (previousPending : after.previousEpochAttestations before =
+      state.previousEpochAttestations before) :
+    PendingEpochsMatch after before := by
+  unfold PendingEpochsMatch getPreviousEpoch getCurrentEpoch at holds ⊢
+  rw [slot, currentPending, previousPending]
+  exact holds
+
 /-- Compare two participation marks using the effective balances at the same validator index.
 
 The two later balances can grow only to the Phase 0 cap.
@@ -362,6 +374,35 @@ theorem mem_getActiveValidatorIndices_of_pending
   exact mem_getActiveValidatorIndices_of_getBeaconCommittee committeeOk
     (mem_of_committeeAttesters signersOk member)
 
+/-- Pending and included forms recover the same signer indices from the same committee.
+
+The pending record retains the data and aggregation bits checked during inclusion.
+
+The committee equality is needed because weighing reconstructs committees from a later state. -/
+theorem getPendingAttestingIndices_indexed {inclusion : BeaconState preset fork}
+    {pending : PendingAttestation preset} {attestation : Attestation preset fork}
+    {indices : List ValidatorIndex} (before : fork < .altair)
+    (data : pending.data = attestation.data)
+    (bits : pending.aggregationBits.bits = attestation.aggregationBits.bits)
+    (committee : getBeaconCommittee inclusion pending.data.slot pending.data.index =
+      getBeaconCommittee state pending.data.slot pending.data.index)
+    (computed : getPendingAttestingIndices state pending = .ok indices) :
+    ∃ indexed, getIndexedAttestation inclusion attestation = .ok indexed ∧
+      indexed.attestingIndices.data = (sortedSet indices).toArray ∧
+      indexed.data = pending.data ∧ indexed.signature = attestation.signature := by
+  have notElectra : ¬Fork.pectra ≤ fork :=
+    Nat.not_le_of_lt (Nat.lt_trans before (by decide))
+  have signers : getAttestingIndices inclusion attestation = .ok (sortedSet indices) := by
+    unfold getPendingAttestingIndices at computed
+    rw [← committee, data, bits] at computed
+    simp only [getAttestingIndices, notElectra, ↓reduceDIte]
+    obtain ⟨members, membersOk, signersOk⟩ := bind_ok_iff.mp computed
+    rw [membersOk]
+    simp only [bind, Except.bind, signersOk, pure, Except.pure]
+  obtain ⟨indexed, indexedOk, listed, indexedData, signature⟩ :=
+    getIndexedAttestation_of_getAttestingIndices signers
+  exact ⟨indexed, indexedOk, listed, indexedData.trans data.symm, signature⟩
+
 /-- A successful finalization test gives its exact epoch gap and requires its justification bits.
 
 The checked addition rules out a modular epoch equality. -/
@@ -500,6 +541,40 @@ theorem getMatchingTargetAttestations_source {before : fork < .altair} {epoch : 
   obtain ⟨_, _, sources, _, included, _⟩ := getMatchingTargetAttestations_mem computed member
   exact getMatchingSourceAttestations_source holds sources included
 
+/-- Target matching reads attestations whose checked slot belongs to the requested epoch. -/
+theorem getMatchingTargetAttestations_slot_epoch {before : fork < .altair} {epoch : Epoch}
+    {attestations : Array (PendingAttestation preset)} {pending : PendingAttestation preset}
+    (holds : PendingEpochsMatch state before)
+    (computed : getMatchingTargetAttestations state before epoch = .ok attestations)
+    (member : pending ∈ attestations) :
+    pending.data.target.epoch = epoch ∧ computeEpochAtSlot preset pending.data.slot = epoch := by
+  obtain ⟨_, _, sources, _, included, _⟩ := getMatchingTargetAttestations_mem computed member
+  simp only [getMatchingSourceAttestations, bind_ok_iff, ensure_ok_iff, pure, Except.pure,
+    Except.ok.injEq] at sources
+  obtain ⟨_, recent, rfl⟩ := sources
+  by_cases current : epoch = getCurrentEpoch state
+  · simp only [current, ↓reduceIte] at included ⊢
+    exact holds.1 pending included
+  · simp only [current, ↓reduceIte] at included
+    rw [recent.resolve_right current]
+    exact holds.2 pending included
+
+/-- Every signer counted for the current target is in the current active denominator.
+
+The pending-epoch invariant connects committee reconstruction to that denominator. -/
+theorem mem_getActiveValidatorIndices_of_current_target {before : fork < .altair}
+    {attestations : Array (PendingAttestation preset)} {indices : List ValidatorIndex}
+    (holds : PendingEpochsMatch state before)
+    (matching : getMatchingTargetAttestations state before (getCurrentEpoch state) =
+      .ok attestations)
+    (computed : getUnslashedAttestingIndices state attestations = .ok indices)
+    {index : ValidatorIndex} (member : index ∈ indices) :
+    index ∈ getActiveValidatorIndices state (getCurrentEpoch state) := by
+  obtain ⟨⟨pending, included, signers, signersOk, signer⟩, _⟩ :=
+    mem_getUnslashedAttestingIndices computed member
+  have epoch := (getMatchingTargetAttestations_slot_epoch holds matching included).2
+  simpa only [epoch] using mem_getActiveValidatorIndices_of_pending signersOk signer
+
 /-- Before Altair, a changed justified checkpoint has a computed target balance above threshold.
 
 The attestations and balances here are exactly those read by the epoch transition. -/
@@ -616,6 +691,47 @@ theorem processJustificationAndFinalization_current_bit (before : fork < .altair
   exact ⟨previous, current, total, previousBalance, currentBalance, previousOk, currentOk,
     totalOk, previousBalanceOk, currentBalanceOk, weighed,
     (weighJustificationAndFinalization_bits weighed).1.mp bit⟩
+
+/-- The current justification bit counts actual pending signers, retaining the increment floor.
+
+The source is the checkpoint checked at inclusion when the pending-source invariant holds.
+
+Membership in the current active denominator still requires the pending target-epoch invariant. -/
+theorem processJustificationAndFinalization_current_bit_signers (before : fork < .altair)
+    (computed : processJustificationAndFinalization state = .ok after)
+    (eligible : ¬getCurrentEpoch state ≤ GENESIS_EPOCH + 1)
+    (bit : after.justificationBits.bits[0] = true)
+    (sources : PendingSourcesMatch state before) :
+    ∃ attestations indices,
+      getMatchingTargetAttestations state before (getCurrentEpoch state) = .ok attestations ∧
+      getUnslashedAttestingIndices state attestations = .ok indices ∧
+      2 * sumMarked state.validators.data
+          (markIndices state.validators.data.size
+            (getActiveValidatorIndices state (getCurrentEpoch state))) ≤
+        3 * sumMarked state.validators.data (markIndices state.validators.data.size indices) +
+          3 * totalBalanceFloor state indices ∧
+      (∀ index ∈ indices,
+        (∃ pending ∈ attestations, ∃ signers root,
+          getPendingAttestingIndices state pending = .ok signers ∧ index ∈ signers ∧
+          pending.data.source = state.currentJustifiedCheckpoint ∧
+          getBlockRoot state (getCurrentEpoch state) = .ok root ∧
+          pending.data.target.root = root) ∧
+        ∃ validator, getValidator state index = .ok validator ∧ validator.slashed = false) := by
+  obtain ⟨_, current, total, _, target, _, matching, totalOk, _, targetOk, _, enough⟩ :=
+    processJustificationAndFinalization_current_bit before computed eligible bit
+  simp only [getAttestingBalance, bind_ok_iff] at targetOk
+  obtain ⟨indices, indicesOk, targetOk⟩ := targetOk
+  refine ⟨current, indices, matching, indicesOk,
+    getTotalBalance_threshold_raw totalOk targetOk enough, ?_⟩
+  intro index member
+  obtain ⟨⟨pending, pendingMember, signers, signersOk, signer⟩, validator⟩ :=
+    mem_getUnslashedAttestingIndices indicesOk member
+  obtain ⟨_, root, _, rootOk, _, rootEq⟩ :=
+    getMatchingTargetAttestations_mem matching pendingMember
+  have source := getMatchingTargetAttestations_source sources matching pendingMember
+  simp only [↓reduceIte] at source
+  exact ⟨⟨pending, pendingMember, signers, root, signersOk, signer, source, rootOk, rootEq⟩,
+    validator⟩
 
 /-- The two oldest justification bits retain the preceding call's two middle bits.
 
@@ -771,6 +887,29 @@ theorem processJustificationAndFinalization_ok
   · simp only [bind_ok_iff] at computed
     obtain ⟨_, _, _, _, total, _, previous, _, current, _, weighed⟩ := computed
     exact .inr ⟨total, previous, current, weighed⟩
+
+/-- An eligible justification step leaves the current pending sources ready for rotation.
+
+The step assigns the old current checkpoint to the previous checkpoint.
+
+It does not change the pending attestations, even when it justifies a new current checkpoint. -/
+theorem processJustificationAndFinalization_sources_for_rotation (before : fork < .altair)
+    (holds : PendingSourcesMatch state before)
+    (eligible : ¬getCurrentEpoch state ≤ GENESIS_EPOCH + 1)
+    (computed : processJustificationAndFinalization state = .ok after) :
+    ∀ pending ∈ (after.currentEpochAttestations before).data,
+      pending.data.source = after.previousJustifiedCheckpoint := by
+  unfold processJustificationAndFinalization at computed
+  split at computed
+  · exact absurd ‹_› (Nat.not_le_of_lt before)
+  simp only [bind_ok_iff, liftAccessor_ok] at computed
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, weighed⟩ := computed
+  obtain ⟨previous, _, _, unchanged⟩ := weighJustificationAndFinalization_checkpoints weighed
+  have pending := congrArg (fun s => s.currentEpochAttestations before) unchanged
+  intro entry member
+  rw [previous]
+  rw [pending] at member
+  exact holds.1 entry member
 
 /-- A changed justified checkpoint is exactly the block root read for its epoch. -/
 theorem processJustificationAndFinalization_justified_root
