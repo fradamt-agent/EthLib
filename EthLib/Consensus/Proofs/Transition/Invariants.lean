@@ -1344,6 +1344,12 @@ theorem frame_processSlot (computed : processSlot state = .ok after) : Frame sta
   obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok computed
   exact Frame.of_validators ⟨rfl, rfl⟩ rfl rfl rfl rfl rfl rfl
 
+/-- Caching roots at a slot preserves both lists of pending attestations. -/
+theorem pendingUnchanged_processSlot {before : fork < .altair}
+    (computed : processSlot state = .ok after) : PendingUnchanged state after before := by
+  obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok computed
+  exact ⟨rfl, rfl⟩
+
 /-- Pending sources match, and the two justified checkpoints agree during the first two epochs.
 
 The early equality permits participation rotation while justification is still disabled. -/

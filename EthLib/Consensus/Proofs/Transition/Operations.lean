@@ -142,6 +142,15 @@ theorem recordPendingAttestation_indexed {before : fork < .altair} {current : Bo
     split at computed <;> cases computed <;>
     simp only [getIndexedAttestation, getAttestingIndices, notElectra, ↓reduceDIte] <;> rfl
 
+/-- Recording a pending attestation preserves every committee query. -/
+theorem recordPendingAttestation_committee {before : fork < .altair} {current : Bool}
+    {pending : PendingAttestation preset} (slot : Slot) (index : CommitteeIndex)
+    (computed : recordPendingAttestation state before current pending = .ok after) :
+    getBeaconCommittee after slot index = getBeaconCommittee state slot index := by
+  cases current <;>
+    simp only [recordPendingAttestation, Bool.false_eq_true, ↓reduceIte] at computed <;>
+    split at computed <;> cases computed <;> rfl
+
 /-- The sources stored for each epoch equal the state's corresponding justified checkpoint.
 
 Inclusion checks the source before recording a pending attestation.
@@ -281,6 +290,19 @@ theorem processAttestation_records {attestation : Attestation preset fork}
     updated, recorded, indexed, indexedOk, valid, validOk, _, validTrue, rfl⟩ := computed
   subst validTrue
   exact ⟨_, rfl, rfl, rfl, proposerOk, recorded, indexed, indexedOk, validOk⟩
+
+/-- A successful Phase 0 inclusion validates the indexed form computed before recording.
+
+The registry and committee are unchanged by the recording step. -/
+theorem processAttestation_indexed_valid {attestation : Attestation preset fork}
+    (before : fork < .altair)
+    (computed : processAttestation config checks state attestation = .ok after) :
+    ∃ indexed, getIndexedAttestation state attestation = .ok indexed ∧
+      isValidIndexedAttestation config checks after indexed = .ok true := by
+  obtain ⟨_, _, _, _, _, recorded, indexed, indexedOk, valid⟩ :=
+    processAttestation_records before computed
+  rw [recordPendingAttestation_indexed attestation recorded] at indexedOk
+  exact ⟨indexed, indexedOk, valid⟩
 
 /-- Successful Phase 0 attestation processing preserves both stored source equalities. -/
 theorem processAttestation_sources {attestation : Attestation preset fork}

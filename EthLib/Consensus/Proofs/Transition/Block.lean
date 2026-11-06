@@ -190,6 +190,34 @@ theorem sameSizes_processRandao {config : Config} {checks : SignatureChecks}
   obtain ⟨_, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq computed
   exact SameSizes.refl state
 
+/-- Mixing the current reveal preserves every different circular-buffer position.
+
+Committee-seed stability needs this position inequality, not merely distinct epoch numbers. -/
+theorem processRandao_mix_of_ne {config : Config} {checks : SignatureChecks}
+    {state after : BeaconState preset fork} {body : BeaconBlockBody preset fork} {epoch : Epoch}
+    (computed : processRandao config checks state body = .ok after)
+    (distinct : (epoch % preset.EPOCHS_PER_HISTORICAL_VECTOR).toNat ≠
+      (getCurrentEpoch state % preset.EPOCHS_PER_HISTORICAL_VECTOR).toNat) :
+    getRandaoMix after epoch = getRandaoMix state epoch := by
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq computed
+  simp only [getRandaoMix, readCircular]
+  split
+  · rfl
+  · congr 1
+    exact Vector.getElem_set!_ne (toNat_mod_lt ‹_›) (Ne.symm distinct)
+
+/-- Mainnet block randomness preserves the attester seed of the current or previous epoch. -/
+theorem processRandao_mainnet_attester_seed {config : Config} {checks : SignatureChecks}
+    {state after : BeaconState Preset.mainnet fork}
+    {body : BeaconBlockBody Preset.mainnet fork} {epoch : Epoch}
+    (computed : processRandao config checks state body = .ok after)
+    (recent : epoch = getCurrentEpoch state ∨ epoch.toNat + 1 = (getCurrentEpoch state).toNat) :
+    getSeed after epoch DOMAIN_BEACON_ATTESTER =
+      getSeed state epoch DOMAIN_BEACON_ATTESTER := by
+  apply getSeed_congr
+  intro shifted shiftedOk
+  exact processRandao_mix_of_ne computed (mainnet_attester_seed_positions recent shiftedOk).1
+
 /-! ## Votes on the deposit contract -/
 
 /-- The vote step appends the vote.

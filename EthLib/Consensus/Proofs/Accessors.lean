@@ -1,5 +1,6 @@
 module
 
+public import EthLib.Base.Proofs.Uint64
 public import EthLib.Consensus.Accessors
 public import EthLib.Consensus.Proofs.ShufflePermutation
 public import EthLib.Consensus.Proofs.Signing
@@ -89,6 +90,69 @@ theorem getActiveValidatorIndices_sorted {state : BeaconState preset fork}
   have hj : j < state.validators.data.size := by simpa using (List.mem_zipIdx' mj).1
   rw [UInt64.lt_iff_toNat_lt, toNat_toUInt64_of_lt within hi, toNat_toUInt64_of_lt within hj]
   exact lt
+
+/-- Active committees depend on registry positions and activity, not balances or slashed flags. -/
+theorem getActiveValidatorIndices_congr {state after : BeaconState preset fork} {epoch : Epoch}
+    (stateWithin : state.RegistryWithinLimit) (afterWithin : after.RegistryWithinLimit)
+    (same : ∀ index : ValidatorIndex,
+      (∃ validator, state.validators.data[index.toNat]? = some validator ∧
+        isActiveValidator validator epoch = true) ↔
+      ∃ validator, after.validators.data[index.toNat]? = some validator ∧
+        isActiveValidator validator epoch = true) :
+    getActiveValidatorIndices after epoch = getActiveValidatorIndices state epoch := by
+  have left := getActiveValidatorIndices_sorted afterWithin epoch
+  have right := getActiveValidatorIndices_sorted stateWithin epoch
+  have leftNat := (List.pairwise_map.mpr left :
+    ((getActiveValidatorIndices after epoch).map UInt64.toNat).Pairwise (· < ·))
+  have rightNat := (List.pairwise_map.mpr right :
+    ((getActiveValidatorIndices state epoch).map UInt64.toNat).Pairwise (· < ·))
+  have members : ∀ index, index ∈ getActiveValidatorIndices after epoch ↔
+      index ∈ getActiveValidatorIndices state epoch := by
+    intro index
+    rw [mem_getActiveValidatorIndices afterWithin, mem_getActiveValidatorIndices stateWithin]
+    exact (same index).symm
+  have orderedUnique : ∀ (a b : List Nat), a.Pairwise (· < ·) → b.Pairwise (· < ·) →
+      (∀ i, i ∈ a ↔ i ∈ b) → a = b := by
+    intro a
+    induction a with
+    | nil =>
+      intro b _ _ same
+      cases b with
+      | nil => rfl
+      | cons first rest => have := (same first).mpr List.mem_cons_self; cases this
+    | cons first rest ih =>
+      intro b left right same
+      cases b with
+      | nil => have := (same first).mp List.mem_cons_self; cases this
+      | cons second tail =>
+        have firstIn := (same first).mp List.mem_cons_self
+        have secondIn := (same second).mpr List.mem_cons_self
+        have heads : first = second := by
+          simp only [List.mem_cons] at firstIn secondIn
+          rcases firstIn with equal | member
+          · exact equal
+          · have lt := (List.pairwise_cons.mp right).1 first member
+            rcases secondIn with equal | member
+            · exact equal.symm
+            · have gt := (List.pairwise_cons.mp left).1 second member
+              omega
+        subst second
+        congr 1
+        apply ih (b := tail) (List.pairwise_cons.mp left).2 (List.pairwise_cons.mp right).2
+        intro i
+        have notHeadLeft : first ∉ rest := fun member =>
+          Nat.lt_irrefl _ ((List.pairwise_cons.mp left).1 first member)
+        have notHeadRight : first ∉ tail := fun member =>
+          Nat.lt_irrefl _ ((List.pairwise_cons.mp right).1 first member)
+        by_cases equal : i = first
+        · subst i
+          simp only [notHeadLeft, notHeadRight]
+        · simpa only [List.mem_cons, equal, false_or] using same i
+  have equal := orderedUnique _ _ leftNat rightNat (by
+    intro value
+    simp only [List.mem_map]
+    exact exists_congr fun index => and_congr_left fun _ => members index)
+  exact (List.map_inj_right (fun _ _ => UInt64.toNat_inj.mp)).mp equal
 
 /-- Marking indices one after the other sets exactly the entries that some index names. -/
 theorem getElem?_foldl_mark (indices : List ValidatorIndex) (init : Array Bool) (j : Nat) :
@@ -298,6 +362,61 @@ theorem mem_getActiveValidatorIndices_of_getBeaconCommittee {state : BeaconState
   split at computed
   · cases computed
   simpa using mem_of_computeCommittee (mapError_ok_iff.mp computed) mem
+
+/-- A seed reads only the mix selected by its checked lookahead calculation.
+
+If that calculation fails, equal arithmetic parameters already give equal errors. -/
+theorem getSeed_congr {state after : BeaconState preset fork} {epoch : Epoch}
+    {domainType : DomainType}
+    (mix : ∀ shifted,
+      (do
+        subChecked (← subChecked (← addChecked epoch preset.EPOCHS_PER_HISTORICAL_VECTOR)
+          preset.MIN_SEED_LOOKAHEAD) 1) = .ok shifted →
+        getRandaoMix after shifted = getRandaoMix state shifted) :
+    getSeed after epoch domainType = getSeed state epoch domainType := by
+  unfold getSeed
+  cases computed : (do
+      subChecked (← subChecked (← addChecked epoch preset.EPOCHS_PER_HISTORICAL_VECTOR)
+        preset.MIN_SEED_LOOKAHEAD) 1) with
+  | error error => rfl
+  | ok shifted =>
+    simp only [liftArith, Except.mapError, bind, Except.bind]
+    rw [mix shifted computed]
+
+/-- On mainnet, an attester seed for the current or previous epoch reads neither reset position.
+
+The seed looks back two epochs and the circular buffer has 65536 entries.
+
+The two positions written during inclusion and rotation are the current and next positions. -/
+theorem mainnet_attester_seed_positions {epoch current shifted : Epoch}
+    (recent : epoch = current ∨ epoch.toNat + 1 = current.toNat)
+    (computed : (do
+      subChecked (← subChecked (← addChecked epoch Preset.mainnet.EPOCHS_PER_HISTORICAL_VECTOR)
+        Preset.mainnet.MIN_SEED_LOOKAHEAD) 1) = .ok shifted) :
+    (shifted % Preset.mainnet.EPOCHS_PER_HISTORICAL_VECTOR).toNat ≠
+        (current % Preset.mainnet.EPOCHS_PER_HISTORICAL_VECTOR).toNat ∧
+      ∀ next : Epoch, next.toNat = current.toNat + 1 →
+        (shifted % Preset.mainnet.EPOCHS_PER_HISTORICAL_VECTOR).toNat ≠
+          (next % Preset.mainnet.EPOCHS_PER_HISTORICAL_VECTOR).toNat := by
+  simp only [bind_ok_iff, addChecked_ok_iff, subChecked_ok_iff] at computed
+  obtain ⟨sum, summed, difference, subtracted, last⟩ := computed
+  have exactShift : shifted.toNat + 2 = epoch.toNat + 65536 := by
+    change (_ ∧ sum.toNat = epoch.toNat + 65536) at summed
+    change (1 ≤ sum.toNat ∧ difference.toNat = sum.toNat - 1) at subtracted
+    change (1 ≤ difference.toNat ∧ shifted.toNat = difference.toNat - 1) at last
+    omega
+  change shifted.toNat % 65536 ≠ current.toNat % 65536 ∧
+    ∀ next : Epoch, next.toNat = current.toNat + 1 →
+      shifted.toNat % 65536 ≠ next.toNat % 65536
+  rcases recent with rfl | previous
+  · constructor
+    · omega
+    · intro next nextEq
+      omega
+  · constructor
+    · omega
+    · intro next nextEq
+      omega
 
 /-- A committee depends on the active indices and the attester seed for its epoch.
 

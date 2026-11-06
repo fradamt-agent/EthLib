@@ -340,6 +340,68 @@ theorem sameSizes_activateValidator {index : ValidatorIndex}
   obtain ⟨_, _, _, _, rfl⟩ := computed
   exact sameSizes_setValidator _ _ _
 
+/-- An activation is scheduled strictly after the epoch that schedules it.
+
+Its checked epoch calculation is exact, so activation cannot alter a current committee. -/
+theorem activateValidator_scheduled {index : ValidatorIndex}
+    (computed : activateValidator state index = .ok after) :
+    ∃ validator activated,
+      getValidator state index = .ok validator ∧
+      getValidator after index = .ok activated ∧
+      activated.activationEpoch.toNat = (getCurrentEpoch state).toNat + 1 +
+        preset.MAX_SEED_LOOKAHEAD.toNat ∧
+      activated = { validator with activationEpoch := activated.activationEpoch } := by
+  simp only [activateValidator, bind_ok_iff, liftAccessor_ok, liftArith, mapError_ok_iff,
+    pure, Except.pure,
+    Except.ok.injEq] at computed
+  obtain ⟨validator, found, epoch, epochOk, rfl⟩ := computed
+  simp only [computeActivationExitEpoch, bind_ok_iff, addChecked_ok_iff] at epochOk
+  obtain ⟨next, nextOk, epochOk⟩ := epochOk
+  refine ⟨validator, { validator with activationEpoch := epoch }, found,
+    getValidator_setValidator_self found _, ?_, rfl⟩
+  change epoch.toNat = (getCurrentEpoch state).toNat + 1 + preset.MAX_SEED_LOOKAHEAD.toNat
+  simp only [UInt64.toNat_one] at nextOk
+  omega
+
+/-- Scheduling an eligible validator does not change whether it is active in a past epoch.
+
+The queue admits only validators with the far-future activation epoch. -/
+theorem activateValidator_active_of_eligible {index : ValidatorIndex} {epoch : Epoch}
+    {validator : Validator}
+    (found : getValidator state index = .ok validator)
+    (eligible : isEligibleForActivation state validator = true)
+    (past : epoch ≤ getCurrentEpoch state)
+    (computed : activateValidator state index = .ok after) :
+    ∃ activated, getValidator after index = .ok activated ∧
+      isActiveValidator activated epoch = isActiveValidator validator epoch := by
+  obtain ⟨old, activated, oldOk, activatedOk, scheduled, fields⟩ :=
+    activateValidator_scheduled computed
+  have equal : old = validator := Except.ok.inj (oldOk.symm.trans found)
+  subst old
+  refine ⟨activated, activatedOk, ?_⟩
+  have inactiveBefore : isActiveValidator validator epoch = false := by
+    simp only [isEligibleForActivation, Bool.and_eq_true, beq_iff_eq] at eligible
+    simp only [isActiveValidator, eligible.2, Bool.and_eq_false_iff]
+    apply Or.inl
+    apply Bool.eq_false_iff.mpr
+    intro active
+    have top : epoch ≤ FAR_FUTURE_EPOCH := UInt64.le_iff_toNat_le.mpr
+      (by have := epoch.toNat_lt; change epoch.toNat ≤ 18446744073709551615; omega)
+    have epochEq : epoch = FAR_FUTURE_EPOCH :=
+      UInt64.le_antisymm top (of_decide_eq_true active)
+    have pastNat := UInt64.le_iff_toNat_le.mp past
+    have activatedBound := activated.activationEpoch.toNat_lt
+    rw [epochEq] at pastNat
+    change 18446744073709551615 ≤ (getCurrentEpoch state).toNat at pastNat
+    omega
+  have inactiveAfter : isActiveValidator activated epoch = false := by
+    have pastNat := UInt64.le_iff_toNat_le.mp past
+    have later : ¬activated.activationEpoch ≤ epoch := by
+      rw [UInt64.le_iff_toNat_le]
+      omega
+    simp [isActiveValidator, later]
+  exact inactiveAfter.trans inactiveBefore.symm
+
 /-- From Deneb, an epoch activates at most the maximum, and at most the churn limit. -/
 theorem getValidatorActivationChurnLimit_le {config : Config} :
     getValidatorActivationChurnLimit config state ≤ config.MAX_PER_EPOCH_ACTIVATION_CHURN_LIMIT ∧
@@ -440,6 +502,34 @@ theorem processRandaoMixesReset_eq (computed : processRandaoMixesReset state = .
     addChecked_ok_iff, pure, Except.pure, Except.ok.injEq] at computed
   obtain ⟨nextEpoch, ⟨_, sum⟩, mix, mixOk, rfl⟩ := computed
   exact ⟨nextEpoch, mix, by simpa using sum, mixOk, rfl⟩
+
+/-- Resetting the next mix preserves positions different from the next epoch's position.
+
+The checked increment identifies the next epoch without modular wraparound. -/
+theorem processRandaoMixesReset_mix_of_ne {epoch : Epoch}
+    (computed : processRandaoMixesReset state = .ok after)
+    (distinct : ∀ next : Epoch, next.toNat = (getCurrentEpoch state).toNat + 1 →
+      (epoch % preset.EPOCHS_PER_HISTORICAL_VECTOR).toNat ≠
+        (next % preset.EPOCHS_PER_HISTORICAL_VECTOR).toNat) :
+    getRandaoMix after epoch = getRandaoMix state epoch := by
+  obtain ⟨next, mix, nextEq, _, rfl⟩ := processRandaoMixesReset_eq computed
+  simp only [getRandaoMix, readCircular]
+  split
+  · rfl
+  · congr 1
+    exact Vector.getElem_set!_ne (toNat_mod_lt ‹_›) (Ne.symm (distinct next nextEq))
+
+/-- Mainnet epoch rotation preserves the attester seed of the current or previous epoch. -/
+theorem processRandaoMixesReset_mainnet_attester_seed
+    {state after : BeaconState Preset.mainnet fork} {epoch : Epoch}
+    (computed : processRandaoMixesReset state = .ok after)
+    (recent : epoch = getCurrentEpoch state ∨ epoch.toNat + 1 = (getCurrentEpoch state).toNat) :
+    getSeed after epoch DOMAIN_BEACON_ATTESTER =
+      getSeed state epoch DOMAIN_BEACON_ATTESTER := by
+  apply getSeed_congr
+  intro shifted shiftedOk
+  exact processRandaoMixesReset_mix_of_ne computed
+    (mainnet_attester_seed_positions recent shiftedOk).2
 
 /-- Before Altair, the rotation moves the pending attestations of the current epoch to the previous.
 

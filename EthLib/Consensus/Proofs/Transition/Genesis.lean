@@ -277,6 +277,62 @@ theorem pendingEpochsMatch_of_initialized_chain
     (fun _ _ _ prior ok => stateTransition_pending_epochs before prior ok)
     (initializeBeaconStateFromEth1_pending_epochs before initialized) computed
 
+/-- The pending invariants hold at the cached state where an epoch weighs attestations.
+
+The slot prefix may stop inside the empty slots before the next block. -/
+theorem pending_invariants_at_cached_slot_of_initialized_chain
+    {engine : ExecutionEngine preset fork} {genesis atStep cached : BeaconState preset fork}
+    {eth1BlockHash : Hash32} {eth1Timestamp : UInt64} {deposits : Array Deposit}
+    {blocks : List (SignedBeaconBlock preset fork)} {count : Nat}
+    (before : fork < .altair)
+    (initialized : initializeBeaconStateFromEth1 config checks eth1BlockHash eth1Timestamp
+      deposits = .ok genesis)
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block true) genesis =
+        .ok after)
+    (advanced : advanceSlots config count after = .ok atStep)
+    (cachedOk : processSlot atStep = .ok cached) :
+    PendingSourcesMatch cached before ∧ PendingEpochsMatch cached before := by
+  have sources := foldlM_ok_invariant (fun s => PendingSourcesInvariant s before)
+    (fun _ _ _ prior ok => stateTransition_pending_sources before prior ok)
+    (initializeBeaconStateFromEth1_pending_sources before initialized) computed
+  have atSources := (advanceSlots_pending_sources before count sources advanced).1
+  have atEpochs := advanceSlots_pending_epochs before count
+    (pendingEpochsMatch_of_initialized_chain before initialized computed) advanced
+  have pending := pendingUnchanged_processSlot (before := before) cachedOk
+  have frame := frame_processSlot cachedOk
+  exact ⟨pending.sources frame atSources, pending.epochs frame atEpochs⟩
+
+/-- A record counted at an epoch boundary was included in a preceding successful block.
+
+Neither the empty slot prefix nor root caching can create a pending record. -/
+theorem pendingIncluded_at_cached_slot_of_initialized_chain
+    {engine : ExecutionEngine preset fork} {genesis atStep cached : BeaconState preset fork}
+    {eth1BlockHash : Hash32} {eth1Timestamp : UInt64} {deposits : Array Deposit}
+    {blocks : List (SignedBeaconBlock preset fork)} {count : Nat}
+    {pending : PendingAttestation preset}
+    (before : fork < .altair)
+    (initialized : initializeBeaconStateFromEth1 config checks eth1BlockHash eth1Timestamp
+      deposits = .ok genesis)
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block true) genesis =
+        .ok after)
+    (advanced : advanceSlots config count after = .ok atStep)
+    (cachedOk : processSlot atStep = .ok cached)
+    (member : pending ∈ (cached.currentEpochAttestations before).data ∨
+      pending ∈ (cached.previousEpochAttestations before).data) :
+    ∃ earlier block later atBlock atSlot,
+      blocks = earlier ++ block :: later ∧
+      earlier.foldlM
+        (fun state block => stateTransition config checks engine state block true)
+          genesis = .ok atBlock ∧
+      processSlots config atBlock block.message.slot = .ok atSlot ∧
+      PendingIncludedInBlock config checks before atSlot block.message pending := by
+  have kept := pendingUnchanged_processSlot (before := before) cachedOk
+  have atMember := (kept.mem_iff pending).mp member
+  exact pendingIncludedInBlock_of_initialized_chain before initialized computed
+    (advanceSlots_pending_mem before count advanced atMember)
+
 /-- A current justification bit on an initialized chain has concrete included target attesters.
 
 Their reconstructed indices belong to the current active denominator.
