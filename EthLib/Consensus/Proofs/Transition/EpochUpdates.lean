@@ -340,6 +340,194 @@ theorem sameSizes_activateValidator {index : ValidatorIndex}
   obtain ⟨_, _, _, _, rfl⟩ := computed
   exact sameSizes_setValidator _ _ _
 
+/-- The eligibility pass does not advance the slot. -/
+theorem updateRegistryEntry_slot {config : Config} {index : Nat}
+    (before : fork < .pectra)
+    (computed : updateRegistryEntry config state index = .ok after) :
+    after.slot = state.slot := by
+  simp only [updateRegistryEntry, bind_ok_iff, liftAccessor_ok] at computed
+  obtain ⟨_, _, queued, _, rest⟩ := computed
+  split at rest
+  · exact initiateValidatorExit_slot (state := state.setValidator index queued)
+      before (liftAccessor_ok.mp rest)
+  · simp only [pure, Except.pure, Except.ok.injEq] at rest
+    subst after
+    rfl
+
+/-- Scheduling an activation does not advance the slot. -/
+theorem activateValidator_slot {index : ValidatorIndex}
+    (computed : activateValidator state index = .ok after) : after.slot = state.slot := by
+  simp only [activateValidator, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+    Except.ok.injEq] at computed
+  obtain ⟨_, _, _, _, rfl⟩ := computed
+  rfl
+
+/-- Eligibility-queue updates leave activation and exit epochs unchanged. -/
+theorem queueForActivation_active {validator queued : Validator} (epoch : Epoch)
+    (computed : queueForActivation state validator = .ok queued) :
+    isActiveValidator queued epoch = isActiveValidator validator epoch := by
+  unfold queueForActivation at computed
+  split at computed
+  · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at computed
+    obtain ⟨_, _, rfl⟩ := computed
+    rfl
+  · cases computed
+    rfl
+
+/-- Every index in the activation queue names a validator eligible in that state.
+
+Sorting the queue changes order, not eligibility or registry identity. -/
+theorem mem_activationQueue {index : ValidatorIndex}
+    (member : index ∈ activationQueue state) :
+    ∃ (position : Nat) (validator : Validator), position.toUInt64 = index ∧
+      state.validators.data[position]? = some validator ∧
+      isEligibleForActivation state validator = true := by
+  simp only [activationQueue, List.mem_map, List.mem_mergeSort] at member
+  obtain ⟨⟨eligibleEpoch, queuedIndex⟩, member, equal⟩ := member
+  simp only [List.mem_filterMap] at member
+  obtain ⟨⟨validator, position⟩, positionOk, selected⟩ := member
+  split at selected
+  · rename_i eligible
+    simp only [Option.some.injEq, Prod.mk.injEq] at selected
+    obtain ⟨_, rfl⟩ := selected
+    refine ⟨position, validator, equal, ?_, eligible⟩
+    simpa only [Array.getElem?_toList] using
+      (List.mem_zipIdx_iff_getElem?.mp positionOk)
+  · cases selected
+
+/-- Updating an eligibility epoch and scheduling an ejection preserve past activity.
+
+The registry pass cannot change committees for an epoch at or before its current epoch. -/
+theorem updateRegistryEntry_active_of_past {config : Config} {index : Nat} {epoch : Epoch}
+    {validator : Validator}
+    (before : fork < .pectra) (found : getValidator state index.toUInt64 = .ok validator)
+    (exactIndex : index.toUInt64.toNat = index)
+    (past : epoch ≤ getCurrentEpoch state)
+    (computed : updateRegistryEntry config state index = .ok after) :
+    ∃ updated, getValidator after index.toUInt64 = .ok updated ∧
+      isActiveValidator updated epoch = isActiveValidator validator epoch := by
+  simp only [updateRegistryEntry, bind_ok_iff, liftAccessor_ok] at computed
+  obtain ⟨old, oldOk, queued, queueOk, rest⟩ := computed
+  have equal : old = validator := Except.ok.inj (oldOk.symm.trans found)
+  subst old
+  have queuedFound : getValidator (state.setValidator index queued) index.toUInt64 =
+      .ok queued := by
+    simpa only [exactIndex] using getValidator_setValidator_self found queued
+  have active := queueForActivation_active epoch queueOk
+  split at rest
+  · obtain ⟨exited, exitedOk, same⟩ :=
+      initiateValidatorExit_active_of_past before queuedFound past (liftAccessor_ok.mp rest)
+    exact ⟨exited, exitedOk, same.trans active⟩
+  · simp only [pure, Except.pure, Except.ok.injEq] at rest
+    subst after
+    exact ⟨queued, queuedFound, active⟩
+
+/-- One registry pass preserves all activity queries for a past epoch. -/
+theorem updateRegistryEntry_active {config : Config} {index : Nat} {epoch : Epoch}
+    (before : fork < .pectra) (exactIndex : index.toUInt64.toNat = index)
+    (past : epoch ≤ getCurrentEpoch state)
+    (computed : updateRegistryEntry config state index = .ok after) (other : ValidatorIndex) :
+    (getValidator after other).map (isActiveValidator · epoch) =
+      (getValidator state other).map (isActiveValidator · epoch) := by
+  by_cases equal : other = index.toUInt64
+  · subst other
+    have read : ∃ validator, getValidator state index.toUInt64 = .ok validator := by
+      simp only [updateRegistryEntry, bind_ok_iff, liftAccessor_ok] at computed
+      obtain ⟨validator, found, _⟩ := computed
+      exact ⟨validator, found⟩
+    obtain ⟨validator, found⟩ := read
+    obtain ⟨updated, updatedOk, active⟩ :=
+      updateRegistryEntry_active_of_past before found exactIndex past computed
+    rw [found, updatedOk]
+    exact congrArg Except.ok active
+  · simp only [updateRegistryEntry, bind_ok_iff, liftAccessor_ok] at computed
+    obtain ⟨validator, _, queued, _, rest⟩ := computed
+    have unchanged : getValidator (state.setValidator index queued) other =
+        getValidator state other := by
+      simpa only [exactIndex] using
+        getValidator_setValidator_of_ne (state := state) equal queued
+    split at rest
+    · exact (initiateValidatorExit_active (state := state.setValidator index queued)
+        before past (liftAccessor_ok.mp rest) other).trans
+        (congrArg (fun read => read.map (isActiveValidator · epoch)) unchanged)
+    · simp only [pure, Except.pure, Except.ok.injEq] at rest
+      subst after
+      rw [unchanged]
+
+/-- A queued index reads back an eligible validator when registry indices fit in 64 bits. -/
+theorem getValidator_of_mem_activationQueue {index : ValidatorIndex}
+    (within : state.RegistryWithinLimit) (member : index ∈ activationQueue state) :
+    ∃ validator, getValidator state index = .ok validator ∧
+      isEligibleForActivation state validator = true := by
+  obtain ⟨position, validator, equal, found, eligible⟩ := mem_activationQueue member
+  have inside := (Array.getElem?_eq_some_iff.mp found).1
+  have exactIndex := toNat_toUInt64_of_lt within inside
+  refine ⟨validator, ?_, eligible⟩
+  unfold getValidator
+  rw [← equal, exactIndex]
+  simp only [found]
+
+/-- The eligibility pass over a registry prefix preserves all past activity queries.
+
+The prefix carries its registry bound so its natural-number indices cannot truncate. -/
+theorem fold_updateRegistryEntry_active {config : Config} {indices : List Nat} {epoch : Epoch}
+    (before : fork < .pectra) (within : state.RegistryWithinLimit)
+    (inside : ∀ index ∈ indices, index < state.validators.data.size)
+    (past : epoch ≤ getCurrentEpoch state)
+    (computed : indices.foldlM (updateRegistryEntry config) state = .ok after)
+    (other : ValidatorIndex) :
+    (getValidator after other).map (isActiveValidator · epoch) =
+      (getValidator state other).map (isActiveValidator · epoch) := by
+  induction indices generalizing state with
+  | nil =>
+    simp only [List.foldlM_nil, pure, Except.pure, Except.ok.injEq] at computed
+    subst after
+    rfl
+  | cons index rest ih =>
+    rw [List.foldlM_cons, bind_ok_iff] at computed
+    obtain ⟨middle, first, tail⟩ := computed
+    have sizes := sameSizes_updateRegistryEntry first
+    have slot := updateRegistryEntry_slot before first
+    have middleWithin : middle.RegistryWithinLimit := by
+      unfold BeaconState.RegistryWithinLimit at within ⊢
+      rw [sizes.1]
+      exact within
+    have middlePast : epoch ≤ getCurrentEpoch middle := by
+      simpa only [getCurrentEpoch, slot] using past
+    have kept := updateRegistryEntry_active before
+      (toNat_toUInt64_of_lt within (inside index List.mem_cons_self)) past first other
+    exact (ih middleWithin (fun i member => by
+      rw [sizes.1]
+      exact inside i (List.mem_cons_of_mem _ member)) middlePast tail).trans kept
+
+/-- Each validator occurs only once in the activation queue.
+
+Sorting reorders distinct registry positions without creating an additional occurrence. -/
+theorem activationQueue_nodup (within : state.RegistryWithinLimit) :
+    (activationQueue state).Nodup := by
+  let entries := state.validators.data.toList.zipIdx.filterMap fun (validator, index) =>
+    if isEligibleForActivation state validator then
+      some (validator.activationEligibilityEpoch, index.toUInt64)
+    else none
+  have base : state.validators.data.toList.zipIdx.Pairwise (fun a b => a.2 < b.2) := by
+    have := List.pairwise_lt_range' (s := 0) (n := state.validators.data.toList.length)
+    rw [← List.zipIdx_map_snd 0] at this
+    exact List.pairwise_map.mp this
+  have distinct : entries.Pairwise (fun a b => a.2 ≠ b.2) := by
+    apply List.Pairwise.filterMap _ ?_ (List.Pairwise.and_mem.mp base)
+    rintro ⟨v, i⟩ ⟨w, j⟩ ⟨mi, mj, lt⟩ a ha b hb
+    simp only [Option.ite_none_right_eq_some, Option.some.injEq] at ha hb
+    obtain ⟨_, rfl⟩ := ha
+    obtain ⟨_, rfl⟩ := hb
+    have hi : i < state.validators.data.size := by simpa using (List.mem_zipIdx' mi).1
+    have hj : j < state.validators.data.size := by simpa using (List.mem_zipIdx' mj).1
+    intro equal
+    have equalNat := congrArg UInt64.toNat equal
+    rw [toNat_toUInt64_of_lt within hi, toNat_toUInt64_of_lt within hj] at equalNat
+    omega
+  have unique : (entries.map (·.2)).Nodup := List.pairwise_map.mpr distinct
+  exact ((List.mergeSort_perm entries _).map (·.2)).nodup_iff.mpr unique
+
 /-- An activation is scheduled strictly after the epoch that schedules it.
 
 Its checked epoch calculation is exact, so activation cannot alter a current committee. -/
@@ -402,6 +590,100 @@ theorem activateValidator_active_of_eligible {index : ValidatorIndex} {epoch : E
     simp [isActiveValidator, later]
   exact inactiveAfter.trans inactiveBefore.symm
 
+/-- Scheduling an eligible activation preserves every indexed activity query in a past epoch. -/
+theorem activateValidator_active {index : ValidatorIndex} {epoch : Epoch} {validator : Validator}
+    (found : getValidator state index = .ok validator)
+    (eligible : isEligibleForActivation state validator = true)
+    (past : epoch ≤ getCurrentEpoch state)
+    (computed : activateValidator state index = .ok after) (other : ValidatorIndex) :
+    (getValidator after other).map (isActiveValidator · epoch) =
+      (getValidator state other).map (isActiveValidator · epoch) := by
+  by_cases equal : other = index
+  · subst other
+    obtain ⟨activated, activatedOk, active⟩ :=
+      activateValidator_active_of_eligible found eligible past computed
+    rw [found, activatedOk]
+    exact congrArg Except.ok active
+  · simp only [activateValidator, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+      Except.ok.injEq] at computed
+    obtain ⟨_, _, _, _, rfl⟩ := computed
+    rw [getValidator_setValidator_of_ne equal]
+
+/-- Scheduling distinct eligible validators preserves activity in every past epoch. -/
+theorem fold_activateValidator_active {indices : List ValidatorIndex} {epoch : Epoch}
+    (unique : indices.Nodup)
+    (eligible : ∀ index ∈ indices, ∃ validator,
+      getValidator state index = .ok validator ∧ isEligibleForActivation state validator = true)
+    (past : epoch ≤ getCurrentEpoch state)
+    (computed : indices.foldlM activateValidator state = .ok after) (other : ValidatorIndex) :
+    (getValidator after other).map (isActiveValidator · epoch) =
+      (getValidator state other).map (isActiveValidator · epoch) := by
+  induction indices generalizing state with
+  | nil =>
+    simp only [List.foldlM_nil, pure, Except.pure, Except.ok.injEq] at computed
+    subst after
+    rfl
+  | cons index rest ih =>
+    rw [List.foldlM_cons, bind_ok_iff] at computed
+    obtain ⟨middle, first, tail⟩ := computed
+    obtain ⟨validator, found, allowed⟩ := eligible index List.mem_cons_self
+    have kept := activateValidator_active found allowed past first other
+    have slot := activateValidator_slot first
+    have remaining : ∀ i ∈ rest, getValidator middle i = getValidator state i := by
+      intro i member
+      have distinct : i ≠ index := fun equal => (List.nodup_cons.mp unique).1 (equal ▸ member)
+      simp only [activateValidator, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+        Except.ok.injEq] at first
+      obtain ⟨_, _, _, _, rfl⟩ := first
+      exact getValidator_setValidator_of_ne distinct _
+    have finalized : middle.finalizedCheckpoint = state.finalizedCheckpoint := by
+      simp only [activateValidator, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+        Except.ok.injEq] at first
+      obtain ⟨_, _, _, _, rfl⟩ := first
+      rfl
+    have middleEligible : ∀ i ∈ rest, ∃ validator,
+        getValidator middle i = .ok validator ∧
+          isEligibleForActivation middle validator = true := by
+      intro i member
+      obtain ⟨v, read, allowed⟩ := eligible i (List.mem_cons_of_mem _ member)
+      refine ⟨v, (remaining i member).trans read, ?_⟩
+      simpa only [isEligibleForActivation, finalized] using allowed
+    have middlePast : epoch ≤ getCurrentEpoch middle := by
+      simpa only [getCurrentEpoch, slot] using past
+    exact (ih (List.nodup_cons.mp unique).2 middleEligible middlePast tail).trans kept
+
+/-- Registry processing preserves the active indices for every epoch at or before its own.
+
+Activations and exits are scheduled later, so neither can change a counted committee. -/
+theorem processRegistryUpdates_active {config : Config} {epoch : Epoch}
+    (before : fork < .pectra) (within : state.RegistryWithinLimit)
+    (past : epoch ≤ getCurrentEpoch state)
+    (computed : processRegistryUpdates config state = .ok after) (other : ValidatorIndex) :
+    (getValidator after other).map (isActiveValidator · epoch) =
+      (getValidator state other).map (isActiveValidator · epoch) := by
+  unfold processRegistryUpdates at computed
+  split at computed
+  · exact False.elim ((Nat.not_le_of_lt before) ‹_›)
+  simp only [bind_ok_iff] at computed
+  obtain ⟨middle, updated, activated⟩ := computed
+  have kept := fold_updateRegistryEntry_active before within
+    (fun _ member => List.mem_range.mp member) past updated other
+  have sizes := foldlM_ok_invariant (SameSizes state)
+    (fun _ _ _ same step => same.trans (sameSizes_updateRegistryEntry step))
+    (SameSizes.refl state) updated
+  have slots := foldlM_ok_invariant (fun s => s.slot = state.slot)
+    (fun _ _ _ same step => (updateRegistryEntry_slot before step).trans same) rfl updated
+  have middleWithin : middle.RegistryWithinLimit := by
+    unfold BeaconState.RegistryWithinLimit at within ⊢
+    rw [sizes.1]
+    exact within
+  have middlePast : epoch ≤ getCurrentEpoch middle := by
+    simpa only [getCurrentEpoch, slots] using past
+  apply Eq.trans (fold_activateValidator_active
+    (activationQueue_nodup middleWithin).take
+    (fun index member => getValidator_of_mem_activationQueue middleWithin
+      (List.mem_of_mem_take member)) middlePast activated other) kept
+
 /-- From Deneb, an epoch activates at most the maximum, and at most the churn limit. -/
 theorem getValidatorActivationChurnLimit_le {config : Config} :
     getValidatorActivationChurnLimit config state ≤ config.MAX_PER_EPOCH_ACTIVATION_CHURN_LIMIT ∧
@@ -446,6 +728,26 @@ theorem processRegistryUpdates_ok {config : Config}
     (SameSizes.refl state) updatedOk
   exact foldlM_ok_invariant (SameSizes state)
     (fun _ _ _ sizes step => sizes.trans (sameSizes_activateValidator step)) first activated
+
+/-- Successful registry processing leaves the same ordered active indices for a past epoch. -/
+theorem processRegistryUpdates_active_indices {config : Config} {epoch : Epoch}
+    (before : fork < .pectra) (within : state.RegistryWithinLimit)
+    (past : epoch ≤ getCurrentEpoch state)
+    (computed : processRegistryUpdates config state = .ok after) :
+    getActiveValidatorIndices after epoch = getActiveValidatorIndices state epoch := by
+  have sizes := (processRegistryUpdates_ok computed).2
+  have afterWithin : after.RegistryWithinLimit := by
+    unfold BeaconState.RegistryWithinLimit at within ⊢
+    rw [sizes.1]
+    exact within
+  apply getActiveValidatorIndices_congr within afterWithin
+  intro index
+  have equal := processRegistryUpdates_active before within past computed index
+  simp only [getValidator] at equal
+  cases old : state.validators.data[index.toNat]? <;>
+    cases new : after.validators.data[index.toNat]? <;>
+    simp only [old, new, Except.map] at equal <;>
+    simp_all
 
 theorem sameSizes_applySlashingPenalty {total adjusted : Gwei} {index : Nat}
     (computed : applySlashingPenalty state total adjusted index = .ok after) :

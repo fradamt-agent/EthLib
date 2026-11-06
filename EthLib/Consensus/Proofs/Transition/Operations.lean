@@ -491,6 +491,68 @@ theorem applyDeposit_known {pubkey : BLSPubkey} {withdrawalCredentials : Bytes32
   simp only [applyDeposit, notElectra, ↓reduceDIte] at computed
   exact applyPendingDeposit_known known computed
 
+/-- A newly deposited validator is inactive at every epoch until activation is scheduled.
+
+Its activation and exit epochs are both the far future, so its active interval is empty. -/
+theorem getValidatorFromDeposit_inactive (preset : Preset) (fork : Base.Fork)
+    (pubkey : BLSPubkey) (withdrawalCredentials : Bytes32) (amount : Gwei) (epoch : Epoch) :
+    isActiveValidator (getValidatorFromDeposit preset fork pubkey withdrawalCredentials amount)
+      epoch = false := by
+  simp only [getValidatorFromDeposit, isActiveValidator, Bool.and_eq_false_iff]
+  by_cases lower : FAR_FUTURE_EPOCH ≤ epoch
+  · right
+    simp only [decide_eq_false_iff_not, UInt64.lt_iff_toNat_lt]
+    have bound := UInt64.le_iff_toNat_le.mp lower
+    omega
+  · left
+    exact decide_eq_false lower
+
+/-- Before Altair, appending a deposit does not change the active indices for any epoch.
+
+The new validator has an empty active interval until the registry schedules its activation. -/
+theorem addValidatorToRegistry_active_indices {pubkey : BLSPubkey}
+    {withdrawalCredentials : Bytes32} {amount : Gwei} (before : fork < .altair) (epoch : Epoch)
+    (computed : addValidatorToRegistry state pubkey withdrawalCredentials amount = .ok after) :
+    getActiveValidatorIndices after epoch = getActiveValidatorIndices state epoch := by
+  unfold addValidatorToRegistry at computed
+  split at computed
+  · exact False.elim ((Nat.not_le_of_lt before) ‹_›)
+  split at computed
+  · cases computed
+    simp [getActiveValidatorIndices, Array.toList_push, List.zipIdx_append,
+      getValidatorFromDeposit_inactive]
+  · cases computed
+
+/-- Before Altair, neither a top-up nor a deposit to a new key changes active indices.
+
+Top-ups change balances only, and a new key must wait for activation. -/
+theorem applyPendingDeposit_active_indices {deposit : PendingDeposit}
+    (before : fork < .altair) (epoch : Epoch)
+    (computed : applyPendingDeposit config checks state deposit = .ok after) :
+    getActiveValidatorIndices after epoch = getActiveValidatorIndices state epoch := by
+  unfold applyPendingDeposit at computed
+  split at computed
+  · simp only [bind_ok_iff] at computed
+    obtain ⟨valid, _, rest⟩ := computed
+    cases valid
+    · cases rest
+      rfl
+    · exact addValidatorToRegistry_active_indices before epoch rest
+  · have unchanged := increaseBalance_validators (liftAccessor_ok.mp computed)
+    simp only [getActiveValidatorIndices, unchanged]
+
+/-- Phase 0 deposit processing preserves the committee population at every epoch. -/
+theorem applyDeposit_active_indices {pubkey : BLSPubkey} {withdrawalCredentials : Bytes32}
+    {amount : Gwei} {signature : BLSSignature} (before : fork < .altair) (epoch : Epoch)
+    (computed : applyDeposit config checks state pubkey withdrawalCredentials amount signature =
+      .ok after) :
+    getActiveValidatorIndices after epoch = getActiveValidatorIndices state epoch := by
+  unfold applyDeposit at computed
+  split at computed
+  · have earlier : fork < .pectra := Nat.lt_trans before (by decide)
+    exact False.elim ((Nat.not_le_of_lt earlier) ‹_›)
+  · exact applyPendingDeposit_active_indices before epoch computed
+
 /-- A set or an append adds one entry exactly when the index is the size of the list. -/
 theorem setOrAppendList_size {switch : Base.Fork} {α : Type} {limit : Nat}
     {list list' : ForkList switch fork α limit} {index : UInt64} {value : α}
@@ -713,6 +775,15 @@ theorem balancesMatch_processDeposit {before : fork < .hegota} {deposit : Deposi
     (holds : BalancesMatch state) : BalancesMatch after := by
   obtain ⟨_, _, _, _, applied⟩ := processDeposit_ok computed
   exact balancesMatch_applyDeposit applied holds
+
+/-- A Phase 0 block deposit cannot change an attester committee's active population. -/
+theorem processDeposit_active_indices {available : fork < .hegota} {deposit : Deposit}
+    (before : fork < .altair) (epoch : Epoch)
+    (computed : processDeposit config checks available state deposit = .ok after) :
+    getActiveValidatorIndices after epoch = getActiveValidatorIndices state epoch := by
+  obtain ⟨_, _, next, _, applied⟩ := processDeposit_ok computed
+  exact applyDeposit_active_indices (state := { state with eth1DepositIndex := fun _ => next })
+    before epoch applied
 
 /-! ## Voluntary exits -/
 

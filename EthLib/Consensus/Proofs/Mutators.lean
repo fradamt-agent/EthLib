@@ -196,6 +196,43 @@ theorem le_foldl_maxExitEpoch (validators : List Validator) (start : Epoch) :
     · exact trans _ _ _ leMax.2 startLe
     · exact restLe validator inRest
 
+/-- Before Electra, every successful exit queue allocation is after the current epoch.
+
+The initial queue epoch includes a checked increment before the seed lookahead. -/
+theorem exitQueueEpoch_gt_current {config : Config} {state : BeaconState preset fork}
+    {epoch : Epoch} (computed : exitQueueEpoch config state = .ok epoch) :
+    (getCurrentEpoch state).toNat < epoch.toNat := by
+  simp only [exitQueueEpoch, bind_ok_iff, liftArith, mapError_ok_iff] at computed
+  obtain ⟨earliest, earliestOk, rest⟩ := computed
+  have initial := (le_foldl_maxExitEpoch
+    (state.validators.data.toList.filter (·.exitEpoch != FAR_FUTURE_EPOCH)) earliest).1
+  rw [UInt64.le_iff_toNat_le] at initial
+  simp only [computeActivationExitEpoch, bind_ok_iff, addChecked_ok_iff] at earliestOk
+  obtain ⟨next, nextOk, earliestOk⟩ := earliestOk
+  simp only [UInt64.toNat_one] at nextOk
+  split at rest
+  · have sum := (addChecked_ok_iff.mp (mapError_ok_iff.mp rest)).2
+    simp only [UInt64.toNat_one] at sum
+    omega
+  · simp only [pure, Except.pure, Except.ok.injEq] at rest
+    subst epoch
+    omega
+
+/-- An exit scheduled before Electra does not advance the slot. -/
+theorem initiateValidatorExit_slot {config : Config} {state after : BeaconState preset fork}
+    {index : ValidatorIndex} (before : fork < .pectra)
+    (computed : initiateValidatorExit config state index = .ok after) :
+    after.slot = state.slot := by
+  obtain ⟨_, _, ⟨_, rfl⟩ | ⟨_, queued, _, _, queue, _, rfl⟩⟩ :=
+    initiateValidatorExit_ok computed
+  · rfl
+  · unfold exitQueue at queue
+    split at queue
+    · exact False.elim ((Nat.not_le_of_lt before) ‹_›)
+    simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at queue
+    obtain ⟨_, _, rfl, _⟩ := queue
+    rfl
+
 /-- Before Electra, take an exit epoch of the queue other than the far future.
 
 It held fewer exits than the churn limit, or none if the limit is zero.
@@ -260,6 +297,64 @@ theorem getValidator_setValidator_of_ne {state : BeaconState preset fork}
     getValidator (state.setValidator index.toNat validator) other = getValidator state other := by
   have : index.toNat ≠ other.toNat := fun same => distinct (UInt64.toNat_inj.mp same).symm
   simp [getValidator, BeaconState.setValidator, this]
+
+/-- An exit scheduled before Electra preserves the validator's activity in every past epoch.
+
+The queue places its exit after the current epoch, even when the registry already has exits. -/
+theorem initiateValidatorExit_active_of_past {config : Config}
+    {state after : BeaconState preset fork} {index : ValidatorIndex} {epoch : Epoch}
+    {validator : Validator}
+    (before : fork < .pectra) (found : getValidator state index = .ok validator)
+    (past : epoch ≤ getCurrentEpoch state)
+    (computed : initiateValidatorExit config state index = .ok after) :
+    ∃ exited, getValidator after index = .ok exited ∧
+      isActiveValidator exited epoch = isActiveValidator validator epoch := by
+  obtain ⟨old, oldOk, rest⟩ := initiateValidatorExit_ok computed
+  have equal : old = validator := Except.ok.inj (oldOk.symm.trans found)
+  subst old
+  rcases rest with ⟨_, rfl⟩ | ⟨far, queued, exitEpoch, withdrawable, queue, _, rfl⟩
+  · exact ⟨validator, found, rfl⟩
+  · have same := (exitQueue_validators queue).1
+    have queuedFound : getValidator queued index = .ok validator := by
+      simpa only [getValidator, same] using found
+    have queueEpoch : exitQueueEpoch config state = .ok exitEpoch := by
+      unfold exitQueue at queue
+      split at queue
+      · exact False.elim ((Nat.not_le_of_lt before) ‹_›)
+      simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at queue
+      obtain ⟨_, allocated, _, rfl⟩ := queue
+      exact allocated
+    have later := exitQueueEpoch_gt_current queueEpoch
+    have pastNat := UInt64.le_iff_toNat_le.mp past
+    have oldLt : epoch < validator.exitEpoch := by
+      rw [far, UInt64.lt_iff_toNat_lt]
+      have bound := exitEpoch.toNat_lt
+      change epoch.toNat < 18446744073709551615
+      omega
+    have newLt : epoch < exitEpoch := UInt64.lt_iff_toNat_lt.mpr (by omega)
+    exact ⟨_, getValidator_setValidator_self queuedFound _, by
+      simp only [isActiveValidator, oldLt, newLt, decide_true, Bool.and_true]⟩
+
+/-- Starting an exit preserves every indexed activity query for a past epoch.
+
+This includes failed registry reads, so the equality also preserves registry membership. -/
+theorem initiateValidatorExit_active {config : Config}
+    {state after : BeaconState preset fork} {index : ValidatorIndex} {epoch : Epoch}
+    (before : fork < .pectra) (past : epoch ≤ getCurrentEpoch state)
+    (computed : initiateValidatorExit config state index = .ok after) (other : ValidatorIndex) :
+    (getValidator after other).map (isActiveValidator · epoch) =
+      (getValidator state other).map (isActiveValidator · epoch) := by
+  obtain ⟨validator, found, rest⟩ := initiateValidatorExit_ok computed
+  by_cases equal : other = index
+  · subst other
+    obtain ⟨exited, exitedOk, active⟩ :=
+      initiateValidatorExit_active_of_past before found past computed
+    rw [found, exitedOk]
+    exact congrArg Except.ok active
+  · rcases rest with ⟨_, rfl⟩ | ⟨_, queued, _, _, queue, _, rfl⟩
+    · rfl
+    · rw [getValidator_setValidator_of_ne equal,
+        getValidator_of_validators_eq (exitQueue_validators queue).1]
 
 /-- A validator that starts to exit may withdraw a fixed delay after its exit epoch.
 
@@ -342,6 +437,38 @@ theorem slashValidator_slashedFlag {config : Config} {state after : BeaconState 
       Except.map, marked]
   · rw [slashedFlag, getValidator_of_validators_eq same, getValidator_setValidator_of_ne distinct]
     exact slashedFlag_initiateValidatorExit exitedOk other
+
+/-- Slashing preserves past committee activity, although it removes the validator from tallies.
+
+The slashed flag affects unslashed participation, not committee membership. -/
+theorem slashValidator_active {config : Config} {state after : BeaconState preset fork}
+    {slashedIndex : ValidatorIndex} {whistleblowerIndex : Option ValidatorIndex} {epoch : Epoch}
+    (before : fork < .pectra) (past : epoch ≤ getCurrentEpoch state)
+    (computed : slashValidator config state slashedIndex whistleblowerIndex = .ok after)
+    (other : ValidatorIndex) :
+    (getValidator after other).map (isActiveValidator · epoch) =
+      (getValidator state other).map (isActiveValidator · epoch) := by
+  unfold slashValidator at computed
+  simp only [bind_ok_iff, liftArith, mapError_ok_iff] at computed
+  obtain ⟨exited, exitedOk, validator, found, withdrawable, _, _, _, _, _, _, lowered, _, _, _, _,
+    _, raised, _, final, done⟩ := computed
+  let marked : Validator :=
+    { validator with
+      slashed := true, withdrawableEpoch := max validator.withdrawableEpoch withdrawable }
+  have same := (slashValidator_last done).1.trans ((increaseBalance_validators final).trans
+    ((increaseBalance_validators raised).trans (decreaseBalance_validators lowered)))
+  replace same : after.validators = (exited.setValidator slashedIndex.toNat marked).validators :=
+    same
+  rw [getValidator_of_validators_eq same]
+  have kept : (getValidator (exited.setValidator slashedIndex.toNat marked) other).map
+      (isActiveValidator · epoch) =
+      (getValidator exited other).map (isActiveValidator · epoch) := by
+    by_cases equal : other = slashedIndex
+    · subst other
+      rw [getValidator_setValidator_self found, found]
+      rfl
+    · rw [getValidator_setValidator_of_ne equal]
+  exact kept.trans (initiateValidatorExit_active before past exitedOk other)
 
 /-! ## The builder payments of a slashing -/
 
