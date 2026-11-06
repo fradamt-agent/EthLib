@@ -2,6 +2,7 @@ module
 
 public import EthLib.Consensus.Proofs.Transition.Block
 public import EthLib.Consensus.Transition.EpochJustification
+import all Init.Data.List.Control
 
 /-!
 # Proofs: justification and finalization
@@ -83,6 +84,73 @@ theorem getMatchingSourceAttestations_epoch {before : fork < .altair} {epoch : E
   simp only [getMatchingSourceAttestations, bind_ok_iff, ensure_ok_iff] at computed
   obtain ⟨_, recent, _⟩ := computed
   exact recent
+
+/-- An unslashed signer returned by the filter belongs to its input and has a clear flag. -/
+private theorem mem_filterAuxM_unslashed {indices accumulator result : List ValidatorIndex}
+    (computed : List.filterAuxM (fun index => do
+      return !(← getValidator state index).slashed) indices accumulator = .ok result)
+    {index : ValidatorIndex} (member : index ∈ result) :
+    index ∈ accumulator ∨
+      (index ∈ indices ∧ ∃ validator, getValidator state index = .ok validator ∧
+        validator.slashed = false) := by
+  induction indices generalizing accumulator with
+  | nil =>
+    simp only [List.filterAuxM, pure, Except.pure, Except.ok.injEq] at computed
+    exact .inl (computed ▸ member)
+  | cons first rest ih =>
+    simp only [List.filterAuxM, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at computed
+    obtain ⟨keep, ⟨validator, found, rfl⟩, computed⟩ := computed
+    rcases ih computed with accumulated | ⟨member, validator, found, clear⟩
+    · cases flag : validator.slashed
+      · simp only [flag, Bool.not_false, Bool.cond_true, List.mem_cons] at accumulated
+        rcases accumulated with rfl | accumulated
+        · exact .inr ⟨List.mem_cons_self, validator, found, flag⟩
+        · exact .inl accumulated
+      · simpa [flag] using Or.inl accumulated
+    · exact .inr ⟨List.mem_cons_of_mem first member, validator, found, clear⟩
+
+/-- Every returned unslashed index occurs in the actual signer lists and is not slashed. -/
+theorem mem_unslashedAmong {signers : List (List ValidatorIndex)} {indices : List ValidatorIndex}
+    (computed : unslashedAmong state signers = .ok indices)
+    {index : ValidatorIndex} (member : index ∈ indices) :
+    index ∈ signers.flatten ∧
+      ∃ validator, getValidator state index = .ok validator ∧ validator.slashed = false := by
+  simp only [unslashedAmong, List.filterM, bind_ok_iff, pure, Except.pure,
+    Except.ok.injEq] at computed
+  obtain ⟨result, filtered, rfl⟩ := computed
+  rcases mem_filterAuxM_unslashed filtered (List.mem_reverse.mp member) with impossible |
+      ⟨member, rest⟩
+  · cases impossible
+  · exact ⟨mem_sortedSet.mp member, rest⟩
+
+/-- Each index counted for justification comes from an actual pending attestation.
+
+The registry read also certifies that the signer has not been slashed. -/
+theorem mem_getUnslashedAttestingIndices {attestations : Array (PendingAttestation preset)}
+    {indices : List ValidatorIndex}
+    (computed : getUnslashedAttestingIndices state attestations = .ok indices)
+    {index : ValidatorIndex} (member : index ∈ indices) :
+    (∃ attestation ∈ attestations, ∃ signers,
+      getPendingAttestingIndices state attestation = .ok signers ∧ index ∈ signers) ∧
+      ∃ validator, getValidator state index = .ok validator ∧ validator.slashed = false := by
+  simp only [getUnslashedAttestingIndices, bind_ok_iff] at computed
+  obtain ⟨signers, mapped, filtered⟩ := computed
+  obtain ⟨member, validator⟩ := mem_unslashedAmong filtered member
+  obtain ⟨list, listMember, indexMember⟩ := List.mem_flatten.mp member
+  obtain ⟨attestation, attestationMember, found⟩ := mapM_ok_mem mapped list listMember
+  exact ⟨⟨attestation, Array.mem_toList_iff.mp attestationMember, list, found, indexMember⟩,
+    validator⟩
+
+/-- A signer of a pending attestation is active at its slot's epoch in the weighing state. -/
+theorem mem_getActiveValidatorIndices_of_pending
+    {attestation : PendingAttestation preset} {indices : List ValidatorIndex}
+    (computed : getPendingAttestingIndices state attestation = .ok indices)
+    {index : ValidatorIndex} (member : index ∈ indices) :
+    index ∈ getActiveValidatorIndices state (computeEpochAtSlot preset attestation.data.slot) := by
+  simp only [getPendingAttestingIndices, bind_ok_iff] at computed
+  obtain ⟨committee, committeeOk, signersOk⟩ := computed
+  exact mem_getActiveValidatorIndices_of_getBeaconCommittee committeeOk
+    (mem_of_committeeAttesters signersOk member)
 
 /-- A successful finalization test gives its exact epoch gap and requires its justification bits.
 
@@ -257,6 +325,57 @@ theorem weighJustificationAndFinalization_checkpoints {total previous current : 
     · split
       · exact .inr (.inl rfl)
       · exact .inl rfl
+
+/-- Every changed finalization satisfies one of the four concrete epoch-and-bit rules.
+
+The bits belong to the result of this weighing call, not to an abstract finality predicate. -/
+theorem weighJustificationAndFinalization_finalized_rules {total previous current : Gwei}
+    (computed : weighJustificationAndFinalization state total previous current = .ok after)
+    (changed : after.finalizedCheckpoint ≠ state.finalizedCheckpoint) :
+    (after.finalizedCheckpoint = state.currentJustifiedCheckpoint ∧
+      ((after.justificationBits.bits[0] = true ∧ after.justificationBits.bits[1] = true ∧
+          after.justificationBits.bits[2] = true ∧
+          state.currentJustifiedCheckpoint.epoch.toNat + 2 = (getCurrentEpoch state).toNat) ∨
+        (after.justificationBits.bits[0] = true ∧ after.justificationBits.bits[1] = true ∧
+          state.currentJustifiedCheckpoint.epoch.toNat + 1 = (getCurrentEpoch state).toNat))) ∨
+    (after.finalizedCheckpoint = state.previousJustifiedCheckpoint ∧
+      ((after.justificationBits.bits[1] = true ∧ after.justificationBits.bits[2] = true ∧
+          after.justificationBits.bits[3] = true ∧
+          state.previousJustifiedCheckpoint.epoch.toNat + 3 = (getCurrentEpoch state).toNat) ∨
+        (after.justificationBits.bits[1] = true ∧ after.justificationBits.bits[2] = true ∧
+          state.previousJustifiedCheckpoint.epoch.toNat + 2 = (getCurrentEpoch state).toNat))) := by
+  simp only [weighJustificationAndFinalization, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+    Except.ok.injEq] at computed
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, p3, p3Ok, p2, p2Ok, c2, c2Ok, c1, c1Ok, rfl⟩ :=
+    computed
+  dsimp only at changed ⊢
+  split
+  · rename_i currentRule
+    refine .inl ⟨rfl, ?_⟩
+    have currentCases : c2 = true ∨ c1 = true := by simpa using currentRule
+    rcases currentCases with yes | yes
+    · subst c2
+      obtain ⟨bits, gap⟩ := finalizes_true c2Ok
+      simp only [Bool.and_eq_true] at bits
+      exact .inl ⟨bits.1.1, bits.1.2, bits.2, gap⟩
+    · subst c1
+      obtain ⟨bits, gap⟩ := finalizes_true c1Ok
+      simp only [Bool.and_eq_true] at bits
+      exact .inr ⟨bits.1, bits.2, gap⟩
+  · split
+    · rename_i previousRule
+      refine .inr ⟨rfl, ?_⟩
+      have previousCases : p3 = true ∨ p2 = true := by simpa using previousRule
+      rcases previousCases with yes | yes
+      · subst p3
+        obtain ⟨bits, gap⟩ := finalizes_true p3Ok
+        simp only [Bool.and_eq_true] at bits
+        exact .inl ⟨bits.1.1, bits.1.2, bits.2, gap⟩
+      · subst p2
+        obtain ⟨bits, gap⟩ := finalizes_true p2Ok
+        simp only [Bool.and_eq_true] at bits
+        exact .inr ⟨bits.1, bits.2, gap⟩
+    · exact (changed (by simp_all)).elim
 
 /-- Weighing the votes keeps the checkpoints in order.
 
