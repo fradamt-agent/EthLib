@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# Prepare a fresh Amp orb to build and test EthLib.
+#
+# It installs the toolchains that CI pins, fetches the Mathlib cache, and builds the library,
+# the exports and the Python bindings, so that a new thread starts from a warm build.
+#
+# Amp may rerun it on an orb restored from an older snapshot.
+# So every step skips the work that is already done, and Lake and uv rebuild only what changed.
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+# The uv release that CI pins in .github/workflows/ci.yml.
+uv_version="0.13.6"
+
+step() {
+  local name="$1"
+  shift
+  echo "==> $name"
+  local start=$SECONDS
+  "$@"
+  echo "<== $name: $((SECONDS - start))s"
+}
+
+install_elan() {
+  if [ -x "$HOME/.elan/bin/elan" ]; then
+    echo "elan is installed"
+    return
+  fi
+  bash scripts/install_elan.sh
+}
+
+install_uv() {
+  if [ "$("$HOME/.local/bin/uv" --version 2>/dev/null | cut -d' ' -f2)" = "$uv_version" ]; then
+    echo "uv $uv_version is installed"
+    return
+  fi
+  curl -LsSf "https://astral.sh/uv/$uv_version/install.sh" \
+    | env UV_INSTALL_DIR="$HOME/.local/bin" UV_NO_MODIFY_PATH=1 sh
+}
+
+# Login shells read ~/.bash_profile and not ~/.profile, so the paths go there.
+# The pinned uv must come before the one in /usr/local/bin.
+persist_path() {
+  local marker="# EthLib orb toolchains"
+  if grep -Fqx "$marker" "$HOME/.bash_profile" 2>/dev/null; then
+    echo "~/.bash_profile already sets the paths"
+    return
+  fi
+  cat >> "$HOME/.bash_profile" <<'EOF'
+
+# EthLib orb toolchains
+case ":$PATH:" in
+  *":$HOME/.elan/bin:"*) ;;
+  *) export PATH="$HOME/.elan/bin:$PATH" ;;
+esac
+case ":$PATH:" in
+  *":$HOME/.local/bin:"*) ;;
+  *) export PATH="$HOME/.local/bin:$PATH" ;;
+esac
+EOF
+}
+
+# This fork's master carries only this setup on top of ethereum/EthLib.
+# Branch contributions from upstream/master, so that this commit stays out of them.
+add_upstream() {
+  if ! git remote get-url upstream > /dev/null 2>&1; then
+    git remote add upstream https://github.com/ethereum/EthLib
+  fi
+  git fetch --quiet upstream
+}
+
+step "upstream remote" add_upstream
+step "elan" install_elan
+step "uv $uv_version" install_uv
+step "PATH in ~/.bash_profile" persist_path
+export PATH="$HOME/.elan/bin:$HOME/.local/bin:$PATH"
+
+# elan installs the toolchain that lean-toolchain names on first use.
+step "Lean toolchain" lake --version
+step "Python $(cat .python-version)" uv python install
+step "Mathlib cache" lake exe cache get
+step "library and exports" lake build EthLib Exports
+# This builds the native extension, which links the exports, and installs the test and lint tools.
+step "Python environment" uv sync --frozen --extra test --group lint
