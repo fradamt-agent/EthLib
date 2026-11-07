@@ -2,6 +2,7 @@ module
 
 public import EthLib.Consensus.Proofs.Transition.FfgPreElectra
 public import EthLib.Consensus.Proofs.Transition.Provenance.Links
+public import EthLib.Consensus.Proofs.Transition.Provenance.PendingVoters
 
 /-!
 # Proofs: L5 provenance in the shape of the FFG refinement
@@ -246,6 +247,37 @@ theorem JustifiedBy.supermajority {start after : ForkedBeaconState preset}
     passes, -⟩ := justified
   refine ⟨fork, state, cached, voters, head, cachedOk, epoch, fun altair within => ?_⟩
   have active := TargetVoters.active altair counted
+  exact ⟨active, supermajority_of_threshold passes within fun i mem =>
+    activeAt_lt ((mem_active_iff within).mp (active i mem))⟩
+
+/-- From genesis, at every fork, the weighing call behind a justified checkpoint is a
+supermajority of the weighing of its state, and its voters were active in the target epoch.
+
+Before Altair the voters come from pending attestations, whose committees were active.
+
+The seed of a committee must stay apart from the RANDAO writes of the target epoch and the next.
+
+The registry must be within its limit, which its type gives before Gloas. -/
+theorem JustifiedBy.supermajority_of_genesis {start after : ForkedBeaconState preset}
+    {checkpoint : Checkpoint}
+    (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (genesis : Genesis config checks start)
+    (justified : JustifiedBy config checks start after checkpoint) :
+    ∃ (fork : Base.Fork) (state cached : BeaconState preset fork) (voters : List ValidatorIndex),
+      Reaches config checks start ⟨fork, state⟩ ∧ processSlot state = .ok cached ∧
+      (checkpoint.epoch = getPreviousEpoch cached ∨ checkpoint.epoch = getCurrentEpoch cached) ∧
+      (cached.RegistryWithinLimit →
+        (∀ i ∈ voters, i ∈ getActiveValidatorIndices cached checkpoint.epoch) ∧
+        (Weighing.ofState cached voters.toFinset).Supermajority voters.toFinset) := by
+  obtain ⟨fork, state, cached, voters, head, -, cachedOk, -, epoch, counted, passes, -, pending⟩ :=
+    justified.pending_voters_signed_of_genesis lookahead genesis
+  refine ⟨fork, state, cached, voters, head, cachedOk, epoch, fun within => ?_⟩
+  have active : ∀ i ∈ voters, i ∈ getActiveValidatorIndices cached checkpoint.epoch := by
+    by_cases altair : .altair ≤ fork
+    · exact TargetVoters.active altair counted
+    · intro i mem
+      obtain ⟨_, _, activeAt, _⟩ := pending (Nat.lt_of_not_le altair) i mem
+      exact activeAt
   exact ⟨active, supermajority_of_threshold passes within fun i mem =>
     activeAt_lt ((mem_active_iff within).mp (active i mem))⟩
 
