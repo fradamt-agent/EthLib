@@ -213,8 +213,6 @@ Its voters were active in the previous or the current epoch of `s`.
 
 Its epoch is at most `n` after that of `X`, and `K` bounds its churn cap.
 
-Its epoch is after that of `X`.
-
 `lost` bounds the loss from `X` to every such state.
 
 The churn windows of L1 bound the leaving and the joining stake.
@@ -236,7 +234,6 @@ theorem FfgRefinement.accountable_safety_preElectra {β : Type*} [Preorder β]
         (s ∈ X.leftRun.states ∨ s ∈ X.rightRun.states) ∧
         X.common.state.slot.toNat < s.state.slot.toNat ∧ s.fork < .pectra ∧
         (getCurrentEpoch s.state).toNat < 2 ^ 64 - 1 ∧
-        (getCurrentEpoch X.common.state).toNat < (getCurrentEpoch s.state).toNat ∧
         (getCurrentEpoch s.state).toNat ≤ (getCurrentEpoch X.common.state).toNat + n ∧
         max 1 (churnCap config s.state.validators.data.size) ≤ K ∧
         r.weighing = Weighing.ofState s.state voters ∧
@@ -251,12 +248,12 @@ theorem FfgRefinement.accountable_safety_preElectra {β : Type*} [Preorder β]
         (i, data2) ∈ R.signed ∧ isSlashableAttestationData data1 data2 = true} +
         2 * (2 * (n * K * preset.MAX_EFFECTIVE_BALANCE.toNat) + 2 * L +
           3 * deficit (preset := preset) X.common.state +
-          3 * (n * K * preset.MAX_EFFECTIVE_BALANCE.toNat) +
+          3 * ((n + 1) * K * preset.MAX_EFFECTIVE_BALANCE.toNat) +
           3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat) ∨
       R.evidence := by
   intro ω₀
   refine R.accountable_safety h₁ h₂ conflicting ω₀ fun r hr lo hi => ?_
-  obtain ⟨s, voters, member, later, before, finite, after, epochs, cap, weighing, voting⟩ :=
+  obtain ⟨s, voters, member, later, before, finite, epochs, cap, weighing, voting⟩ :=
     placed r hr lo hi
   obtain ⟨-, chain⟩ := X.reaches_of_slot_lt member later
   have withinX := BeaconState.registryWithinLimit_of_lt
@@ -274,11 +271,14 @@ theorem FfgRefinement.accountable_safety_preElectra {β : Type*} [Preorder β]
     Nat.mul_le_mul_right _ (Nat.mul_le_mul (by omega) cap)
   rw [weighing]
   have := lost s chain before
-  have joining := chain.joiningStakePrev_le caps reachable before finite after
-  have joinWindow : ((getCurrentEpoch s.state).toNat - (getCurrentEpoch X.common.state).toNat) *
-      churnCap config s.state.validators.data.size *
-        preset.MAX_EFFECTIVE_BALANCE.toNat ≤ n * K * preset.MAX_EFFECTIVE_BALANCE.toNat :=
-    Nat.mul_le_mul_right _ (Nat.mul_le_mul (by omega) ((le_max_right _ _).trans cap))
+  have joining := chain.joiningStakePrev_le_add caps reachable before finite
+  have joinWindow : (((getCurrentEpoch s.state).toNat - (getCurrentEpoch X.common.state).toNat) *
+      churnCap config s.state.validators.data.size +
+        max 1 (churnCap config s.state.validators.data.size)) *
+        preset.MAX_EFFECTIVE_BALANCE.toNat ≤ (n + 1) * K * preset.MAX_EFFECTIVE_BALANCE.toNat := by
+    refine Nat.mul_le_mul_right _ ?_
+    rw [Nat.add_mul, Nat.one_mul]
+    exact Nat.add_le_add (Nat.mul_le_mul (by omega) ((le_max_right _ _).trans cap)) cap
   refine drift.trans ?_
   omega
 
