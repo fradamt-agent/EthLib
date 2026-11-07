@@ -210,4 +210,268 @@ theorem finality_justified_crossing
   · simpa only [assigned] using stepAbove
   · exact ⟨attestations, epochEq ▸ matching, indicesOk, enough⟩
 
+/-- Recording a pending attestation preserves the indexed signature check at its input. -/
+theorem finality_recording_valid {cfg : Config} {checks : SignatureChecks}
+    {s t : FinalityState p} {pending : PendingAttestation p} {current : Bool}
+    {indexed : IndexedAttestation p .phase0}
+    (recorded : recordPendingAttestation s (by decide) current pending = .ok t) :
+    isValidIndexedAttestation cfg checks t indexed =
+      isValidIndexedAttestation cfg checks s indexed := by
+  cases current <;>
+    simp only [recordPendingAttestation, Bool.false_eq_true, ↓reduceIte] at recorded <;>
+    split at recorded <;> cases recorded <;> rfl
+
+/-- An actual processing site supplies its input-state indexed form and signature check. -/
+theorem finality_attestation_site_valid {cfg : Config} {checks : SignatureChecks}
+    {s t : FinalityState p} {attestation : Attestation p .phase0}
+    (processed : processAttestation cfg checks s attestation = .ok t) :
+    ∃ indexed, getIndexedAttestation s attestation = .ok indexed ∧
+      isValidIndexedAttestation cfg checks s indexed = .ok true := by
+  obtain ⟨pending, _, _, _, _, recorded, indexed, indexedOk, valid⟩ :=
+    processAttestation_records (by decide) processed
+  rw [recordPendingAttestation_indexed attestation recorded] at indexedOk
+  rw [finality_recording_valid recorded] at valid
+  exact ⟨indexed, indexedOk, valid⟩
+
+/-- A reconstructed block-input signer has evidence at the original attestation site.
+
+The witness keeps the same block and operation prefix throughout committee preservation. -/
+theorem finality_pending_included
+    {cfg : Config} {checks : SignatureChecks} {eng : ExecutionEngine p .phase0}
+    {c before atSlot : FinalityState p} {bs earlier later : List (FinalityBlock p)}
+    {block : FinalityBlock p} {pending : PendingAttestation p}
+    {indices : List ValidatorIndex} {i : ValidatorIndex}
+    (positive : 0 < p.MIN_SEED_LOOKAHEAD.toNat)
+    (history : p.MIN_SEED_LOOKAHEAD.toNat + 3 < p.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (split : bs = earlier ++ block :: later)
+    (prefixOk : finalityRuns cfg checks eng c earlier before)
+    (slots : processSlots cfg before block.message.slot = .ok atSlot)
+    (included : PendingIncludedInBlock cfg checks (by decide) atSlot block.message pending)
+    (computed : getPendingAttestingIndices atSlot pending = .ok indices)
+    (member : i ∈ indices) : FinalityIncluded cfg checks eng c bs i pending.data := by
+  obtain ⟨header, randao, eth1, proposers, attesters, attPrefix, attestation, attSuffix,
+    inclusion, recorded, headerOk, randaoOk, eth1Ok, proposersOk, attestersOk,
+    attSplit, earlierOk, attestationOk, data, bits⟩ := included
+  have attChecks := processAttestation_checks (by decide) attestationOk
+  have inclusionPast : computeEpochAtSlot p pending.data.slot ≤
+      getCurrentEpoch inclusion := by
+    rw [data, ← attChecks.2.1]
+    rcases attChecks.1 with previous | current
+    · rw [previous]
+      exact getPreviousEpoch_le _
+    · rw [current]
+      exact UInt64.le_refl _
+  have earlierFrame := Frame.foldlM
+    (fun _ _ _ ok => frame_processAttestation (by decide) ok) earlierOk
+  have attestersFrame := Frame.foldlM
+    (fun _ _ _ ok => frame_processAttesterSlashing ok) attestersOk
+  have proposersFrame := Frame.foldlM
+    (fun _ _ _ ok => frame_processProposerSlashing ok) proposersOk
+  have headerFrame := frame_processBlockHeader headerOk
+  have randaoFrame := frame_processRandao randaoOk
+  have eth1Frame := frame_processEth1Data eth1Ok
+  have inputRecent : computeEpochAtSlot p pending.data.slot = getCurrentEpoch atSlot ∨
+      (computeEpochAtSlot p pending.data.slot).toNat + 1 =
+        (getCurrentEpoch atSlot).toNat := by
+    have same : getCurrentEpoch inclusion = getCurrentEpoch atSlot := by
+      simp only [getCurrentEpoch, earlierFrame.slot, attestersFrame.slot,
+        proposersFrame.slot, eth1Frame.slot, randaoFrame.slot, headerFrame.slot]
+    rw [data, ← attChecks.2.1]
+    rcases attChecks.1 with previous | current
+    · rw [previous, getPreviousEpoch_toNat, same]
+      by_cases zero : (getCurrentEpoch atSlot).toNat = 0
+      · left
+        apply UInt64.toNat_inj.mp
+        simp only [getPreviousEpoch_toNat, same, zero, Nat.zero_sub]
+      · right
+        omega
+    · exact .inl (current.trans same)
+  have earlierCommittee := foldlM_ok_invariant
+    (fun s => getBeaconCommittee s pending.data.slot pending.data.index =
+      getBeaconCommittee attesters pending.data.slot pending.data.index)
+    (fun _ _ _ prior ok =>
+      (processAttestation_committee (by decide) _ _ ok).trans prior) rfl earlierOk
+  have attestersCommittee := foldlM_ok_invariant
+    (fun s => s.slot = proposers.slot ∧
+      getBeaconCommittee s pending.data.slot pending.data.index =
+        getBeaconCommittee proposers pending.data.slot pending.data.index)
+    (fun s _ _ prior ok => by
+      have past : computeEpochAtSlot p pending.data.slot ≤ getCurrentEpoch s := by
+        simpa only [getCurrentEpoch, prior.1, earlierFrame.slot, attestersFrame.slot] using
+          inclusionPast
+      exact ⟨(frame_processAttesterSlashing ok).slot.trans prior.1,
+        (processAttesterSlashing_committee past ok).trans prior.2⟩)
+    (show proposers.slot = proposers.slot ∧ _ from ⟨rfl, rfl⟩) attestersOk
+  have proposersCommittee := foldlM_ok_invariant
+    (fun s => s.slot = eth1.slot ∧
+      getBeaconCommittee s pending.data.slot pending.data.index =
+        getBeaconCommittee eth1 pending.data.slot pending.data.index)
+    (fun s _ _ prior ok => by
+      have past : computeEpochAtSlot p pending.data.slot ≤ getCurrentEpoch s := by
+        simpa only [getCurrentEpoch, prior.1, earlierFrame.slot, attestersFrame.slot,
+          proposersFrame.slot] using inclusionPast
+      exact ⟨(frame_processProposerSlashing ok).slot.trans prior.1,
+        (processProposerSlashing_committee past ok).trans prior.2⟩)
+    (show eth1.slot = eth1.slot ∧ _ from ⟨rfl, rfl⟩) proposersOk
+  have eth1Committee : getBeaconCommittee eth1 pending.data.slot pending.data.index =
+      getBeaconCommittee randao pending.data.slot pending.data.index := by
+    obtain ⟨_, _, rest⟩ := processEth1Data_eq eth1Ok
+    rw [← rest]
+    rfl
+  have headerCommittee : getBeaconCommittee header pending.data.slot pending.data.index =
+      getBeaconCommittee atSlot pending.data.slot pending.data.index := by
+    obtain ⟨_, _, rfl⟩ := processBlockHeader_eq headerOk
+    rfl
+  have randaoCommittee : getBeaconCommittee randao pending.data.slot pending.data.index =
+      getBeaconCommittee header pending.data.slot pending.data.index := by
+    apply getBeaconCommittee_congr
+    · obtain ⟨_, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq randaoOk
+      rfl
+    · exact processRandao_attester_seed positive history randaoOk
+        (by simpa only [getCurrentEpoch, headerFrame.slot] using inputRecent)
+  have committee := earlierCommittee.trans (attestersCommittee.2.trans
+    (proposersCommittee.2.trans (eth1Committee.trans (randaoCommittee.trans headerCommittee))))
+  obtain ⟨indexed, indexedOk, valid⟩ := finality_attestation_site_valid attestationOk
+  obtain ⟨listed, indexedData, _⟩ := getPendingAttestingIndices_eq_included (by decide)
+    data bits committee computed indexedOk
+  refine ⟨earlier, block, later, before, atSlot, inclusion, recorded, indexed, attestation,
+    header, randao, eth1, proposers, attesters, attPrefix, attSuffix,
+    split, prefixOk, slots, headerOk, randaoOk, eth1Ok, proposersOk, attestersOk,
+    attSplit, earlierOk, attestationOk, indexedData, ?_, valid, data.symm, indexedOk⟩
+  rw [listed]
+  simpa only [List.mem_toArray] using mem_sortedSet.mpr member
+
+/-- A counted signer with target after C has an actual inclusion on that fork's suffix. -/
+theorem finality_matching_signer_included
+    {cfg : Config} {checks : SignatureChecks} {eng : ExecutionEngine p .phase0}
+    {g c after atStep cached : FinalityState p}
+    {common bs : List (FinalityBlock p)} {count : Nat} {epoch : Epoch}
+    {attestations : Array (PendingAttestation p)} {indices : List ValidatorIndex}
+    {i : ValidatorIndex}
+    (positive : 0 < p.MIN_SEED_LOOKAHEAD.toNat)
+    (history : p.MIN_SEED_LOOKAHEAD.toNat + 3 < p.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (initialized : finalityInitialized cfg checks g)
+    (shared : finalityRuns cfg checks eng g common c)
+    (ran : finalityRuns cfg checks eng c bs after)
+    (advanced : advanceSlots cfg count after = .ok atStep)
+    (cache : processSlot atStep = .ok cached)
+    (matching : getMatchingTargetAttestations cached (by decide) epoch = .ok attestations)
+    (indicesOk : getUnslashedAttestingIndices cached attestations = .ok indices)
+    (member : i ∈ indices) (laterTarget : getCurrentEpoch c < epoch) :
+    ∃ data, FinalityIncluded cfg checks eng c bs i data ∧
+      data.target.epoch = epoch ∧
+      data.source = (if epoch = getCurrentEpoch cached then cached.currentJustifiedCheckpoint
+        else cached.previousJustifiedCheckpoint) ∧
+      getBlockRoot cached epoch = .ok data.target.root := by
+  obtain ⟨h, timestamp, deposits, genesis⟩ := initialized.1
+  obtain ⟨pending, pendingListed, signers, earlier, block, later, atBlock, atSlot, root,
+    signersOk, signer, targetEpoch, source, rootOk, targetRoot, split, prefixOk, slots,
+    included⟩ := matchingTarget_signer_included_after_common_at_cached_slot (by decide)
+      genesis shared ran advanced cache matching indicesOk member laterTarget
+  have epochs := pendingEpochsMatch_of_initialized_chain (by decide) genesis shared
+  have pendingEpochs := foldlM_ok_invariant (fun s => PendingEpochsMatch s (by decide))
+    (fun _ _ _ prior ok => stateTransition_pending_epochs (by decide) prior ok) epochs ran
+  have cachedEpochs := (pendingUnchanged_processSlot cache).epochs (frame_processSlot cache)
+    (advanceSlots_pending_epochs (by decide) count pendingEpochs advanced)
+  have full : finalityRuns cfg checks eng g (common ++ bs) after := by
+    unfold finalityRuns
+    rw [List.foldlM_append, shared]
+    exact ran
+  have pendingMember : pending ∈ (cached.currentEpochAttestations (by decide)).data ∨
+      pending ∈ (cached.previousEpochAttestations (by decide)).data := by
+    obtain ⟨_, _, sources', _, listed', _⟩ := getMatchingTargetAttestations_mem matching
+      pendingListed
+    simp only [getMatchingSourceAttestations, bind_ok_iff, ensure_ok_iff, pure, Except.pure,
+      Except.ok.injEq] at sources'
+    obtain ⟨_, _, rfl⟩ := sources'
+    split at listed'
+    · exact .inl listed'
+    · exact .inr listed'
+  have recentAfter : (getCurrentEpoch after).toNat ≤
+      (computeEpochAtSlot p pending.data.slot).toNat + 1 := by
+    have oldEpochs := pendingEpochs
+    have oldMember := advanceSlots_pending_mem (by decide) count advanced
+      (((pendingUnchanged_processSlot cache).mem_iff pending).mp pendingMember)
+    rcases oldMember with current | previous
+    · rw [(oldEpochs.1 pending current).2]
+      omega
+    · rw [(oldEpochs.2 pending previous).2, getPreviousEpoch_toNat]
+      omega
+  have afterSigners : getPendingAttestingIndices after pending = .ok signers := by
+    have past : computeEpochAtSlot p pending.data.slot ≤ getCurrentEpoch after := by
+      rw [UInt64.le_iff_toNat_le]
+      have oldMember := advanceSlots_pending_mem (by decide) count advanced
+        (((pendingUnchanged_processSlot cache).mem_iff pending).mp pendingMember)
+      rcases oldMember with current | previous
+      · rw [(pendingEpochs.1 pending current).2]
+        exact Nat.le_refl _
+      · rw [(pendingEpochs.2 pending previous).2, getPreviousEpoch_toNat]
+        omega
+    have recent : (getCurrentEpoch atStep).toNat ≤
+        (computeEpochAtSlot p pending.data.slot).toNat + 1 := by
+      have same : getCurrentEpoch cached = getCurrentEpoch atStep := by
+        simp only [getCurrentEpoch, (frame_processSlot cache).slot]
+      rcases pendingMember with current | previous
+      · rw [(cachedEpochs.1 pending current).2, same]
+        omega
+      · rw [(cachedEpochs.2 pending previous).2, getPreviousEpoch_toNat, same]
+        omega
+    have inv := foldlM_ok_invariant Invariant
+      (fun _ _ _ prior ok => (stateTransition_invariant (by decide) prior ok).1)
+      (initializeBeaconStateFromEth1_invariant genesis).2 full
+    have committee := getBeaconCommittee_congr (index := pending.data.index)
+      (advanceSlots_active_indices (by decide) count inv past advanced)
+      (advanceSlots_attester_seed positive history count inv past recent advanced)
+    have cachedCommittee : getBeaconCommittee cached pending.data.slot pending.data.index =
+        getBeaconCommittee atStep pending.data.slot pending.data.index := by
+      obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cache
+      rfl
+    simpa only [getPendingAttestingIndices, cachedCommittee, committee] using signersOk
+  obtain ⟨_, _, _, _, _, _, recent, _⟩ := included.committee positive history
+  have past : computeEpochAtSlot p pending.data.slot ≤ getCurrentEpoch atSlot := by
+    rcases recent with current | previous
+    · rw [current]
+      exact UInt64.le_refl _
+    · rw [UInt64.le_iff_toNat_le]
+      omega
+  unfold finalityRuns at ran
+  rw [split, List.foldlM_append, prefixOk] at ran
+  simp only [bind_ok_iff, List.foldlM_cons] at ran
+  obtain ⟨_, first, afterBlock, blockOk, tail⟩ := ran
+  cases first
+  obtain ⟨advancedBlock, advancedOk, _, _, processed, _⟩ := stateTransition_ok blockOk
+  have equal : advancedBlock = atSlot := Except.ok.inj (advancedOk.symm.trans slots)
+  subst advancedBlock
+  have inv := foldlM_ok_invariant Invariant
+    (fun _ _ _ prior ok => (stateTransition_invariant (by decide) prior ok).1)
+    (initializeBeaconStateFromEth1_invariant genesis).2 shared
+  have atInv := (processSlots_invariant (by decide)
+    (foldlM_ok_invariant Invariant
+      (fun _ _ _ prior ok => (stateTransition_invariant (by decide) prior ok).1)
+      inv prefixOk) slots).1
+  have frame := frame_processBlock (by decide) processed
+  have pastBlock : computeEpochAtSlot p pending.data.slot ≤ getCurrentEpoch afterBlock := by
+    simpa only [getCurrentEpoch, frame.slot] using past
+  have tailCommittee := stateTransition_chain_committee (index := pending.data.index)
+    positive history (frame.invariant atInv) pastBlock recentAfter tail
+  have blockCommittee := processBlock_committee (index := pending.data.index)
+    positive history recent processed
+  have atSigners : getPendingAttestingIndices atSlot pending = .ok signers := by
+    simpa only [getPendingAttestingIndices, tailCommittee, blockCommittee] using afterSigners
+  exact ⟨pending.data, finality_pending_included positive history split prefixOk slots
+    included atSigners signer, targetEpoch, source, targetRoot ▸ rootOk⟩
+
+/-- Extending a fork suffix retains every original attestation processing site. -/
+theorem FinalityIncluded.append {cfg : Config} {checks : SignatureChecks}
+    {eng : ExecutionEngine p .phase0} {c : FinalityState p}
+    {bs : List (FinalityBlock p)} {i : ValidatorIndex} {data : AttestationData}
+    (included : FinalityIncluded cfg checks eng c bs i data) (rest : List (FinalityBlock p)) :
+    FinalityIncluded cfg checks eng c (bs ++ rest) i data := by
+  obtain ⟨earlier, block, later, before, atSlot, inclusion, recorded, indexed, attestation,
+    header, randao, eth1, proposers, attesters, attPrefix, attSuffix,
+    split, facts⟩ := included
+  refine ⟨earlier, block, later ++ rest, before, atSlot, inclusion, recorded, indexed,
+    attestation, header, randao, eth1, proposers, attesters, attPrefix, attSuffix, ?_, facts⟩
+  simp only [split, List.append_assoc, List.cons_append]
+
 end EthLib.Consensus
