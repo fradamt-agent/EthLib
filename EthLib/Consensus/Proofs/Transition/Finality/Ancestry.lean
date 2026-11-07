@@ -145,6 +145,91 @@ theorem finality_observations_cached {cfg : Config} {checks : SignatureChecks}
   simp only [advanced, cachedOk, Except.toOption, Option.toList_some]
   exact List.mem_cons_of_mem _ List.mem_cons_self
 
+/-- Every input of a slot cache in a block's slot run belongs to the observation pool. -/
+theorem finality_observations_slot_input {cfg : Config} {checks : SignatureChecks}
+    {eng : ExecutionEngine p .phase0} {s before atStep : FinalityState p}
+    {bs : List (FinalityBlock p)} {b : FinalityBlock p} {i n : Nat}
+    (listed : bs[i]? = some b)
+    (prefixRun : finalityRuns cfg checks eng s (bs.take i) before)
+    (inside : n < b.message.slot.toNat - before.slot.toNat)
+    (advanced : advanceSlots cfg n before = .ok atStep) :
+    atStep ∈ finalityObservations cfg checks eng s bs := by
+  apply List.mem_cons_of_mem
+  apply List.mem_flatMap.mpr
+  refine ⟨(b, i), List.mk_mem_zipIdx_iff_getElem?.mpr listed, ?_⟩
+  change atStep ∈ (match (bs.take i).foldlM
+    (fun s b => stateTransition cfg checks eng s b true) s with
+    | .error _ => []
+    | .ok before => (stateTransition cfg checks eng before b true).toOption.toList ++
+      before :: (List.range (b.message.slot.toNat - before.slot.toNat)).flatMap fun n =>
+        match advanceSlots cfg n before with
+        | .error _ => []
+        | .ok atStep => atStep :: (processSlot atStep).toOption.toList)
+  rw [show (bs.take i).foldlM
+    (fun s b => stateTransition cfg checks eng s b true) s = .ok before from prefixRun]
+  apply List.mem_append_right
+  apply List.mem_cons_of_mem
+  apply List.mem_flatMap.mpr
+  refine ⟨n, List.mem_range.mpr inside, ?_⟩
+  simp only [advanced]
+  exact List.mem_cons_self
+
+/-- A zero-root observed state supplies the concrete SHA-256 input required by the alternative. -/
+theorem finality_zero_root_found {ss : List (FinalityState p)} {bs : List (FinalityBlock p)}
+    {s : FinalityState p} (observed : s ∈ ss)
+    (zero : hashTreeRoot s = .ok (Vector.replicate 32 0)) : FinalityZeroRootFound ss bs := by
+  obtain ⟨tree, traced, rooted, complete⟩ := valueTree_of_hashTreeRoot _ _ _
+    (SszType.hashTreeRoot_ok_iff.mp zero)
+  have forked : ∃ left right, tree = CommitmentTree.fork left right := by
+    change valueTreeAt (_ + 1) (.container _ _) (.seq _) = .ok tree at traced
+    obtain ⟨layout, trees, laid, _, _, treeEq⟩ := valueTreeAt_view traced
+    simp only [merkleLayout] at laid
+    split at laid
+    · contradiction
+    · cases laid
+      change tree = CommitmentTree.bounded trees 21 at treeEq
+      rw [treeEq]
+      unfold CommitmentTree.bounded
+      rw [show depthFor 21 = 5 by simp [depthFor]]
+      exact ⟨_, _, rfl⟩
+  obtain ⟨left, right, rfl⟩ := forked
+  refine ⟨s, observed, .fork left right, left.root ++ right.root, zero, traced,
+    List.mem_cons_self, ?_, ?_, ?_⟩
+  · apply List.mem_append_left
+    apply List.mem_flatMap.mpr
+    refine ⟨s, observed, List.mem_append_left _ ?_⟩
+    simp only [traced, Except.toOption, Option.toList_some, List.flatMap_cons,
+      List.flatMap_nil, List.append_nil]
+    exact List.mem_cons_self
+  · simp only [Array.size_append, CommitmentTree.root_size left complete.1,
+      CommitmentTree.root_size right complete.2]
+    rfl
+  · apply ByteArray.ext
+    exact rooted
+
+/-- A successful cache can leave its header unfilled only when its input hashes to zero.
+
+Every other successful fill makes the header stable until the next block. -/
+theorem finality_processSlot_header
+    {s t : FinalityState p} (computed : processSlot s = .ok t) :
+    ∃ root, hashTreeRoot s = .ok root ∧
+      t.latestBlockHeader =
+        (if s.latestBlockHeader.stateRoot = Vector.replicate 32 0
+          then { s.latestBlockHeader with stateRoot := root } else s.latestBlockHeader) ∧
+      (root ≠ Vector.replicate 32 0 →
+        t.latestBlockHeader.stateRoot ≠ Vector.replicate 32 0) := by
+  unfold processSlot at computed
+  simp only [bind_ok_iff, liftSsz_ok] at computed
+  obtain ⟨root, rootOk, blockRoot, _, result⟩ := computed
+  simp only [show ¬Fork.glamsterdam ≤ Fork.phase0 by decide, ↓reduceDIte,
+    pure, Except.pure, Except.ok.injEq] at result
+  subst t
+  refine ⟨root, rootOk, rfl, ?_⟩
+  intro nonzero
+  split
+  · exact nonzero
+  · exact ‹¬s.latestBlockHeader.stateRoot = Vector.replicate 32 0›
+
 /-- The first justification above a boundary is weighed on the supplied fork suffix.
 
 Both stored source epochs at that call are below the boundary.
