@@ -77,6 +77,7 @@ public import EthLib.Consensus.Proofs.Transition.ChurnWindows
 public import EthLib.Consensus.Proofs.Transition.Cohorts
 public import EthLib.Consensus.Proofs.Transition.BuilderPayments
 public import EthLib.Consensus.Proofs.Transition.BuilderRequests
+public import EthLib.Consensus.Proofs.Transition.EffectiveBalanceCap
 public import EthLib.Consensus.Proofs.Transition.EpochJustification
 public import EthLib.Consensus.Proofs.Transition.EpochParticipation
 public import EthLib.Consensus.Proofs.Transition.EpochPending
