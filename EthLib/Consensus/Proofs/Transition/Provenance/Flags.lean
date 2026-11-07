@@ -141,7 +141,9 @@ def FlagAtStart (start : ForkedBeaconState preset) (index : Nat) (flagIndex : UI
 
 /-- The chain crossed the upgrade to Altair, and the upgrade set a flag of a validator.
 
-The upgrade turns the pending attestations of the previous epoch into flags of that epoch. -/
+The upgrade turns the pending attestations of the previous epoch into flags of that epoch.
+
+The upgrade is a step of the chain, from `pre` to `post`. -/
 def FlagFromAltairUpgrade (config : Config) (checks : SignatureChecks)
     (start after : ForkedBeaconState preset) (index : Nat) (flagIndex : UInt64) (epoch : Epoch) :
     Prop :=
@@ -150,7 +152,8 @@ def FlagFromAltairUpgrade (config : Config) (checks : SignatureChecks)
     Reaches config checks start ⟨.phase0, pre⟩ ∧ upgradeToAltair config pre = .ok post ∧
     Reaches config checks ⟨.altair, post⟩ after ∧
     (post.previousEpochParticipation (by decide)).data[index]? = some flags ∧
-    hasFlag flags flagIndex = true ∧ epoch = getPreviousEpoch post
+    hasFlag flags flagIndex = true ∧ epoch = getPreviousEpoch post ∧
+    Reaches config checks ⟨.phase0, pre⟩ ⟨.altair, post⟩
 
 /-- A block of a chain included an attestation that set a flag of a validator.
 
@@ -330,7 +333,8 @@ theorem Reaches.flags {start after : ForkedBeaconState preset}
         rw [← Array.foldlM_toList] at folded
         obtain ⟨participation, rfl, -⟩ := foldlM_translateAttestation folded
         cases current
-        · exact .inr (.inl ⟨state, _, flags, middleChain, upgradedOk, .refl _, found, set, rfl⟩)
+        · exact .inr (.inl ⟨state, _, flags, middleChain, upgradedOk, .refl _, found, set, rfl,
+            (Reaches.refl _).step theStep⟩)
         · -- The current list starts with no flag.
           obtain ⟨-, zeros, -⟩ := carryFields_of_lt_altair (config := config) (post := .altair)
             state (by decide) (by decide) (by decide) (by decide)
