@@ -5,10 +5,10 @@ public import EthLib.Consensus.Proofs.Transition.Finality.Definitions
 /-!
 # Registry alignment for Phase 0 finality
 
-The Phase 0 `process_registry_updates` and `process_deposit` rules preserve
-the identity of each existing registry position.
+Phase 0 registry updates and deposits preserve the identity of each existing registry position.
 
 Splitting voting weight uses registry positions, not a search by public key.
+
 The raw marked sum keeps the array zip's truncation rule.
 -/
 
@@ -461,7 +461,8 @@ theorem finality_stateTransition_registry {cfg : Config} {checks : SignatureChec
 /-- A chain preserves existing registry positions without a cryptographic assumption. -/
 theorem finality_runs_registry {cfg : Config} {checks : SignatureChecks}
     {eng : ExecutionEngine p .phase0} {s t : FinalityState p} {bs : List (FinalityBlock p)}
-    (inv : Invariant s) (ran : finalityRuns cfg checks eng s bs t) : FinalityRegistryExtends s t := by
+    (inv : Invariant s) (ran : finalityRuns cfg checks eng s bs t) :
+    FinalityRegistryExtends s t := by
   induction bs generalizing s with
   | nil => cases ran; exact .refl _
   | cons b bs ih =>
@@ -477,7 +478,8 @@ theorem finality_validator_alignment (cfg : Config) (checks : SignatureChecks)
       ∀ (i : ValidatorIndex) (v : Validator), getValidator c i = .ok v →
         ∃ w, getValidator after i = .ok w ∧ w.pubkey = v.pubkey ∧
           w.withdrawalCredentials = v.withdrawalCredentials ∧
-          (isActiveValidator v (getCurrentEpoch c) = true → w.activationEpoch = v.activationEpoch) := by
+          (isActiveValidator v (getCurrentEpoch c) = true →
+            w.activationEpoch = v.activationEpoch) := by
   have kept := finality_runs_registry inv ran
   refine ⟨kept.1, fun i v read => ?_⟩
   obtain ⟨w, found, key, credentials, epoch⟩ := kept.2 i v read
@@ -493,9 +495,90 @@ theorem finality_validator_alignment (cfg : Config) (checks : SignatureChecks)
   change 18446744073709551615 ≤ _ at a
   omega
 
+/-- Successful block prefixes retain the invariant needed by intermediate slot proofs. -/
+theorem finality_runs_invariant {cfg : Config} {checks : SignatureChecks}
+    {eng : ExecutionEngine p .phase0} {s t : FinalityState p} {bs : List (FinalityBlock p)}
+    (inv : Invariant s) (ran : finalityRuns cfg checks eng s bs t) : Invariant t :=
+  foldlM_ok_invariant Invariant
+    (fun _ _ _ h ok => (stateTransition_invariant (by decide) h ok).1) inv ran
+
+/-- Every collected block, slot and cache observation preserves C's registry prefix.
+
+The collector emits a state only after the corresponding prefix succeeds.
+
+No assumption about a failed continuation is needed. -/
+theorem finality_observations_registry {cfg : Config} {checks : SignatureChecks}
+    {eng : ExecutionEngine p .phase0} {c t : FinalityState p} {bs : List (FinalityBlock p)}
+    (inv : Invariant c) (member : t ∈ finalityObservations cfg checks eng c bs) :
+    FinalityRegistryExtends c t := by
+  simp only [finalityObservations, List.mem_cons, List.mem_flatMap] at member
+  rcases member with rfl | ⟨⟨b, i⟩, _, member⟩
+  · exact .refl _
+  cases prefixOk : (bs.take i).foldlM (fun s b => stateTransition cfg checks eng s b true) c with
+  | error e => simp [prefixOk] at member
+  | ok before =>
+    simp only [prefixOk, List.mem_append, List.mem_cons, List.mem_flatMap] at member
+    have kept := finality_runs_registry inv prefixOk
+    have holds := finality_runs_invariant inv prefixOk
+    rcases member with output | rfl | ⟨n, _, member⟩
+    · cases block : stateTransition cfg checks eng before b true with
+      | error e => simp [block, Except.toOption] at output
+      | ok after =>
+        simp only [block, Except.toOption, Option.toList, List.mem_singleton] at output
+        subst t
+        exact kept.trans (finality_stateTransition_registry holds block)
+    · exact kept
+    · cases slots : advanceSlots cfg n before with
+      | error e => simp [slots] at member
+      | ok atStep =>
+        simp only [slots, List.mem_cons] at member
+        have step := kept.trans (finality_advanceSlots_registry holds slots)
+        rcases member with rfl | member
+        · exact step
+        · cases cache : processSlot atStep with
+          | error e => simp [cache, Except.toOption] at member
+          | ok cached =>
+            simp only [cache, Except.toOption, Option.toList, List.mem_singleton] at member
+            subst t
+            exact step.trans (finality_processSlot_registry cache)
+
+/-- Alignment at the actual checked attestation input, through its concrete processing prefix.
+
+Phase 0 `process_block` runs header, randomness, voting and slashing before attestations.
+
+Thus signer keys at these positions are C's keys. -/
+theorem finality_attestation_site_registry {cfg : Config} {checks : SignatureChecks}
+    {eng : ExecutionEngine p .phase0} {c before atSlot header randao eth1 proposers attesters
+      inclusion : FinalityState p} {earlier : List (FinalityBlock p)} {b : FinalityBlock p}
+    {attestationPrefix : List (Attestation p .phase0)} (inv : Invariant c)
+    (ran : finalityRuns cfg checks eng c earlier before)
+    (slots : processSlots cfg before b.message.slot = .ok atSlot)
+    (headerOk : processBlockHeader atSlot b.message = .ok header)
+    (randaoOk : processRandao cfg checks header b.message.body = .ok randao)
+    (eth1Ok : processEth1Data (by decide) randao b.message.body = .ok eth1)
+    (proposersOk : b.message.body.proposerSlashings.data.toList.foldlM
+      (processProposerSlashing cfg checks) eth1 = .ok proposers)
+    (attestersOk : b.message.body.attesterSlashings.data.toList.foldlM
+      (processAttesterSlashing cfg checks) proposers = .ok attesters)
+    (attestationsOk : attestationPrefix.foldlM (processAttestation cfg checks) attesters =
+      .ok inclusion) :
+    FinalityRegistryExtends c inclusion := by
+  exact (finality_runs_registry inv ran).trans <|
+    (finality_processSlots_registry (finality_runs_invariant inv ran) slots).trans <|
+    (finality_processBlockHeader_registry headerOk).trans <|
+    (finality_processRandao_registry randaoOk).trans <|
+    (finality_processEth1Data_registry eth1Ok).trans <|
+    (FinalityRegistryExtends.foldlM
+      (fun _ _ _ ok => finality_processProposerSlashing_registry ok) proposersOk).trans <|
+    (FinalityRegistryExtends.foldlM
+      (fun _ _ _ ok => finality_processAttesterSlashing_registry ok) attestersOk).trans <|
+    FinalityRegistryExtends.foldlM
+      (fun _ _ _ ok => finality_processAttestation_registry ok) attestationsOk
+
 /-- Partition a raw marked sum by a predicate on its validator entries.
 
 The Phase 0 `get_total_balance` raw sum counts each marked position once.
+
 Both parts retain the original validator and mark at that position. -/
 theorem sumMarked_partition (validators : Array Validator) (marked : Array Bool)
     (select : Validator → Bool) :
@@ -521,6 +604,7 @@ theorem sumMarked_partition (validators : Array Validator) (marked : Array Bool)
 /-- Split a raw marked sum at a reference registry length.
 
 The prefix and suffix retain the exact indexed entries of the later registry.
+
 This also holds when the marks are shorter than the registry. -/
 theorem sumMarked_prefix_suffix (validators : Array Validator) (marked : Array Bool)
     (n : Nat) :
@@ -530,6 +614,101 @@ theorem sumMarked_prefix_suffix (validators : Array Validator) (marked : Array B
       (((validators.zip marked).toList.drop n).map fun (v, m) =>
         if m then v.effectiveBalance.toNat else 0).sum := by
   rw [sumMarked_eq_sum, ← List.sum_append, ← List.map_append, List.take_append_drop]
+
+/-- A raw marked sum as a sum over exact natural-number registry indices.
+
+Missing marks contribute zero, matching the array zip's truncation. -/
+theorem sumMarked_eq_index_sum (validators : Array Validator) (marked : Array Bool) :
+    sumMarked validators marked =
+      ((List.range validators.size).map fun i =>
+        if marked[i]?.getD false then
+          (validators[i]?.map (fun v => v.effectiveBalance.toNat)).getD 0 else 0).sum := by
+  rw [sumMarked_eq_sum]
+  have lists : ∀ (vs : List Validator) (ms : List Bool),
+      ((vs.zip ms).map fun (v, m) => if m then v.effectiveBalance.toNat else 0).sum =
+        ((List.range vs.length).map fun i =>
+          if ms[i]?.getD false then
+            (vs[i]?.map (fun v => v.effectiveBalance.toNat)).getD 0 else 0).sum := by
+    intro vs
+    induction vs with
+    | nil => intro ms; simp
+    | cons v vs ih =>
+      intro ms
+      cases ms with
+      | nil => simp [List.map_const', List.sum_replicate_nat]
+      | cons m ms =>
+        simp only [List.zip_cons_cons, List.map_cons, List.sum_cons, List.length_cons,
+          List.range_succ_eq_map, List.map_map, List.getElem?_cons_zero,
+          List.getElem?_cons_succ, Option.getD_some, Option.map_some, Function.comp_def]
+        rw [ih]
+  simpa only [Array.toList_zip, Array.length_toList, Array.getElem?_toList] using
+    lists validators.toList marked.toList
+
+/-- Split a threshold's raw marked sum into C-active and non-C-active indices.
+
+The partition reads activity from C but weight and marks from the weighing state.
+
+It never matches validators by key or changes the identity at an index. -/
+theorem finality_sumMarked_active_partition (c s : FinalityState p) (marked : Array Bool) :
+    sumMarked s.validators.data marked =
+      ((List.range s.validators.data.size).map fun i =>
+        if finalityActive c i && marked[i]?.getD false then finalityEffective s i else 0).sum +
+      ((List.range s.validators.data.size).map fun i =>
+        if !finalityActive c i && marked[i]?.getD false then finalityEffective s i else 0).sum := by
+  rw [sumMarked_eq_index_sum]
+  have partition : ∀ indices : List Nat,
+      (indices.map fun i =>
+        if marked[i]?.getD false then finalityEffective s i else 0).sum =
+      (indices.map fun i =>
+        if finalityActive c i && marked[i]?.getD false then finalityEffective s i else 0).sum +
+      (indices.map fun i =>
+        if !finalityActive c i && marked[i]?.getD false then finalityEffective s i else 0).sum := by
+    intro indices
+    induction indices with
+    | nil => simp
+    | cons i rest ih =>
+      cases h : finalityActive c i <;> cases m : marked[i]?.getD false <;>
+        simp [h, m, ih, Nat.add_assoc, Nat.add_comm, Nat.add_left_comm]
+  convert partition (List.range s.validators.data.size) using 1
+  congr 1
+  apply List.map_congr_left
+  intro i _
+  cases h : s.validators.data[i]? <;> simp [finalityEffective, h]
+
+/-- C-active weight is supported on C's registry prefix even in a larger later registry. -/
+theorem finality_active_sum_prefix (c s : FinalityState p) (weight : Nat → Nat)
+    (size : c.validators.data.size ≤ s.validators.data.size) :
+    ((List.range s.validators.data.size).map fun i =>
+      if finalityActive c i then weight i else 0).sum =
+    ((List.range c.validators.data.size).map fun i =>
+      if finalityActive c i then weight i else 0).sum := by
+  have length : s.validators.data.size =
+      c.validators.data.size + (s.validators.data.size - c.validators.data.size) := by omega
+  rw [length, List.range_add, List.map_append, List.sum_append, List.map_map]
+  have zero : ((List.range (s.validators.data.size - c.validators.data.size)).map
+      fun i => if finalityActive c (c.validators.data.size + i)
+        then weight (c.validators.data.size + i) else 0).sum = 0 := by
+    have empty : ∀ i, finalityActive c (c.validators.data.size + i) = false := by
+      intro i
+      have outside : c.validators.data[c.validators.data.size + i]? = none :=
+        Array.getElem?_eq_none (by omega)
+      simp only [finalityActive, outside]
+    simp [empty, List.map_const', List.sum_replicate_nat]
+  simp only [Function.comp_def, zero, Nat.add_zero]
+
+/-- Threshold weight from C-active positions can be summed on C's own prefix. -/
+theorem finality_sumMarked_reference_partition (c s : FinalityState p) (marked : Array Bool)
+    (size : c.validators.data.size ≤ s.validators.data.size) :
+    sumMarked s.validators.data marked =
+      ((List.range c.validators.data.size).map fun i =>
+        if finalityActive c i && marked[i]?.getD false then finalityEffective s i else 0).sum +
+      ((List.range s.validators.data.size).map fun i =>
+        if !finalityActive c i && marked[i]?.getD false then finalityEffective s i else 0).sum := by
+  rw [finality_sumMarked_active_partition]
+  congr 1
+  have prefixSum := finality_active_sum_prefix c s
+    (fun i => if marked[i]?.getD false then finalityEffective s i else 0) size
+  simpa only [Bool.and_eq_true, ite_and] using prefixSum
 
 end Finality
 
