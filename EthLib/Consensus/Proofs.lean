@@ -142,6 +142,7 @@ public import EthLib.Consensus.Proofs.Transition.Provenance.UpgradeVoters
 public import EthLib.Consensus.Proofs.Transition.Provenance.Voters
 public import EthLib.Consensus.Proofs.Transition.Provenance.Votes
 public import EthLib.Consensus.Proofs.Transition.Provenance.Weighing
+public import EthLib.Consensus.Proofs.Transition.RegistryGrowth
 public import EthLib.Consensus.Proofs.Transition.Reachable
 public import EthLib.Consensus.Proofs.Transition.Requests
 public import EthLib.Consensus.Proofs.Transition.RewardDeltas
