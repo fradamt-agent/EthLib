@@ -1,6 +1,7 @@
 module
 
 public import EthLib.Consensus.Proofs.Transition.DepositChurn
+public import EthLib.Consensus.Proofs.Transition.DepositCredits
 public import EthLib.Consensus.Proofs.Transition.EffectiveBalanceCap
 public import EthLib.Consensus.Proofs.Transition.GainedBound
 public import EthLib.Consensus.Proofs.Transition.ExitStake
@@ -528,5 +529,128 @@ theorem Run.joiningStakePrev_le_credited {start after : ForkedBeaconState preset
     (fun position member => (Finset.mem_filter.mp member).2.2)
   simp only [effectiveAt_eq_effectiveBalanceAtPosition] at gained ⊢
   exact Nat.le_trans joined (Nat.add_le_add_right (Nat.add_le_add_left gained _) _)
+
+/-- The most that the churn of deposits takes in one epoch, at every fork from Electra. -/
+def depositCap (config : Config) : Nat :=
+  max config.MAX_PER_EPOCH_ACTIVATION_CHURN_LIMIT_GLOAS.toNat
+    config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat
+
+/-- A validator active at a state's previous or current epoch exits no earlier than the current one.
+-/
+theorem currentEpoch_le_exitEpoch_of_active {fork : Base.Fork} {state : BeaconState preset fork}
+    {validator : Validator}
+    (active : isActiveValidator validator (getPreviousEpoch state) = true ∨
+      isActiveValidator validator (getCurrentEpoch state) = true) :
+    (getCurrentEpoch state).toNat ≤ validator.exitEpoch.toNat := by
+  have previous := getPreviousEpoch_toNat state
+  rw [isActiveValidator_iff, isActiveValidator_iff, previous] at active
+  omega
+
+/-- The stake that joins the active set over a run from Electra, bounded by the churn of deposits.
+
+Take the validators active at the previous or current epoch of the last state.
+
+Keep those not active at the current epoch of the first.
+
+Their effective balance in the last state is at most four parts.
+
+- The stake waiting to be active in the first state.
+- For those of the first state, the excess of their balance over their effective balance there.
+- What each gains after its deposits: rewards and consolidations, which no churn bounds.
+- The carry of the churn of deposits at the start, and one cap of deposits for each epoch.
+
+The registry must stay below `2^64` validators, with room for the pending deposits of an epoch. -/
+theorem Run.joiningStakePrev_le_charged {start after : ForkedBeaconState preset}
+    (electra : .pectra ≤ start.fork) (reachable : Reachable config checks start)
+    (run : Run config checks start after)
+    (small : after.state.validators.data.size < 2 ^ 64)
+    (room : ∀ state ∈ run.states,
+      state.state.validators.data.size + preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat < 2 ^ 64)
+    (epochs : getCurrentEpoch start.state ≤ getCurrentEpoch after.state) :
+    let joins := fun position =>
+      ((after.state.validators.data[position]?).any
+          (isActiveValidator · (getPreviousEpoch after.state)) ||
+        (after.state.validators.data[position]?).any
+          (isActiveValidator · (getCurrentEpoch after.state))) &&
+        !(start.state.validators.data[position]?).any
+          (isActiveValidator · (getCurrentEpoch start.state))
+    (((List.range after.state.validators.data.size).filter joins).map
+        fun position => effectiveBalanceAtPosition after.state position).sum ≤
+      pendingActivationStake start.state +
+        ∑ position ∈ ((Finset.range after.state.validators.data.size).filter fun position =>
+            joins position = true ∧ position < start.state.validators.data.size),
+          (balanceAt start.state position - effectiveAt start.state position) +
+        ∑ position ∈ ((Finset.range after.state.validators.data.size).filter fun position =>
+            joins position = true),
+          run.gainsAfterDeposit position +
+        (forkedDepositCarry start +
+          ((getCurrentEpoch after.state).toNat - (getCurrentEpoch start.state).toNat) *
+            depositCap config) := by
+  intro joins
+  have credited : (((List.range after.state.validators.data.size).filter joins).map
+        fun position => effectiveBalanceAtPosition after.state position).sum ≤
+      pendingActivationStake start.state +
+        ∑ position ∈ ((Finset.range after.state.validators.data.size).filter fun position =>
+            joins position = true ∧ position < start.state.validators.data.size),
+          (balanceAt start.state position - effectiveAt start.state position +
+            run.credited position) +
+        ∑ position ∈ ((Finset.range after.state.validators.data.size).filter fun position =>
+            joins position = true ∧ ¬ position < start.state.validators.data.size),
+          effectiveBalanceAtPosition after.state position :=
+    run.joiningStakePrev_le_credited electra small epochs
+  set old := (Finset.range after.state.validators.data.size).filter fun position =>
+    joins position = true ∧ position < start.state.validators.data.size
+  set new := (Finset.range after.state.validators.data.size).filter fun position =>
+    joins position = true ∧ ¬ position < start.state.validators.data.size
+  set all := (Finset.range after.state.validators.data.size).filter fun position =>
+    joins position = true
+  have split : all = old ∪ new := by
+    ext position
+    simp only [all, old, new, Finset.mem_union, Finset.mem_filter]
+    tauto
+  have disjoint : Disjoint old new := by
+    rw [Finset.disjoint_filter]
+    intro _ _ inOld inNew
+    exact inNew.2 inOld.2
+  have sumAll : ∀ value : Nat → Nat,
+      ∑ position ∈ all, value position =
+        ∑ position ∈ old, value position + ∑ position ∈ new, value position := fun value => by
+    rw [split, Finset.sum_union disjoint]
+  -- Old joiners: what the run credits them is their deposits, plus what they gain after.
+  have oldBound : ∑ position ∈ old,
+        (balanceAt start.state position - effectiveAt start.state position +
+          run.credited position) ≤
+      ∑ position ∈ old, (balanceAt start.state position - effectiveAt start.state position) +
+        ∑ position ∈ old, run.depositCredits position +
+        ∑ position ∈ old, run.gainsAfterDeposit position := by
+    rw [← Finset.sum_add_distrib, ← Finset.sum_add_distrib]
+    exact Finset.sum_le_sum fun position _ => by
+      have := Run.credited_le position run
+      omega
+  -- New joiners: their effective balance is their deposits, plus what they gain after.
+  have newBound : ∑ position ∈ new, effectiveBalanceAtPosition after.state position ≤
+      ∑ position ∈ new, run.depositCredits position +
+        ∑ position ∈ new, run.gainsAfterDeposit position := by
+    rw [← Finset.sum_add_distrib]
+    refine Finset.sum_le_sum fun position member => ?_
+    have above := Nat.le_of_not_lt (Finset.mem_filter.mp member).2.2
+    rw [← effectiveAt_eq_effectiveBalanceAtPosition]
+    exact (Run.effectiveAt_new_le electra reachable position above run small room).1
+  -- Every joiner stays to the current epoch, so its deposits took from the churn.
+  have deposits := Run.depositCredits_le electra reachable run small room all
+    (fun position member validator found => by
+      have joined := (Finset.mem_filter.mp member).2
+      simp only [joins, found, Option.any_some, Bool.and_eq_true, Bool.or_eq_true] at joined
+      exact currentEpoch_le_exitEpoch_of_active joined.1)
+  have charged := Run.depositsCharged_le_epochs (cap := depositCap config) electra run small
+    (fun forked _ churn churnOk => by
+      have bound := depositChurnLimit_le churnOk
+      unfold depositCap
+      split at bound
+      · exact Nat.le_trans bound (Nat.le_max_left _ _)
+      · exact Nat.le_trans bound (Nat.le_max_right _ _))
+  rw [sumAll] at deposits
+  have gainsSplit := sumAll fun position => run.gainsAfterDeposit position
+  omega
 
 end EthLib.Consensus
