@@ -173,48 +173,57 @@ variable {start after : ForkedBeaconState preset} {fork : Fork}
   {checkpoint : Checkpoint}
 
 theorem justifiedBy
-    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    (call : WeighingCall config checks start after fork state cached weighed next voters
+      checkpoint) :
     JustifiedBy config checks start after checkpoint :=
   ⟨fork, state, cached, weighed, next, voters, call⟩
 
 theorem head
-    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    (call : WeighingCall config checks start after fork state cached weighed next voters
+      checkpoint) :
     Reaches config checks start ⟨fork, state⟩ :=
   call.1
 
 /-- The chain runs from the call's state to the end. -/
 theorem toAfter
-    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    (call : WeighingCall config checks start after fork state cached weighed next voters
+      checkpoint) :
     Reaches config checks ⟨fork, state⟩ after :=
   ((Reaches.refl _).step (.slot call.2.1 call.2.2.1)).trans call.2.2.2.1
 
 theorem cachedOk
-    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    (call : WeighingCall config checks start after fork state cached weighed next voters
+      checkpoint) :
     processSlot state = .ok cached :=
   call.2.2.2.2.2.1
 
 theorem later
-    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    (call : WeighingCall config checks start after fork state cached weighed next voters
+      checkpoint) :
     GENESIS_EPOCH + 1 < getCurrentEpoch cached :=
   call.2.2.2.2.2.2.2.1
 
 theorem recent
-    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    (call : WeighingCall config checks start after fork state cached weighed next voters
+      checkpoint) :
     checkpoint.epoch = getPreviousEpoch cached ∨ checkpoint.epoch = getCurrentEpoch cached :=
   call.2.2.2.2.2.2.2.2.1
 
 theorem counted
-    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    (call : WeighingCall config checks start after fork state cached weighed next voters
+      checkpoint) :
     TargetVoters cached checkpoint.epoch voters :=
   call.2.2.2.2.2.2.2.2.2.1
 
 theorem passes
-    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    (call : WeighingCall config checks start after fork state cached weighed next voters
+      checkpoint) :
     PassesThreshold cached voters :=
   call.2.2.2.2.2.2.2.2.2.2.1
 
 theorem rootOk
-    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    (call : WeighingCall config checks start after fork state cached weighed next voters
+      checkpoint) :
     getBlockRoot cached checkpoint.epoch = .ok checkpoint.root :=
   call.2.2.2.2.2.2.2.2.2.2.2
 
@@ -258,7 +267,8 @@ variable {start after : ForkedBeaconState preset} {fork : Fork}
   {state cached weighed : BeaconState preset fork} {voters : List ValidatorIndex}
   {checkpoint : Checkpoint}
 
-theorem head (call : CallRecord config checks start after fork state cached weighed voters checkpoint) :
+theorem head (call : CallRecord config checks start after fork state cached weighed voters
+  checkpoint) :
     Reaches config checks start ⟨fork, state⟩ :=
   call.1
 
@@ -316,7 +326,8 @@ step, which it reads after the caching. -/
 theorem WeighingCall.record {start after : ForkedBeaconState preset} {fork : Fork}
     {state cached weighed next : BeaconState preset fork} {voters : List ValidatorIndex}
     {checkpoint : Checkpoint}
-    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    (call : WeighingCall config checks start after fork state cached weighed next voters
+      checkpoint) :
     CallRecord config checks start after fork state cached weighed voters checkpoint :=
   have ⟨head, _, _, _, _, cachedOk, weighedOk, rest⟩ := call
   ⟨head, call.toAfter, .inl cachedOk, weighedOk, rest⟩
