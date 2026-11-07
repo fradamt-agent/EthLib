@@ -67,6 +67,7 @@ public import EthLib.Consensus.Proofs.Transition.EpochUpdates
 public import EthLib.Consensus.Proofs.Transition.Execution
 public import EthLib.Consensus.Proofs.Transition.FfgVotes
 public import EthLib.Consensus.Proofs.Transition.Finality.Ancestry
+public import EthLib.Consensus.Proofs.Transition.Finality.Churn
 public import EthLib.Consensus.Proofs.Transition.Finality.Definitions
 public import EthLib.Consensus.Proofs.Transition.Finality.Registry
 public import EthLib.Consensus.Proofs.Transition.Finality.SlashingBudget
