@@ -1537,6 +1537,55 @@ theorem finality_realized_churn_zero_slots {cfg : Config} {checks : SignatureChe
   rw [(finality_epochs_zero zero).1, (finality_epochs_zero zero).2]
   cases isActiveValidator v 0 <;> rfl
 
+/-- Every observation is at or after the starting slot, including successful prefixes. -/
+theorem finality_observations_slot_ge {cfg : Config} {checks : SignatureChecks}
+    {eng : ExecutionEngine p .phase0} {c t : FinalityState p}
+    {bs : List (FinalityBlock p)}
+    (member : t ∈ finalityObservations cfg checks eng c bs) :
+    c.slot.toNat ≤ t.slot.toNat := by
+  simp only [finalityObservations, List.mem_cons, List.mem_flatMap] at member
+  rcases member with rfl | ⟨⟨b, j⟩, _, member⟩
+  · omega
+  cases prefixOk : (bs.take j).foldlM
+      (fun s b => stateTransition cfg checks eng s b true) c with
+  | error e => simp [prefixOk] at member
+  | ok before =>
+    have first := stateTransition_chain_slot_le (by decide) prefixOk
+    simp only [prefixOk, List.mem_append, List.mem_cons, List.mem_flatMap] at member
+    rcases member with output | rfl | ⟨count, _, member⟩
+    · cases block : stateTransition cfg checks eng before b true with
+      | error e => simp [block, Except.toOption] at output
+      | ok result =>
+        simp only [block, Except.toOption, Option.toList, List.mem_singleton] at output
+        subst t
+        have second := finality_runs_length (bs := [b]) (by simpa [finalityRuns] using block)
+        omega
+    · exact first
+    · cases slots : advanceSlots cfg count before with
+      | error e => simp [slots] at member
+      | ok atStep =>
+        have moved := advanceSlots_slot count slots
+        simp only [slots, List.mem_cons] at member
+        rcases member with rfl | member
+        · omega
+        · cases cache : processSlot atStep with
+          | error e => simp [cache, Except.toOption] at member
+          | ok cached =>
+            simp only [cache, Except.toOption, Option.toList, List.mem_singleton] at member
+            subst t
+            rw [(frame_processSlot cache).slot]
+            omega
+
+/-- Every observation is at or after the starting epoch, even for zero slots per epoch. -/
+theorem finality_observations_epoch_ge {cfg : Config} {checks : SignatureChecks}
+    {eng : ExecutionEngine p .phase0} {c t : FinalityState p}
+    {bs : List (FinalityBlock p)}
+    (member : t ∈ finalityObservations cfg checks eng c bs) :
+    (getCurrentEpoch c).toNat ≤ (getCurrentEpoch t).toNat := by
+  simpa only [getCurrentEpoch_toNat] using
+    (Nat.div_le_div_right (c := p.SLOTS_PER_EPOCH.toNat)
+      (finality_observations_slot_ge member))
+
 /-- A successful suffix within C's epoch has no realized entries or reference exits. -/
 theorem finality_realized_churn_zero_horizon {cfg : Config} {checks : SignatureChecks}
     {eng : ExecutionEngine p .phase0} {c after : FinalityState p}
@@ -1551,41 +1600,7 @@ theorem finality_realized_churn_zero_horizon {cfg : Config} {checks : SignatureC
   have upper := Nat.div_le_div_right (c := p.SLOTS_PER_EPOCH.toNat)
     (finality_observations_slot_le ran member)
   rw [← getCurrentEpoch_toNat, ← getCurrentEpoch_toNat] at upper
-  have lowerSlot : c.slot.toNat ≤ t.slot.toNat := by
-    simp only [finalityObservations, List.mem_cons, List.mem_flatMap] at member
-    rcases member with rfl | ⟨⟨b, j⟩, _, member⟩
-    · omega
-    cases prefixOk : (bs.take j).foldlM
-        (fun s b => stateTransition cfg checks eng s b true) c with
-    | error e => simp [prefixOk] at member
-    | ok before =>
-      have first := stateTransition_chain_slot_le (by decide) prefixOk
-      simp only [prefixOk, List.mem_append, List.mem_cons, List.mem_flatMap] at member
-      rcases member with output | rfl | ⟨count, _, member⟩
-      · cases block : stateTransition cfg checks eng before b true with
-        | error e => simp [block, Except.toOption] at output
-        | ok result =>
-          simp only [block, Except.toOption, Option.toList, List.mem_singleton] at output
-          subst t
-          have second := finality_runs_length (bs := [b]) (by simpa [finalityRuns] using block)
-          omega
-      · exact first
-      · cases slots : advanceSlots cfg count before with
-        | error e => simp [slots] at member
-        | ok atStep =>
-          have moved := advanceSlots_slot count slots
-          simp only [slots, List.mem_cons] at member
-          rcases member with rfl | member
-          · omega
-          · cases cache : processSlot atStep with
-            | error e => simp [cache, Except.toOption] at member
-            | ok cached =>
-              simp only [cache, Except.toOption, Option.toList, List.mem_singleton] at member
-              subst t
-              rw [(frame_processSlot cache).slot]
-              omega
-  have lowerEpoch := Nat.div_le_div_right (c := p.SLOTS_PER_EPOCH.toNat) lowerSlot
-  rw [← getCurrentEpoch_toNat, ← getCurrentEpoch_toNat] at lowerEpoch
+  have lowerEpoch := finality_observations_epoch_ge member
   have equal : getCurrentEpoch t = getCurrentEpoch c := UInt64.toNat_inj.mp (by omega)
   apply finalityActive_eq_of_indices
   rwa [equal]
@@ -1614,5 +1629,79 @@ theorem finality_previousGap_le {cfg : Config} {checks : SignatureChecks}
       omega
     exact finality_previousGap_le_of_finite initialized shared ran positive horizon
       (fun _ member => finality_observations_epoch_finite initialized shared ran member)
+
+/-- Bounded epoch cohorts in `(start, start + n]` bound their total weight.
+
+The list may contain repeated values; the cohort bound counts each occurrence. -/
+theorem finality_weighted_cohort_window {α : Type*} (items : List α)
+    (epoch weight : α → Nat) (start n cap maximum : Nat)
+    (window : ∀ x ∈ items, start < epoch x ∧ epoch x ≤ start + n)
+    (bounded : ∀ x ∈ items, weight x ≤ maximum)
+    (cohorts : ∀ e, start < e → e ≤ start + n →
+      (items.filter (fun x => epoch x == e)).length ≤ cap) :
+    (items.map weight).sum ≤ n * cap * maximum := by
+  induction n generalizing items with
+  | zero =>
+    have empty : items = [] := by
+      cases items with
+      | nil => rfl
+      | cons x xs => have := window x List.mem_cons_self; omega
+    simp [empty]
+  | succ n ih =>
+    let last := items.filter (fun x => epoch x == start + (n + 1))
+    let earlier := items.filter (fun x => !(epoch x == start + (n + 1)))
+    have previous : (earlier.map weight).sum ≤ n * cap * maximum := by
+      apply ih earlier
+      · intro x member
+        obtain ⟨inside, other⟩ := List.mem_filter.mp member
+        have := window x inside
+        simp only [Bool.not_eq_true', beq_eq_false_iff_ne] at other
+        omega
+      · intro x member
+        exact bounded x (List.mem_filter.mp member).1
+      · intro e lower upper
+        have sub : (earlier.filter (fun x => epoch x == e)).length ≤
+            (items.filter (fun x => epoch x == e)).length := by
+          rw [show earlier.filter (fun x => epoch x == e) =
+              (items.filter (fun x => epoch x == e)).filter
+                (fun x => !(epoch x == start + (n + 1))) by
+            simp only [earlier, List.filter_filter]
+            congr 1
+            funext x
+            exact Bool.and_comm _ _]
+          exact List.length_filter_le _ _
+        exact Nat.le_trans sub (cohorts e lower (by omega))
+    have lastWeight : (last.map weight).sum ≤ last.length * maximum := by
+      have general : ∀ xs : List α, (∀ x ∈ xs, weight x ≤ maximum) →
+          (xs.map weight).sum ≤ xs.length * maximum := by
+        intro xs
+        induction xs with
+        | nil => simp
+        | cons x xs ih =>
+          intro h
+          have tail := ih (fun y member => h y (List.mem_cons_of_mem _ member))
+          have head := h x List.mem_cons_self
+          simp only [List.map_cons, List.sum_cons, List.length_cons, Nat.add_mul,
+            Nat.one_mul]
+          omega
+      exact general last (fun x member => bounded x (List.mem_filter.mp member).1)
+    have lastCount : last.length ≤ cap := cohorts _ (by omega) (by omega)
+    have partition : (items.map weight).sum =
+        (last.map weight).sum + (earlier.map weight).sum := by
+      dsimp [last, earlier]
+      have general : ∀ xs : List α, (xs.map weight).sum =
+          ((xs.filter (fun x => epoch x == start + (n + 1))).map weight).sum +
+          ((xs.filter (fun x => !(epoch x == start + (n + 1)))).map weight).sum := by
+        intro xs
+        induction xs with
+        | nil => simp
+        | cons x xs ih =>
+          by_cases h : (epoch x == start + (n + 1)) = true <;>
+            simp [h, ih, Nat.add_assoc, Nat.add_left_comm]
+      exact general items
+    rw [partition]
+    have := Nat.mul_le_mul_right maximum lastCount
+    simp only [Nat.succ_mul, Nat.add_mul]
+    omega
 
 end EthLib.Consensus
