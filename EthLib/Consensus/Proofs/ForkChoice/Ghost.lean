@@ -964,6 +964,21 @@ theorem getHead_finalized {head : ForkChoiceNode} (found : store.getHead config 
         .ok store.finalizedCheckpoint.root :=
   isViableLeaf_finalized ((getHead_viable found).resolve_right fun ⟨noLeaf, _⟩ => someViable noLeaf)
 
+/-- At every fork, when some leaf is viable, the chain of the head holds both checkpoint blocks.
+
+The head descends from the pending node of the justified block.
+
+Its checkpoint block at the finalized epoch is the finalized block, unless that epoch is genesis.
+
+So the justified and the finalized block lie on one chain, that of the head. -/
+theorem getHead_checkpoints {head : ForkChoiceNode} (found : store.getHead config = .ok head)
+    (someViable : store.getFilteredNodeTree config ≠ .ok []) :
+    store.isAncestor head ⟨store.justifiedCheckpoint.root, .pending⟩ = .ok true ∧
+      (store.finalizedCheckpoint.epoch = GENESIS_EPOCH ∨
+        store.getCheckpointBlock head.root store.finalizedCheckpoint.epoch =
+          .ok store.finalizedCheckpoint.root) :=
+  ⟨isAncestor_getHead_justified found, getHead_finalized found someViable⟩
+
 variable (lower) in
 /-- Before Gloas and without a boost, the head of the store is the head of LMD-GHOST.
 
