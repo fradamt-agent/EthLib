@@ -17,7 +17,7 @@ A valid block ran on the state of its own fork, at its slot.
 
 Each upgrade keeps the invariant that each valid block keeps, and the finalized checkpoint.
 
-So the invariant holds across fork boundaries, and the finalized epoch never decreases there.
+`Reachable.lean` lifts this through the chain functions, across fork boundaries.
 -/
 
 @[expose] public section
@@ -195,80 +195,5 @@ theorem upgradeNext_invariant {pre : ForkedBeaconState preset}
     exact upgradeToGloas_invariant holds upgraded
   · obtain ⟨_, upgraded, rfl⟩ := computed
     exact upgradeToHeze_invariant holds upgraded
-
-/-- The upgrades due at a slot keep the invariant and the finalized checkpoint. -/
-theorem processUpgrades_invariant {forked after : ForkedBeaconState preset}
-    (holds : Invariant forked.state)
-    (computed : processUpgrades config checks forked = .ok after) :
-    Invariant after.state ∧ after.state.finalizedCheckpoint = forked.state.finalizedCheckpoint := by
-  fun_induction processUpgrades config checks forked generalizing after with
-  | case1 forked _ more =>
-    obtain ⟨step, stepOk, rest⟩ := bind_ok_iff.mp computed
-    obtain ⟨stepHolds, stepFinalized⟩ := upgradeNext_invariant holds stepOk
-    obtain ⟨afterHolds, afterFinalized⟩ := more step stepHolds rest
-    exact ⟨afterHolds, afterFinalized.trans stepFinalized⟩
-  | case2 forked _ =>
-    cases computed
-    exact ⟨holds, rfl⟩
-
-/-- One slot, with the upgrades due at the slot it reaches, keeps the invariant.
-
-The finalized epoch does not decrease. -/
-theorem advanceSlotAcross_invariant {forked after : ForkedBeaconState preset}
-    (holds : Invariant forked.state)
-    (computed : advanceSlotAcross config checks forked = .ok after) :
-    Invariant after.state ∧
-      forked.state.finalizedCheckpoint.epoch ≤ after.state.finalizedCheckpoint.epoch := by
-  obtain ⟨advanced, advancedOk, upgraded⟩ := bind_ok_iff.mp computed
-  obtain ⟨advancedHolds, first⟩ := advanceSlot_invariant holds advancedOk
-  obtain ⟨afterHolds, same⟩ := processUpgrades_invariant advancedHolds upgraded
-  exact ⟨afterHolds, same ▸ first⟩
-
-theorem advanceSlotsAcross_invariant :
-    ∀ {count : Nat} {forked after : ForkedBeaconState preset}, Invariant forked.state →
-      advanceSlotsAcross config checks count forked = .ok after →
-      Invariant after.state ∧
-        forked.state.finalizedCheckpoint.epoch ≤ after.state.finalizedCheckpoint.epoch
-  | 0, forked, after, holds, computed => by
-    simp only [advanceSlotsAcross, pure, Except.pure, Except.ok.injEq] at computed
-    subst computed
-    exact ⟨holds, UInt64.le_refl _⟩
-  | count + 1, forked, after, holds, computed => by
-    simp only [advanceSlotsAcross, bind_ok_iff] at computed
-    obtain ⟨next, nextOk, rest⟩ := computed
-    obtain ⟨nextHolds, first⟩ := advanceSlotAcross_invariant holds nextOk
-    obtain ⟨afterHolds, second⟩ := advanceSlotsAcross_invariant nextHolds rest
-    exact ⟨afterHolds, UInt64.le_trans first second⟩
-
-/-- Advancing to a later slot, with the upgrades on the way, keeps the invariant.
-
-The finalized epoch does not decrease. -/
-theorem processSlotsAcross_invariant {forked after : ForkedBeaconState preset} {slot : Slot}
-    (holds : Invariant forked.state)
-    (computed : processSlotsAcross config checks forked slot = .ok after) :
-    Invariant after.state ∧
-      forked.state.finalizedCheckpoint.epoch ≤ after.state.finalizedCheckpoint.epoch := by
-  simp only [processSlotsAcross, bind_ok_iff, ensure_ok_iff] at computed
-  obtain ⟨_, _, advanced⟩ := computed
-  exact advanceSlotsAcross_invariant holds advanced
-
-/-- Each valid block keeps the invariant, from a state that may be of an earlier fork.
-
-The upgrades on the way to the slot of the block keep it too.
-
-The finalized epoch never decreases. -/
-theorem stateTransitionAcross_invariant {fork : Fork} {engine : ExecutionEngine preset fork}
-    {forked : ForkedBeaconState preset} {signed : SignedBeaconBlock preset fork}
-    {validateResult : Bool} {after : BeaconState preset fork} (holds : Invariant forked.state)
-    (computed :
-      stateTransitionAcross config checks engine forked signed validateResult = .ok after) :
-    Invariant after ∧ forked.state.finalizedCheckpoint.epoch ≤ after.finalizedCheckpoint.epoch := by
-  obtain ⟨advanced, slotsOk, applied⟩ := stateTransitionAcross_ok computed
-  obtain ⟨advancedHolds, first⟩ := processSlotsAcross_invariant holds slotsOk
-  obtain ⟨-, blockOk, -⟩ := applySignedBlock_ok applied
-  have frame := frame_processBlock blockOk
-  refine ⟨frame.invariant advancedHolds, ?_⟩
-  rw [frame.finalized]
-  exact first
 
 end EthLib.Consensus

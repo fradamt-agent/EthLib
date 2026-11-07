@@ -695,6 +695,58 @@ theorem stepRelation_invariant :
       have frame := frame_processBlock (applySignedBlock_ok computed).2.1
       ⟨frame.invariant holds, frame.finalized ▸ UInt64.le_refl _⟩)
 
+/-! ## The invariant through the chain functions
+
+Each of these follows from `stepRelation_invariant`, with no proof of its own. -/
+
+/-- The upgrades due at a slot keep the invariant, and never lower the finalized epoch. -/
+theorem processUpgrades_invariant {forked after : ForkedBeaconState preset}
+    (holds : Invariant forked.state)
+    (computed : processUpgrades config checks forked = .ok after) :
+    Invariant after.state ∧
+      forked.state.finalizedCheckpoint.epoch ≤ after.state.finalizedCheckpoint.epoch :=
+  stepRelation_invariant.processUpgrades computed holds
+
+/-- One slot, with the upgrades due at the slot it reaches, keeps the invariant.
+
+The finalized epoch does not decrease. -/
+theorem advanceSlotAcross_invariant {forked after : ForkedBeaconState preset}
+    (holds : Invariant forked.state)
+    (computed : advanceSlotAcross config checks forked = .ok after) :
+    Invariant after.state ∧
+      forked.state.finalizedCheckpoint.epoch ≤ after.state.finalizedCheckpoint.epoch :=
+  stepRelation_invariant.advanceSlotAcross computed holds
+
+theorem advanceSlotsAcross_invariant {count : Nat} {forked after : ForkedBeaconState preset}
+    (holds : Invariant forked.state)
+    (computed : advanceSlotsAcross config checks count forked = .ok after) :
+    Invariant after.state ∧
+      forked.state.finalizedCheckpoint.epoch ≤ after.state.finalizedCheckpoint.epoch :=
+  stepRelation_invariant.advanceSlotsAcross computed holds
+
+/-- Advancing to a later slot, with the upgrades on the way, keeps the invariant.
+
+The finalized epoch does not decrease. -/
+theorem processSlotsAcross_invariant {forked after : ForkedBeaconState preset} {slot : Slot}
+    (holds : Invariant forked.state)
+    (computed : processSlotsAcross config checks forked slot = .ok after) :
+    Invariant after.state ∧
+      forked.state.finalizedCheckpoint.epoch ≤ after.state.finalizedCheckpoint.epoch :=
+  stepRelation_invariant.processSlotsAcross computed holds
+
+/-- Each valid block keeps the invariant, from a state that may be of an earlier fork.
+
+The upgrades on the way to the slot of the block keep it too.
+
+The finalized epoch never decreases. -/
+theorem stateTransitionAcross_invariant {fork : Fork} {engine : ExecutionEngine preset fork}
+    {forked : ForkedBeaconState preset} {signed : SignedBeaconBlock preset fork}
+    {validateResult : Bool} {after : BeaconState preset fork} (holds : Invariant forked.state)
+    (computed :
+      stateTransitionAcross config checks engine forked signed validateResult = .ok after) :
+    Invariant after ∧ forked.state.finalizedCheckpoint.epoch ≤ after.finalizedCheckpoint.epoch :=
+  stepRelation_invariant.stateTransitionAcross computed holds
+
 /-- Every state reachable from anchors that satisfy the invariant satisfies it. -/
 theorem ReachableFrom.invariant {anchor : ForkedBeaconState preset → Prop}
     (anchors : ∀ forked, anchor forked → Invariant forked.state)
