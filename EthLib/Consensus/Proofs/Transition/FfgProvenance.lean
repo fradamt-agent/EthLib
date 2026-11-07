@@ -97,6 +97,74 @@ theorem ofRoot_le {s t : Root} (h : s = Vector.replicate 32 0 ∨
 
 end LinkedRoot
 
+/-- Checkpoints as epoch-boundary pairs, Gasper §4, over parent links that carry the child's
+slot: `none` for the genesis sentinel, or a root with an epoch. -/
+structure EpochBlock (links : Root → Root → ℕ → Prop) (slotsPerEpoch : ℕ) where
+  /-- The root and the epoch, or `none` for the genesis sentinel. -/
+  point : Option (Root × ℕ)
+
+namespace EpochBlock
+
+variable {links : Root → Root → ℕ → Prop} {slotsPerEpoch : ℕ}
+
+/-- The parent links whose child lies after the first slot of an epoch. -/
+def after (links : Root → Root → ℕ → Prop) (slotsPerEpoch epoch : ℕ) (p r : Root) : Prop :=
+  ∃ slot, links p r slot ∧ epoch * slotsPerEpoch < slot
+
+/-- A later epoch keeps fewer links. -/
+theorem after_mono {e e' : ℕ} (le : e ≤ e') {p r : Root}
+    (h : after links slotsPerEpoch e' p r) : after links slotsPerEpoch e p r := by
+  obtain ⟨slot, link, lt⟩ := h
+  exact ⟨slot, link, lt_of_le_of_lt (Nat.mul_le_mul_right _ le) lt⟩
+
+/-- `(r, e) ≤ (r', e')` when `e ≤ e'` and links lead from `r` to `r'` through blocks after the
+first slot of `e`: `r` is the epoch-boundary block of the chain of `r'` at `e`.
+
+The genesis sentinel is below every pair. -/
+instance : Preorder (EpochBlock links slotsPerEpoch) where
+  le a b := a.point = none ∨ ∃ r e r' e', a.point = some (r, e) ∧ b.point = some (r', e') ∧
+    e ≤ e' ∧ Relation.ReflTransGen (after links slotsPerEpoch e) r r'
+  le_refl a := by
+    rcases a with ⟨_ | ⟨r, e⟩⟩
+    · exact .inl rfl
+    · exact .inr ⟨r, e, r, e, rfl, rfl, le_rfl, .refl⟩
+  le_trans a b c := by
+    rintro (ha | ⟨r, e, r', e', ha, hb, le, path⟩) (hb' | ⟨r'', e'', s, f, hb', hc, le', path'⟩)
+    · exact .inl ha
+    · exact .inl ha
+    · rw [hb] at hb'
+      cases hb'
+    · rw [hb] at hb'
+      cases hb'
+      exact .inr ⟨r, e, s, f, ha, hc, le.trans le',
+        path.trans (Relation.ReflTransGen.mono (fun _ _ h => after_mono le h) _ _ path')⟩
+
+/-- The pair of a checkpoint: the genesis sentinel for the zero root. -/
+def ofCheckpoint (c : Checkpoint) : EpochBlock links slotsPerEpoch :=
+  ⟨if c.root = Vector.replicate 32 0 then none else some (c.root, c.epoch.toNat)⟩
+
+/-- A checkpoint is below another when its root is zero, or when links lead from its root to the
+nonzero root of the other through blocks after the first slot of its epoch. -/
+theorem ofCheckpoint_le {s t : Checkpoint}
+    (h : s.root = Vector.replicate 32 0 ∨ (s.epoch.toNat ≤ t.epoch.toNat ∧
+      Relation.ReflTransGen (after links slotsPerEpoch s.epoch.toNat) s.root t.root ∧
+      t.root ≠ Vector.replicate 32 0)) :
+    ofCheckpoint (links := links) (slotsPerEpoch := slotsPerEpoch) s ≤ ofCheckpoint t := by
+  by_cases hs : s.root = Vector.replicate 32 0
+  · exact Or.inl (by simp [ofCheckpoint, hs])
+  rcases h with h | ⟨le, path, ht⟩
+  · exact absurd h hs
+  exact Or.inr ⟨s.root, s.epoch.toNat, t.root, t.epoch.toNat, by simp [ofCheckpoint, hs],
+    by simp [ofCheckpoint, ht], le, path⟩
+
+/-- The genesis checkpoint is the genesis sentinel. -/
+theorem ofCheckpoint_zero (e : Epoch) :
+    (ofCheckpoint (links := links) (slotsPerEpoch := slotsPerEpoch)
+      ⟨e, Vector.replicate 32 0⟩).point = none := by
+  simp [ofCheckpoint]
+
+end EpochBlock
+
 /-- The source of a weighing call comes before its target in the model, or there is evidence.
 
 This is the field `source_le_target` of `FfgRefinement`.

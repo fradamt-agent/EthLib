@@ -78,9 +78,9 @@ end Histories
 
 /-- The genesis checkpoint maps to the genesis block. -/
 theorem genesis_toFfg {links : Root → Root → Prop} :
-    Checkpoint.toFfg (LinkedRoot.ofRoot (links := links))
+    Checkpoint.toModel (fun c => LinkedRoot.ofRoot (links := links) c.root)
         ⟨GENESIS_EPOCH, Vector.replicate 32 0⟩ = ⟨⟨none⟩, 0⟩ := by
-  simp [Checkpoint.toFfg, LinkedRoot.ofRoot, GENESIS_EPOCH]
+  simp [Checkpoint.toModel, LinkedRoot.ofRoot, GENESIS_EPOCH]
 
 /-- The FFG refinement of two histories from genesis. -/
 def historyRefinement {g a b : ForkedBeaconState preset} (genesis : Genesis config checks g)
@@ -90,7 +90,7 @@ def historyRefinement {g a b : ForkedBeaconState preset} (genesis : Genesis conf
       Reaches config checks g ⟨fork, state⟩ → state.RegistryWithinLimit)
     (open_ : HistoryObligations config checks g a b) :
     FfgRefinement (LinkedRoot (historyLinks config checks g a b)) where
-  block := LinkedRoot.ofRoot
+  block c := LinkedRoot.ofRoot c.root
   genesis := ⟨none⟩
   evidence := historyEvidence config checks g a b
   signed := {p | ∃ y x, OnEither config checks g a b x ∧ Reaches config checks y x ∧

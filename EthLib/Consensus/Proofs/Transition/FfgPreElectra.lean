@@ -229,7 +229,7 @@ theorem FfgRefinement.accountable_safety_preElectra {β : Type*} [Preorder β]
     (X : CommonState config checks start left right)
     (reachable : Reachable config checks X.common) (early : X.common.fork < .pectra)
     {c₁ c₂ : Checkpoint} (h₁ : c₁ ∈ R.finalized) (h₂ : c₂ ∈ R.finalized)
-    (conflicting : Conflicting (R.block c₁.root) (R.block c₂.root)) {n K L : ℕ}
+    (conflicting : Conflicting (R.block c₁) (R.block c₂)) {n K L : ℕ}
     (placed : ∀ r ∈ R.records, min c₁.epoch.toNat c₂.epoch.toNat ≤ r.target.epoch.toNat →
       r.target.epoch.toNat ≤ max c₁.epoch.toNat c₂.epoch.toNat →
       ∃ (s : ForkedBeaconState preset) (voters : Finset ValidatorIndex),
