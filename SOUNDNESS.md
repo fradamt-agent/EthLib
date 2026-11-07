@@ -1418,7 +1418,10 @@ Two branches finalize conflicting checkpoints of one epoch with no slashable val
 `FfgRefinement.accountable_safety_preElectra` (`Transition/FfgPreElectra.lean`) measures the bound in a state that both histories share, before Electra.
 It proves the bounds on the stake that leaves and joins from the churn limits, and on gains from the cap.
 The loss of effective balance, which the inactivity leak drives, and the placement of each weighing call are hypotheses.
-The fields of `FfgRefinement` are not proved yet, so no theorem is yet about what a client runs.
+`historyRefinement` (`Transition/FfgHistories.lean`) builds the refinement of two histories from one genesis state, from the provenance proofs.
+`accountable_safety_histories` states accountable safety for them: slashable signed attestation data, or a hash with zero output on the histories.
+Two facts are hypotheses: the chain-level finalization rule, and the signed votes behind participation flags that the Altair upgrade translated.
+The drift bound is a hypothesis too, so the theorem is not yet about what a client runs without further assumptions.
 
 ### Engine API
 
