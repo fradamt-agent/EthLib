@@ -265,6 +265,77 @@ theorem ChainAncestor.extend {start middle after : ForkedBeaconState preset} {fi
   Relation.ReflTransGen.mono (fun _ _ (block : ChainBlock config checks start middle _ _) =>
     block.extend step) _ _ ancestor
 
+/-- A block step of a chain at a given slot, as `ChainBlock`, with the block's slot exposed. -/
+def ChainBlockAt (config : Config) (checks : SignatureChecks)
+    (start after : ForkedBeaconState preset) (parentRoot root : Root) (slot : Slot) : Prop :=
+  ∃ (fork : Fork) (engine : ExecutionEngine preset fork) (signed : SignedBeaconBlock preset fork)
+    (validateResult : Bool) (state post : BeaconState preset fork) (bodyRoot stateRoot : Root),
+    Reaches config checks start ⟨fork, state⟩ ∧ upgradeDue config ⟨fork, state⟩ = false ∧
+    applySignedBlock config checks engine state signed validateResult = .ok post ∧
+    Reaches config checks ⟨fork, post⟩ after ∧
+    hashTreeRoot signed.message.body = .ok bodyRoot ∧ hashTreeRoot post = .ok stateRoot ∧
+    signed.message.parentRoot = parentRoot ∧
+    hashTreeRoot { signed.message.header bodyRoot with stateRoot } = .ok root ∧
+    signed.message.slot = slot
+
+/-- A block step of a chain whose block is past a slot number.
+
+With `bound = e * SLOTS_PER_EPOCH` this is the relation `R_e` of the epoch-boundary pairs of
+[Gasper]: the child block is past the first slot of epoch `e`.
+
+[Gasper]: https://arxiv.org/abs/2003.03052 -/
+def ChainBlockAfter (config : Config) (checks : SignatureChecks)
+    (start after : ForkedBeaconState preset) (bound : Nat) (parentRoot root : Root) : Prop :=
+  ∃ slot : Slot, ChainBlockAt config checks start after parentRoot root slot ∧ bound < slot.toNat
+
+/-- One root is an ancestor of another along blocks of a chain that are all past a slot number.
+-/
+def PastAncestor (config : Config) (checks : SignatureChecks)
+    (start after : ForkedBeaconState preset) (bound : Nat) : Root → Root → Prop :=
+  Relation.ReflTransGen (ChainBlockAfter config checks start after bound)
+
+theorem ChainBlockAt.chainBlock {start after : ForkedBeaconState preset} {parentRoot root : Root}
+    {slot : Slot} (block : ChainBlockAt config checks start after parentRoot root slot) :
+    ChainBlock config checks start after parentRoot root :=
+  have ⟨fork, engine, signed, validateResult, state, post, bodyRoot, stateRoot, head, notDue,
+    applied, tail, bodyOk, stateOk, parent, rootOk, _⟩ := block
+  ⟨fork, engine, signed, validateResult, state, post, bodyRoot, stateRoot, head, notDue, applied,
+    tail, bodyOk, stateOk, parent, rootOk⟩
+
+/-- Ancestry past a slot is ancestry. -/
+theorem PastAncestor.chainAncestor {start after : ForkedBeaconState preset} {bound : Nat}
+    {root root' : Root} (ancestor : PastAncestor config checks start after bound root root') :
+    ChainAncestor config checks start after root root' :=
+  Relation.ReflTransGen.mono (fun _ _ ⟨_, block, _⟩ => block.chainBlock) _ _ ancestor
+
+/-- Ancestry past a slot is ancestry past any earlier slot. -/
+theorem PastAncestor.mono {start after : ForkedBeaconState preset} {bound bound' : Nat}
+    (le : bound' ≤ bound) {root root' : Root}
+    (ancestor : PastAncestor config checks start after bound root root') :
+    PastAncestor config checks start after bound' root root' :=
+  Relation.ReflTransGen.mono (fun _ _ ⟨slot, block, past⟩ => ⟨slot, block, by omega⟩) _ _
+    ancestor
+
+/-- Ancestry past a slot, along a longer chain. -/
+theorem PastAncestor.extendChain {start middle after : ForkedBeaconState preset} {bound : Nat}
+    {root root' : Root} (ancestor : PastAncestor config checks start middle bound root root')
+    (chain : Reaches config checks middle after) :
+    PastAncestor config checks start after bound root root' :=
+  Relation.ReflTransGen.mono (fun _ _ ⟨slot, ⟨fork, engine, signed, validateResult, state, post,
+      bodyRoot, stateRoot, head, notDue, applied, tail, rest⟩, past⟩ =>
+    ⟨slot, ⟨fork, engine, signed, validateResult, state, post, bodyRoot, stateRoot, head, notDue,
+      applied, tail.trans chain, rest⟩, past⟩) _ _ ancestor
+
+/-- Ancestry past a slot, from an earlier start. -/
+theorem PastAncestor.prefix {first start after : ForkedBeaconState preset} {bound : Nat}
+    {root root' : Root} (head : Reaches config checks first start)
+    (ancestor : PastAncestor config checks start after bound root root') :
+    PastAncestor config checks first after bound root root' :=
+  Relation.ReflTransGen.mono (fun _ _ ⟨slot, ⟨fork, engine, signed, validateResult, state, post,
+      bodyRoot, stateRoot, chain, rest⟩, past⟩ =>
+    ⟨slot, ⟨fork, engine, signed, validateResult, state, post, bodyRoot, stateRoot,
+      head.trans chain, rest⟩, past⟩) _ _ ancestor
+
 /-- A filled header keeps its state root. -/
 theorem fillStateRoot_of_ne {header : BeaconBlockHeader} {stateRoot : Root}
     (filled : header.stateRoot ≠ Vector.replicate 32 0) :
@@ -274,7 +345,8 @@ theorem fillStateRoot_of_ne {header : BeaconBlockHeader} {stateRoot : Root}
 /-- How the latest header of a chain's state relates to the header cached at its first step.
 
 - No block ran since, and the cached header, whose state root is filled, stays.
-- Or a block ran since, its header is settled, and its parent descends from the cached root.
+- Or a block ran since, past the cached slot, its header is settled, and its parent descends
+  from the cached root along blocks past that slot.
 - Or a state of the chain has the zero root. -/
 def HeaderSince (config : Config) (checks : SignatureChecks) (start after : ForkedBeaconState preset)
     (cached : BeaconBlockHeader) (root : Root) : Prop :=
@@ -286,7 +358,9 @@ def HeaderSince (config : Config) (checks : SignatureChecks) (start after : Fork
       applySignedBlock config checks engine state signed validateResult = .ok post ∧
       hashTreeRoot signed.message.body = .ok bodyRoot ∧
       HeaderSettled config checks ⟨fork, post⟩ after (signed.message.header bodyRoot) ∧
-      ChainAncestor config checks start after root signed.message.parentRoot) ∨
+      start.state.slot.toNat < signed.message.slot.toNat ∧
+      PastAncestor config checks start after start.state.slot.toNat root
+        signed.message.parentRoot) ∨
     ZeroRootFound config checks start after
 
 /-- Along a chain, the block root that a later slot caches descends from the one cached first.
@@ -298,8 +372,10 @@ It reaches `after`, whose caching would give `cachedLater`.
 The root of `cachedLater`'s header descends from the root of `cached`'s header, along the
 parent links of the blocks of the chain.
 
+Each of those blocks is past the slot of `state`, since the chain moved on from it.
+
 Or a state of the chain has the zero root. -/
-theorem Reaches.cachedRoot_ancestor {fork : Fork} {state next cached : BeaconState preset fork}
+theorem Reaches.cachedRoot_pastAncestor {fork : Fork} {state next cached : BeaconState preset fork}
     {after : ForkedBeaconState preset} (notDue : upgradeDue config ⟨fork, state⟩ = false)
     (computed : advanceSlot config checks state = .ok next)
     (chain : Reaches config checks ⟨fork, next⟩ after)
@@ -308,8 +384,9 @@ theorem Reaches.cachedRoot_ancestor {fork : Fork} {state next cached : BeaconSta
     (laterOk : processSlot after.state = .ok cachedLater) {root rootLater : Root}
     (rootOk : hashTreeRoot cached.latestBlockHeader = .ok root)
     (rootLaterOk : hashTreeRoot cachedLater.latestBlockHeader = .ok rootLater) :
-    ChainAncestor config checks ⟨fork, state⟩ after root rootLater ∨
+    PastAncestor config checks ⟨fork, state⟩ after state.slot.toNat root rootLater ∨
       ZeroRootFound config checks ⟨fork, state⟩ after := by
+  have stepSlot := advanceSlot_slot computed
   have first : Reaches config checks ⟨fork, state⟩ ⟨fork, next⟩ :=
     (Reaches.refl _).step (.slot notDue computed)
   -- After the first step, the header is the cached one, filled unless the state's root is zero.
@@ -343,25 +420,25 @@ theorem Reaches.cachedRoot_ancestor {fork : Fork} {state next cached : BeaconSta
         have theStep : Step config checks ⟨fork', state'⟩ ⟨fork', next'⟩ :=
           .slot notDue' computed'
         rcases more with ⟨same, filled⟩ | ⟨fork'', engine, signed, validateResult, state'', post,
-          bodyRoot, head, notDue'', applied, bodyRootOk, settled, ancestor⟩ | zero
+          bodyRoot, head, notDue'', applied, bodyRootOk, settled, past, ancestor⟩ | zero
         · obtain ⟨cached', cachedOk', -, nextHeader, -, -⟩ := advanceSlot_roots computed'
           obtain ⟨_, -, -, header, -⟩ := processSlot_roots cachedOk'
           refine .inl ⟨?_, filled⟩
           simp only at same ⊢
           rw [nextHeader, header, same, fillStateRoot_of_ne filled]
         · exact .inr (.inl ⟨fork'', engine, signed, validateResult, state'', post, bodyRoot, head,
-            notDue'', applied, bodyRootOk, settled.slot notDue' computed',
-            ancestor.extend theStep⟩)
+            notDue'', applied, bodyRootOk, settled.slot notDue' computed', past,
+            ancestor.extendChain ((Reaches.refl _).step theStep)⟩)
         · exact .inr (.inr (zero.extend theStep))
       | @upgrade _ post due computed' =>
         have theStep : Step config checks middle post.val := .upgrade due computed'
         have header := (upgradeNext_roots computed').2.1
         rcases more with ⟨same, filled⟩ | ⟨fork'', engine, signed, validateResult, state'',
-          post', bodyRoot, head, notDue'', applied, bodyRootOk, settled, ancestor⟩ | zero
+          post', bodyRoot, head, notDue'', applied, bodyRootOk, settled, past, ancestor⟩ | zero
         · exact .inl ⟨header.trans same, filled⟩
         · exact .inr (.inl ⟨fork'', engine, signed, validateResult, state'', post', bodyRoot, head,
-            notDue'', applied, bodyRootOk, settled.upgrade due computed',
-            ancestor.extend theStep⟩)
+            notDue'', applied, bodyRootOk, settled.upgrade due computed', past,
+            ancestor.extendChain ((Reaches.refl _).step theStep)⟩)
         · exact .inr (.inr (zero.extend theStep))
       | @block fork' engine signed validateResult state' post notDue' computed' =>
         have theStep : Step config checks ⟨fork', state'⟩ ⟨fork', post⟩ :=
@@ -372,16 +449,21 @@ theorem Reaches.cachedRoot_ancestor {fork : Fork} {state next cached : BeaconSta
         have settled : HeaderSettled config checks ⟨fork', post⟩ ⟨fork', post⟩
             (signed.message.header bodyRoot) :=
           ⟨.refl _, _, written, .inl ⟨rfl, .inr rfl⟩⟩
-        have newChain : Reaches config checks ⟨fork, state⟩ ⟨fork', post⟩ :=
-          middleChain.step theStep
+        -- The block is past the cached slot, since the chain moved on from it.
+        have newSlot : state.slot.toNat < signed.message.slot.toNat := by
+          have := Reaches.slot_le (config := config) (checks := checks)
+            (start := ⟨fork, next⟩) (after := ⟨fork', state'⟩) ⟨run⟩
+          simp only at this
+          rw [blockSlot]
+          omega
         rcases more with ⟨same, filled⟩ | ⟨fork'', engine', signed', validateResult', state'',
-          post', bodyRoot', head, notDue'', applied, bodyRootOk', settled', ancestor⟩ | zero
+          post', bodyRoot', head, notDue'', applied, bodyRootOk', settled', past, ancestor⟩ | zero
         · -- The block's parent is the cached header.
           simp only at same
           rw [same, rootOk] at parent
           cases parent
           exact .inr (.inl ⟨fork', engine, signed, validateResult, state', post, bodyRoot,
-            middleChain, notDue', computed', bodyRootOk, settled, .refl⟩)
+            middleChain, notDue', computed', bodyRootOk, settled, newSlot, .refl⟩)
         · -- The block's parent is the previous block, whose parent descends from the root.
           have tail := settled'.1
           rcases settled'.of_block notDue'' applied with ⟨same, header⟩ | ⟨stateRoot,
@@ -396,20 +478,21 @@ theorem Reaches.cachedRoot_ancestor {fork : Fork} {state next cached : BeaconSta
             exact UInt64.lt_irrefl _ newer
           · simp only at header
             rw [header] at parent
-            have link : ChainBlock config checks ⟨fork, state⟩ ⟨fork', post⟩
+            have link : ChainBlockAfter config checks ⟨fork, state⟩ ⟨fork', post⟩ state.slot.toNat
                 signed'.message.parentRoot signed.message.parentRoot :=
-              ⟨fork'', engine', signed', validateResult', state'', post', bodyRoot', stateRoot, head,
-                notDue'', applied, tail.step theStep, bodyRootOk', stateRootOk, rfl, parent⟩
+              ⟨_, ⟨fork'', engine', signed', validateResult', state'', post', bodyRoot', stateRoot,
+                head, notDue'', applied, tail.step theStep, bodyRootOk', stateRootOk, rfl, parent,
+                rfl⟩, past⟩
             exact .inr (.inl ⟨fork', engine, signed, validateResult, state', post, bodyRoot,
-              middleChain, notDue', computed', bodyRootOk, settled,
-              (ancestor.extend theStep).tail link⟩)
+              middleChain, notDue', computed', bodyRootOk, settled, newSlot,
+              (ancestor.extendChain ((Reaches.refl _).step theStep)).tail link⟩)
           · exact .inr (.inr ⟨_, head.step (.block engine' signed' validateResult' notDue'' applied),
               tail.step theStep, zero⟩)
         · exact .inr (.inr (zero.extend theStep))
   obtain ⟨stateRoot, -, stateRootOk, laterHeader, -⟩ := processSlot_roots laterOk
   rw [laterHeader] at rootLaterOk
   rcases holds run with ⟨same, filled⟩ | ⟨fork', engine, signed, validateResult, state', post,
-    bodyRoot, head, notDue', applied, bodyRootOk, settled, ancestor⟩ | zero
+    bodyRoot, head, notDue', applied, bodyRootOk, settled, past, ancestor⟩ | zero
   · -- No block ran: the cached header stays, and so does its root.
     rw [same, fillStateRoot_of_ne filled, rootOk] at rootLaterOk
     cases rootLaterOk
@@ -419,17 +502,34 @@ theorem Reaches.cachedRoot_ancestor {fork : Fork} {state next cached : BeaconSta
     · -- The chain is at the state after the block, so the caching fills the block's header.
       rw [header] at rootLaterOk
       simp only [fillStateRoot, BeaconBlock.header, ↓reduceIte] at rootLaterOk
-      exact .inl (ancestor.tail ⟨fork', engine, signed, validateResult, state', post, bodyRoot,
-        stateRoot, head, notDue', applied, tail, bodyRootOk, stateRootOk, rfl, rootLaterOk⟩)
+      exact .inl (ancestor.tail ⟨_, ⟨fork', engine, signed, validateResult, state', post, bodyRoot,
+        stateRoot, head, notDue', applied, tail, bodyRootOk, stateRootOk, rfl, rootLaterOk, rfl⟩,
+        past⟩)
     · by_cases unfilled : root' = Vector.replicate 32 0
       · subst unfilled
         exact .inr ⟨_, head.step (.block engine signed validateResult notDue' applied), tail,
           root'Ok⟩
       · rw [header, fillStateRoot_of_ne unfilled] at rootLaterOk
-        exact .inl (ancestor.tail ⟨fork', engine, signed, validateResult, state', post, bodyRoot,
-          root', head, notDue', applied, tail, bodyRootOk, root'Ok, rfl, rootLaterOk⟩)
+        exact .inl (ancestor.tail ⟨_, ⟨fork', engine, signed, validateResult, state', post,
+          bodyRoot, root', head, notDue', applied, tail, bodyRootOk, root'Ok, rfl, rootLaterOk,
+          rfl⟩, past⟩)
     · exact .inr ⟨_, head.step (.block engine signed validateResult notDue' applied), tail, zero⟩
   · exact .inr zero
+
+/-- `Reaches.cachedRoot_pastAncestor`, as ancestry along any blocks of the chain. -/
+theorem Reaches.cachedRoot_ancestor {fork : Fork} {state next cached : BeaconState preset fork}
+    {after : ForkedBeaconState preset} (notDue : upgradeDue config ⟨fork, state⟩ = false)
+    (computed : advanceSlot config checks state = .ok next)
+    (chain : Reaches config checks ⟨fork, next⟩ after)
+    (cachedOk : processSlot state = .ok cached)
+    {cachedLater : BeaconState preset after.fork}
+    (laterOk : processSlot after.state = .ok cachedLater) {root rootLater : Root}
+    (rootOk : hashTreeRoot cached.latestBlockHeader = .ok root)
+    (rootLaterOk : hashTreeRoot cachedLater.latestBlockHeader = .ok rootLater) :
+    ChainAncestor config checks ⟨fork, state⟩ after root rootLater ∨
+      ZeroRootFound config checks ⟨fork, state⟩ after :=
+  (chain.cachedRoot_pastAncestor notDue computed cachedOk laterOk rootOk rootLaterOk).imp_left
+    (·.chainAncestor)
 
 /-- A block step of a chain from a later start is a block step of the chain from an earlier one.
 -/
@@ -487,8 +587,10 @@ Both slots are from the start of the chain on, before the end, and still in the 
 The root of the earlier slot is an ancestor of the root of the later slot, along the parent
 links of the blocks from the caching of the earlier slot on.
 
+Each of those blocks is past the earlier slot.
+
 Or a state of the chain has the zero root. -/
-theorem Reaches.blockRoots_ancestor {start after : ForkedBeaconState preset}
+theorem Reaches.blockRoots_pastAncestor {start after : ForkedBeaconState preset}
     (chain : Reaches config checks start after) {earlier later : Slot} {root root' : Root}
     (fromStart : start.state.slot.toNat ≤ earlier.toNat) (ordered : earlier.toNat < later.toNat)
     (written : later.toNat < after.state.slot.toNat)
@@ -497,7 +599,7 @@ theorem Reaches.blockRoots_ancestor {start after : ForkedBeaconState preset}
     (read' : readCircular after.state.blockRoots.elements later = .ok root') :
     ∃ (fork : Fork) (state cached : BeaconState preset fork),
       CachesSlot config checks start after earlier state cached ∧
-      (ChainAncestor config checks ⟨fork, state⟩ after root root' ∨
+      (PastAncestor config checks ⟨fork, state⟩ after earlier.toNat root root' ∨
         ZeroRootFound config checks ⟨fork, state⟩ after) := by
   -- The later slot was cached by one slot step of the chain.
   obtain ⟨fork', state', cached', ⟨atLater, cachedOk', next', nextOk', notDue', head', tail'⟩,
@@ -518,10 +620,27 @@ theorem Reaches.blockRoots_ancestor {start after : ForkedBeaconState preset}
   cases stable
   refine ⟨fork, state, cached, ⟨atEarlier, cachedOk, next, nextOk, notDue, head,
     tail.trans later'⟩, ?_⟩
-  rcases tail.cachedRoot_ancestor notDue nextOk cachedOk cachedOk' earlierRootOk laterRootOk with
-    ancestor | zero
-  · exact .inl (ancestor.extendChain later')
+  rcases tail.cachedRoot_pastAncestor notDue nextOk cachedOk cachedOk' earlierRootOk laterRootOk
+    with ancestor | zero
+  · rw [atEarlier] at ancestor
+    exact .inl (ancestor.extendChain later')
   · exact .inr (zero.extendChain later')
+
+/-- `Reaches.blockRoots_pastAncestor`, as ancestry along any blocks of the chain. -/
+theorem Reaches.blockRoots_ancestor {start after : ForkedBeaconState preset}
+    (chain : Reaches config checks start after) {earlier later : Slot} {root root' : Root}
+    (fromStart : start.state.slot.toNat ≤ earlier.toNat) (ordered : earlier.toNat < later.toNat)
+    (written : later.toNat < after.state.slot.toNat)
+    (recent : after.state.slot.toNat ≤ earlier.toNat + preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (read : readCircular after.state.blockRoots.elements earlier = .ok root)
+    (read' : readCircular after.state.blockRoots.elements later = .ok root') :
+    ∃ (fork : Fork) (state cached : BeaconState preset fork),
+      CachesSlot config checks start after earlier state cached ∧
+      (ChainAncestor config checks ⟨fork, state⟩ after root root' ∨
+        ZeroRootFound config checks ⟨fork, state⟩ after) :=
+  have ⟨fork, state, cached, caches, found⟩ :=
+    chain.blockRoots_pastAncestor fromStart ordered written recent read read'
+  ⟨fork, state, cached, caches, found.imp_left (·.chainAncestor)⟩
 
 /-- Two roots read at two states of one chain, for slots in order: the earlier is an ancestor.
 
@@ -532,7 +651,53 @@ Each read is of an entry still in the buffer, and the first slot is from the sta
 
 The first root is an ancestor of the second along the parent links of the chain's blocks.
 
+Each of those blocks is past the first slot.
+
 Or a state of the chain has the zero root. -/
+theorem Reaches.reads_pastAncestor {start middle after : ForkedBeaconState preset}
+    (head : Reaches config checks start middle) (tail : Reaches config checks middle after)
+    {slot slot' : Slot} {root root' : Root}
+    (fromStart : start.state.slot.toNat ≤ slot.toNat) (ordered : slot.toNat ≤ slot'.toNat)
+    (read : readCircular middle.state.blockRoots.elements slot = .ok root)
+    (inside : slot.toNat < middle.state.slot.toNat)
+    (recent : middle.state.slot.toNat ≤ slot.toNat + preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (read' : readCircular after.state.blockRoots.elements slot' = .ok root')
+    (inside' : slot'.toNat < after.state.slot.toNat)
+    (recent' : after.state.slot.toNat ≤ slot'.toNat + preset.SLOTS_PER_HISTORICAL_ROOT.toNat) :
+    PastAncestor config checks start after slot.toNat root root' ∨
+      ZeroRootFound config checks start after := by
+  by_cases later : middle.state.slot.toNat ≤ slot'.toNat
+  · -- The second slot was cached after the first read, by a step of the second part.
+    obtain ⟨fork, state, cached, ⟨atSlot, cachedOk, next, nextOk, notDue, headOne, tailOne⟩,
+      ⟨root1, root1Ok, read1⟩, -⟩ := head.roots_written fromStart inside recent
+    rw [read] at read1
+    cases read1
+    obtain ⟨fork', state', cached', ⟨_, cachedOk', next', nextOk', notDue', headTwo, tailTwo⟩,
+      ⟨root2, root2Ok, read2⟩, -⟩ := tail.roots_written later inside' recent'
+    rw [read'] at read2
+    cases read2
+    have toLater : Reaches config checks ⟨fork', state'⟩ after :=
+      ((Reaches.refl _).step (.slot notDue' nextOk')).trans tailTwo
+    rcases (tailOne.trans headTwo).cachedRoot_pastAncestor notDue nextOk cachedOk cachedOk' root1Ok
+      root2Ok with ancestor | zero
+    · rw [atSlot] at ancestor
+      exact .inl ((ancestor.prefix headOne).extendChain toLater)
+    · exact .inr ((zero.prefix headOne).extendChain toLater)
+  · -- Both slots were cached before the first read, and the second entry stayed.
+    have stable := (tail.roots_stable (slot := slot') (by omega) recent').1
+    rw [read'] at stable
+    rcases Nat.lt_or_ge slot.toNat slot'.toNat with before | same
+    · rcases head.blockRoots_pastAncestor fromStart before (by omega) recent read stable.symm with
+        ⟨fork, state, cached, ⟨_, _, _, _, _, headOne, _⟩, ancestor | zero⟩
+      · exact .inl ((ancestor.prefix headOne).extendChain tail)
+      · exact .inr ((zero.prefix headOne).extendChain tail)
+    · have sameSlot : slot = slot' := UInt64.toNat_inj.mp (by omega)
+      subst sameSlot
+      rw [read] at stable
+      cases stable
+      exact .inl .refl
+
+/-- `Reaches.reads_pastAncestor`, as ancestry along any blocks of the chain. -/
 theorem Reaches.reads_ancestor {start middle after : ForkedBeaconState preset}
     (head : Reaches config checks start middle) (tail : Reaches config checks middle after)
     {slot slot' : Slot} {root root' : Root}
@@ -544,35 +709,8 @@ theorem Reaches.reads_ancestor {start middle after : ForkedBeaconState preset}
     (inside' : slot'.toNat < after.state.slot.toNat)
     (recent' : after.state.slot.toNat ≤ slot'.toNat + preset.SLOTS_PER_HISTORICAL_ROOT.toNat) :
     ChainAncestor config checks start after root root' ∨
-      ZeroRootFound config checks start after := by
-  by_cases later : middle.state.slot.toNat ≤ slot'.toNat
-  · -- The second slot was cached after the first read, by a step of the second part.
-    obtain ⟨fork, state, cached, ⟨_, cachedOk, next, nextOk, notDue, headOne, tailOne⟩,
-      ⟨root1, root1Ok, read1⟩, -⟩ := head.roots_written fromStart inside recent
-    rw [read] at read1
-    cases read1
-    obtain ⟨fork', state', cached', ⟨_, cachedOk', next', nextOk', notDue', headTwo, tailTwo⟩,
-      ⟨root2, root2Ok, read2⟩, -⟩ := tail.roots_written later inside' recent'
-    rw [read'] at read2
-    cases read2
-    have toLater : Reaches config checks ⟨fork', state'⟩ after :=
-      ((Reaches.refl _).step (.slot notDue' nextOk')).trans tailTwo
-    rcases (tailOne.trans headTwo).cachedRoot_ancestor notDue nextOk cachedOk cachedOk' root1Ok
-      root2Ok with ancestor | zero
-    · exact .inl ((ancestor.prefix headOne).extendChain toLater)
-    · exact .inr ((zero.prefix headOne).extendChain toLater)
-  · -- Both slots were cached before the first read, and the second entry stayed.
-    have stable := (tail.roots_stable (slot := slot') (by omega) recent').1
-    rw [read'] at stable
-    rcases Nat.lt_or_ge slot.toNat slot'.toNat with before | same
-    · rcases head.blockRoots_ancestor fromStart before (by omega) recent read stable.symm with
-        ⟨fork, state, cached, ⟨_, _, _, _, _, headOne, _⟩, ancestor | zero⟩
-      · exact .inl ((ancestor.prefix headOne).extendChain tail)
-      · exact .inr ((zero.prefix headOne).extendChain tail)
-    · have sameSlot : slot = slot' := UInt64.toNat_inj.mp (by omega)
-      subst sameSlot
-      rw [read] at stable
-      cases stable
-      exact .inl .refl
+      ZeroRootFound config checks start after :=
+  (head.reads_pastAncestor tail fromStart ordered read inside recent read' inside' recent').imp_left
+    (·.chainAncestor)
 
 end EthLib.Consensus

@@ -128,16 +128,21 @@ The call's source for the checkpoint's epoch has the zero root of genesis.
 Or its root is an ancestor of the checkpoint's root, along the parent links of the chain's
 blocks.
 
+The source's root is the root of the latest block at or before the first slot of its epoch.
+
+So each block on the way is past that slot.
+
 Or a state of the chain has the zero root. -/
-theorem WeighingCall.source_ancestor {start after : ForkedBeaconState preset} {fork : Fork}
+theorem WeighingCall.source_pastAncestor {start after : ForkedBeaconState preset} {fork : Fork}
     {state cached weighed next : BeaconState preset fork} {voters : List ValidatorIndex}
     {checkpoint : Checkpoint}
     (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (genesis : Genesis config checks start)
     (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
     (recordSource cached checkpoint.epoch).root = Vector.replicate 32 0 ∨
-      ChainAncestor config checks start after (recordSource cached checkpoint.epoch).root
-        checkpoint.root ∨
+      PastAncestor config checks start after
+        ((recordSource cached checkpoint.epoch).epoch.toNat * preset.SLOTS_PER_EPOCH.toNat)
+        (recordSource cached checkpoint.epoch).root checkpoint.root ∨
       ZeroRootFound config checks start after := by
   have toAfter := call.toAfter
   obtain ⟨head, _, _, _, _, cachedOk, _, later, recent, _, _, rootOk⟩ := call
@@ -174,10 +179,24 @@ theorem WeighingCall.source_ancestor {start after : ForkedBeaconState preset} {f
     exact Nat.mul_le_mul_right _ (Nat.le_of_lt sourceBefore)
   have toState : Reaches config checks ⟨fork', state'⟩ ⟨fork, state⟩ :=
     ((Reaches.refl _).step (.slot notDue' nextOk')).trans tail'
-  rcases head'.reads_ancestor toState (by rw [startSlot]; exact Nat.zero_le _) ordered
+  rcases head'.reads_pastAncestor toState (by rw [startSlot]; exact Nat.zero_le _) ordered
     read' below' near' read below near with ancestor | zero
-  · exact .inl (ancestor.extendChain toAfter)
+  · rw [slotEq'] at ancestor
+    exact .inl (ancestor.extendChain toAfter)
   · exact .inr (zero.extendChain toAfter)
+
+/-- `WeighingCall.source_pastAncestor`, as ancestry along any blocks of the chain. -/
+theorem WeighingCall.source_ancestor {start after : ForkedBeaconState preset} {fork : Fork}
+    {state cached weighed next : BeaconState preset fork} {voters : List ValidatorIndex}
+    {checkpoint : Checkpoint}
+    (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (genesis : Genesis config checks start)
+    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    (recordSource cached checkpoint.epoch).root = Vector.replicate 32 0 ∨
+      ChainAncestor config checks start after (recordSource cached checkpoint.epoch).root
+        checkpoint.root ∨
+      ZeroRootFound config checks start after :=
+  (call.source_pastAncestor wide genesis).imp_right (Or.imp_left (·.chainAncestor))
 
 /-- `WeighingCall.source_ancestor` for a call that `JustifiedBy` names. -/
 theorem JustifiedBy.source_ancestor {start after : ForkedBeaconState preset}
@@ -228,8 +247,10 @@ The buffer of roots must span two epochs.
 The earlier checkpoint's root is an ancestor of the later one's, along the parent links of the
 blocks of a chain from genesis to the end.
 
+Each of those blocks is past the first slot of the earlier checkpoint's epoch.
+
 Or a state of that chain has the zero root. -/
-theorem JustifiedBy.ancestor {start after : ForkedBeaconState preset} {first second : Checkpoint}
+theorem JustifiedBy.pastAncestor {start after : ForkedBeaconState preset} {first second : Checkpoint}
     (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (genesis : Genesis config checks start)
     (firstJustified : JustifiedBy config checks start after first)
@@ -238,7 +259,8 @@ theorem JustifiedBy.ancestor {start after : ForkedBeaconState preset} {first sec
     (recentEnd : after.state.slot.toNat ≤
       first.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat +
         preset.SLOTS_PER_HISTORICAL_ROOT.toNat) :
-    ChainAncestor config checks start after first.root second.root ∨
+    PastAncestor config checks start after (first.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat)
+        first.root second.root ∨
       ZeroRootFound config checks start after := by
   obtain ⟨slot, slotEq, below, read⟩ := firstJustified.read_at_end wide recentEnd
   have slotOrder : first.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat ≤
@@ -249,15 +271,31 @@ theorem JustifiedBy.ancestor {start after : ForkedBeaconState preset} {first sec
     exact head.trans (((Reaches.refl _).step (.slot notDue nextOk)).trans tail)
   have startSlot := (genesis_state genesis).1
   rcases Nat.lt_or_ge slot.toNat slot'.toNat with before | same
-  · rcases chain.blockRoots_ancestor (by rw [startSlot]; exact Nat.zero_le _) before below'
+  · rcases chain.blockRoots_pastAncestor (by rw [startSlot]; exact Nat.zero_le _) before below'
       (by omega) read read' with ⟨_, _, _, ⟨_, _, _, _, _, head, _⟩, ancestor | zero⟩
-    · exact .inl (ancestor.prefix head)
+    · rw [slotEq] at ancestor
+      exact .inl (ancestor.prefix head)
     · exact .inr (zero.prefix head)
   · have sameSlot : slot = slot' := UInt64.toNat_inj.mp (by omega)
     subst sameSlot
     rw [read] at read'
     rw [Except.ok.inj read']
     exact .inl .refl
+
+/-- `JustifiedBy.pastAncestor`, as ancestry along any blocks of the chain. -/
+theorem JustifiedBy.ancestor {start after : ForkedBeaconState preset} {first second : Checkpoint}
+    (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (genesis : Genesis config checks start)
+    (firstJustified : JustifiedBy config checks start after first)
+    (secondJustified : JustifiedBy config checks start after second)
+    (ordered : first.epoch.toNat ≤ second.epoch.toNat)
+    (recentEnd : after.state.slot.toNat ≤
+      first.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat +
+        preset.SLOTS_PER_HISTORICAL_ROOT.toNat) :
+    ChainAncestor config checks start after first.root second.root ∨
+      ZeroRootFound config checks start after :=
+  (firstJustified.pastAncestor wide genesis secondJustified ordered recentEnd).imp_left
+    (·.chainAncestor)
 
 /-- A slot step of a chain cached a header whose root is zero.
 
