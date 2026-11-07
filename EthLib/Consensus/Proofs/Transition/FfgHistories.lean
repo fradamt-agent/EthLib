@@ -251,9 +251,12 @@ open scoped Classical in
 A fork-choice store holds such a pair: its finalized and its justified checkpoint each come from
 a state that its chain reached, possibly on different branches.
 
-If the epoch of `F` is at most that of `J` and they conflict as epoch-boundary pairs, which is
-what a store's failed descent check gives, the conclusion of
-`accountable_safety_histories` holds. -/
+If the epoch of `F` is at most that of `J` and they conflict as epoch-boundary pairs, the
+conclusion of
+`accountable_safety_histories` holds.
+
+A store compares its checkpoints as such pairs, so its failed descent check is meant to give this
+conflict, or hash evidence; that link is not proved here. -/
 theorem accountable_safety_histories_justified {g a b : ForkedBeaconState preset}
     (genesis : Genesis config checks g)
     (wide4 : 4 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
