@@ -89,6 +89,14 @@ theorem processSlot_latestBlockHeader (before : fork < .glamsterdam)
   subst after
   exact ⟨stateRoot, stateRootOk, rfl⟩
 
+/-- Filling the state root keeps the slot of the most recent block header. -/
+theorem processSlot_latestBlockHeader_slot (before : fork < .glamsterdam)
+    (computed : processSlot state = .ok after) :
+    after.latestBlockHeader.slot = state.latestBlockHeader.slot := by
+  obtain ⟨_, _, header⟩ := processSlot_latestBlockHeader before computed
+  rw [header]
+  split <;> rfl
+
 /-- Once its state root is filled, slot caching preserves the latest header. -/
 theorem processSlot_latestBlockHeader_of_nonzero (before : fork < .glamsterdam)
     (computed : processSlot state = .ok after)

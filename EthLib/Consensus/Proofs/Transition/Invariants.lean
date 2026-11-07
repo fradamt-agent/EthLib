@@ -4547,4 +4547,189 @@ theorem stateTransition_chain_pending_origin_of_target_gt (before : fork < .alta
     exact (UInt64.not_lt.mpr targetLe laterTarget).elim
   · exact included
 
+/-- A recent root from a slot reached during an empty-slot run is the header cached at that slot.
+
+The slot equality prevents an unrelated overwrite from serving as provenance. -/
+theorem advanceSlots_readBlockRoot_at_slot (before : fork < .altair)
+    {count : Nat} {slot : Slot} {root : Root}
+    (computed : advanceSlots config count state = .ok after)
+    (reached : state.slot.toNat ≤ slot.toNat)
+    (past : slot.toNat < after.slot.toNat)
+    (recent : after.slot.toNat ≤ slot.toNat + preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (read : readCircular after.blockRoots slot = .ok root) :
+    ∃ atStep cached,
+      advanceSlots config (slot.toNat - state.slot.toNat) state = .ok atStep ∧
+      atStep.slot = slot ∧ processSlot atStep = .ok cached ∧
+      SszType.hashTreeRoot cached.latestBlockHeader = .ok root := by
+  have moved := advanceSlots_slot count computed
+  have splitCount : count = (slot.toNat - state.slot.toNat) +
+      (count - (slot.toNat - state.slot.toNat)) := by omega
+  rw [splitCount] at computed
+  obtain ⟨atStep, prefixOk, suffixOk⟩ := advanceSlots_add computed
+  have atSlot : atStep.slot = slot := UInt64.toNat_inj.mp (by
+    have := advanceSlots_slot (slot.toNat - state.slot.toNat) prefixOk
+    omega)
+  have positive : 0 < count - (slot.toNat - state.slot.toNat) := by omega
+  obtain ⟨remaining, remainingEq⟩ := Nat.exists_eq_succ_of_ne_zero (by omega :
+    count - (slot.toNat - state.slot.toNat) ≠ 0)
+  rw [remainingEq] at suffixOk
+  obtain ⟨next, first, rest⟩ := bind_ok_iff.mp suffixOk
+  have nextSlot := advanceSlot_slot first
+  have preserved := advanceSlots_readBlockRoot_recent before remaining slot
+    (by rw [atSlot] at nextSlot; omega)
+    (by have := advanceSlots_slot remaining rest; omega) rest
+  rw [preserved] at read
+  obtain ⟨cached, cachedOk, _, buffer⟩ := advanceSlot_block_history before first
+  rw [buffer, ← atSlot] at read
+  have nonzero : preset.SLOTS_PER_HISTORICAL_ROOT ≠ 0 := by
+    intro zero
+    simp [readCircular, zero] at read
+  obtain ⟨actual, rooted, saved⟩ :=
+    processSlot_blockRoot (Nat.lt_trans before (by decide)) nonzero cachedOk
+  have equal : actual = root := Except.ok.inj (saved.symm.trans read)
+  exact ⟨atStep, cached, prefixOk, atSlot, cachedOk, equal ▸ rooted⟩
+
+/-- A valid block preserves an older root throughout its readable window. -/
+theorem stateTransition_readBlockRoot_recent (before : fork < .altair)
+    {signed : SignedBeaconBlock preset fork} {slot : Slot}
+    (computed : stateTransition config checks engine state signed true = .ok after)
+    (earlier : slot.toNat < state.slot.toNat)
+    (recent : after.slot.toNat ≤ slot.toNat + preset.SLOTS_PER_HISTORICAL_ROOT.toNat) :
+    readCircular after.blockRoots slot = readCircular state.blockRoots slot := by
+  obtain ⟨advanced, slotsOk, atSlot, _, blockOk, _⟩ := stateTransition_ok computed
+  have frame := frame_processBlock before blockOk
+  rw [(processBlock_block_history before blockOk).1]
+  simp only [processSlots, bind_ok_iff, ensure_ok_iff] at slotsOk
+  obtain ⟨_, _, advancedOk⟩ := slotsOk
+  apply advanceSlots_readBlockRoot_recent before _ slot earlier _ advancedOk
+  have moved := advanceSlots_slot _ advancedOk
+  rw [frame.slot] at recent
+  omega
+
+/-- Slots cannot decrease along a valid Phase 0 chain. -/
+theorem stateTransition_chain_slot_le (before : fork < .altair)
+    {blocks : List (SignedBeaconBlock preset fork)}
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block true)
+        state = .ok after) :
+    state.slot.toNat ≤ after.slot.toNat := by
+  induction blocks generalizing state with
+  | nil => cases computed; omega
+  | cons block rest ih =>
+    obtain ⟨middle, first, tail⟩ := bind_ok_iff.mp computed
+    obtain ⟨advanced, slotsOk, _, _, blockOk, _⟩ := stateTransition_ok first
+    have slots := UInt64.lt_iff_toNat_lt.mp (processSlots_slot slotsOk).1
+    rw [← (processSlots_slot slotsOk).2, ← (frame_processBlock before blockOk).slot] at slots
+    have later := ih tail
+    omega
+
+/-- A valid chain preserves an older cached root until its circular overwrite boundary. -/
+theorem stateTransition_chain_readBlockRoot_recent (before : fork < .altair)
+    {blocks : List (SignedBeaconBlock preset fork)} {slot : Slot}
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block true) state = .ok after)
+    (earlier : slot.toNat < state.slot.toNat)
+    (recent : after.slot.toNat ≤ slot.toNat + preset.SLOTS_PER_HISTORICAL_ROOT.toNat) :
+    readCircular after.blockRoots slot = readCircular state.blockRoots slot := by
+  induction blocks generalizing state with
+  | nil => cases computed; rfl
+  | cons block rest ih =>
+    obtain ⟨middle, first, tail⟩ := bind_ok_iff.mp computed
+    obtain ⟨advanced, slotsOk, _, _, blockOk, _⟩ := stateTransition_ok first
+    have frame := frame_processBlock before blockOk
+    have moved : state.slot.toNat < middle.slot.toNat := by
+      rw [frame.slot, (processSlots_slot slotsOk).2]
+      exact UInt64.lt_iff_toNat_lt.mp (processSlots_slot slotsOk).1
+    have remainingLe := stateTransition_chain_slot_le before tail
+    rw [ih tail (by omega)]
+    exact stateTransition_readBlockRoot_recent before first earlier (by omega)
+
+/-- A recent slot reached by a valid chain resolves to the cache call at that exact slot.
+
+The witness lies in the advance before the first block strictly after the requested slot. -/
+theorem stateTransition_chain_readBlockRoot_at_slot (before : fork < .altair)
+    {blocks : List (SignedBeaconBlock preset fork)} {slot : Slot} {root : Root}
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block true) state = .ok after)
+    (reached : state.slot.toNat ≤ slot.toNat)
+    (read : getBlockRootAtSlot after slot = .ok root) :
+    ∃ earlier block later atBlock atStep cached,
+      blocks = earlier ++ block :: later ∧
+      earlier.foldlM
+        (fun state block => stateTransition config checks engine state block true)
+          state = .ok atBlock ∧
+      advanceSlots config (slot.toNat - atBlock.slot.toNat) atBlock = .ok atStep ∧
+      atStep.slot = slot ∧ processSlot atStep = .ok cached ∧
+      SszType.hashTreeRoot cached.latestBlockHeader = .ok root := by
+  obtain ⟨past, recent, bufferRead⟩ := getBlockRootAtSlot_ok read
+  induction blocks generalizing state with
+  | nil => cases computed; omega
+  | cons block rest ih =>
+    obtain ⟨middle, first, tail⟩ := bind_ok_iff.mp computed
+    by_cases passed : slot.toNat < middle.slot.toNat
+    · have middleRecent := Nat.le_trans (stateTransition_chain_slot_le before tail) recent
+      have inherited := stateTransition_chain_readBlockRoot_recent before tail passed recent
+      rw [inherited] at bufferRead
+      obtain ⟨advanced, slotsOk, _, _, blockOk, _⟩ := stateTransition_ok first
+      have frame := frame_processBlock before blockOk
+      rw [(processBlock_block_history before blockOk).1] at bufferRead
+      simp only [processSlots, bind_ok_iff, ensure_ok_iff] at slotsOk
+      obtain ⟨_, _, advancedOk⟩ := slotsOk
+      rw [frame.slot] at passed middleRecent
+      obtain ⟨atStep, cached, prefixOk, atSlot, cachedOk, rooted⟩ :=
+        advanceSlots_readBlockRoot_at_slot before advancedOk reached passed middleRecent bufferRead
+      exact ⟨[], block, rest, state, atStep, cached, rfl, rfl,
+        prefixOk, atSlot, cachedOk, rooted⟩
+    · obtain ⟨earlier, next, later, atBlock, atStep, cached, split, prefixOk,
+        advanced, atSlot, cachedOk, rooted⟩ := ih tail (by omega)
+      refine ⟨block :: earlier, next, later, atBlock, atStep, cached,
+        by simp only [List.cons_append, split], ?_, advanced, atSlot, cachedOk, rooted⟩
+      simp only [List.foldlM_cons, bind_ok_iff]
+      exact ⟨middle, first, prefixOk⟩
+
+/-- Empty slots keep the slot of the most recent block, even if its state root is zero. -/
+theorem advanceSlots_latestBlockHeader_slot (before : fork < .altair) :
+    ∀ (count : Nat) {state after : BeaconState preset fork},
+      advanceSlots config count state = .ok after →
+      after.latestBlockHeader.slot = state.latestBlockHeader.slot
+  | 0, _, _, computed => by
+    cases computed
+    rfl
+  | count + 1, state, _, computed => by
+    obtain ⟨middle, first, rest⟩ := bind_ok_iff.mp computed
+    obtain ⟨cached, cachedOk, header, _⟩ := advanceSlot_block_history before first
+    rw [advanceSlots_latestBlockHeader_slot before count rest, header]
+    exact processSlot_latestBlockHeader_slot (Nat.lt_trans before (by decide)) cachedOk
+
+/-- A cached header cannot name a block after the slot being cached.
+
+The initial bound is preserved through every empty slot, including epoch processing. -/
+theorem advanceSlots_latestBlockHeader_slot_le (before : fork < .altair) {count : Nat}
+    (ordered : state.latestBlockHeader.slot.toNat ≤ state.slot.toNat)
+    (computed : advanceSlots config count state = .ok after) :
+    after.latestBlockHeader.slot.toNat ≤ after.slot.toNat := by
+  rw [advanceSlots_latestBlockHeader_slot before count computed]
+  have moved := advanceSlots_slot count computed
+  omega
+
+/-- Every nonempty valid chain ends with a header at the terminal state's slot. -/
+theorem stateTransition_chain_latestBlockHeader_slot (before : fork < .altair)
+    {blocks : List (SignedBeaconBlock preset fork)}
+    (nonempty : blocks ≠ [])
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block true)
+        state = .ok after) :
+    after.latestBlockHeader.slot = after.slot := by
+  induction blocks generalizing state with
+  | nil => exact (nonempty rfl).elim
+  | cons block rest ih =>
+    obtain ⟨middle, first, tail⟩ := bind_ok_iff.mp computed
+    cases rest with
+    | nil =>
+      cases tail
+      obtain ⟨advanced, slotsOk, _, _, blockOk, _⟩ := stateTransition_ok first
+      obtain ⟨_, _, header⟩ := (processBlock_block_history before blockOk).2
+      rw [header, (frame_processBlock before blockOk).slot, (processSlots_slot slotsOk).2]
+    | cons next rest => exact ih (by simp) tail
+
 end EthLib.Consensus

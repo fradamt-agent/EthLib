@@ -32,6 +32,24 @@ theorem computeStartSlotAtEpoch_ok_iff {epoch : Epoch} {slot : Slot} :
         slot.toNat = epoch.toNat * preset.SLOTS_PER_EPOCH.toNat :=
   mulChecked_ok_iff
 
+/-- An epoch boundary strictly after a slot belongs to a strictly later epoch.
+
+The successful boundary computation and strict inequality exclude a zero epoch length. -/
+theorem computeEpochAtSlot_lt_of_lt_start {epoch : Epoch} {slot start : Slot}
+    (boundary : computeStartSlotAtEpoch preset epoch = .ok start)
+    (later : slot.toNat < start.toNat) :
+    (computeEpochAtSlot preset slot).toNat + 1 ≤ epoch.toNat := by
+  have value := (computeStartSlotAtEpoch_ok_iff.mp boundary).2
+  have positive : 0 < preset.SLOTS_PER_EPOCH.toNat := by
+    by_cases zero : preset.SLOTS_PER_EPOCH.toNat = 0
+    · rw [zero, Nat.mul_zero] at value
+      omega
+    · omega
+  rw [computeEpochAtSlot, UInt64.toNat_div]
+  have bound : slot.toNat / preset.SLOTS_PER_EPOCH.toNat < epoch.toNat :=
+    (Nat.div_lt_iff_lt_mul positive).mpr (value ▸ later)
+  omega
+
 /-- The epoch of the first slot of an epoch is that epoch. -/
 theorem computeEpochAtSlot_computeStartSlotAtEpoch {epoch : Epoch} {slot : Slot}
     (positive : 0 < preset.SLOTS_PER_EPOCH)

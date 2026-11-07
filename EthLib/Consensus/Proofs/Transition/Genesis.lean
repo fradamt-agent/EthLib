@@ -1,6 +1,7 @@
 module
 
 public import EthLib.Consensus.Proofs.Containers.Block
+public import EthLib.Consensus.Proofs.Time
 public import EthLib.Consensus.Proofs.Transition.Invariants
 public import EthLib.Consensus.Transition.Genesis
 public import EthLib.Consensus.Proofs.LightClient.Authenticate
@@ -1650,6 +1651,98 @@ theorem processSlot_blockRoot_of_block (before : fork < .glamsterdam)
   rw [headerOk, BeaconBlock.hashTreeRoot_header block body] at rooted
   exact rooted
 
+/-- A cached root identifies no header later than its slot, unless the search finds a collision.
+
+The result does not require the cached header's state root to be nonzero. -/
+theorem cached_blockRoot_slot_le_or_collision (before : fork < .altair)
+    {count : Nat} {atStep cached : BeaconState preset fork} {other : BeaconBlockHeader}
+    {root : Root}
+    (ordered : state.latestBlockHeader.slot.toNat ≤ state.slot.toNat)
+    (advanced : advanceSlots config count state = .ok atStep)
+    (cachedOk : processSlot atStep = .ok cached)
+    (cachedRoot : SszType.hashTreeRoot cached.latestBlockHeader = .ok root)
+    (otherRoot : SszType.hashTreeRoot other = .ok root) :
+    other.slot.toNat ≤ atStep.slot.toNat ∨ ∃ leftTree rightTree,
+      valueTree (SszType.desc BeaconBlockHeader)
+        (SszType.toValue cached.latestBlockHeader) = .ok leftTree ∧
+      valueTree (SszType.desc BeaconBlockHeader) (SszType.toValue other) = .ok rightTree ∧
+      ∃ x y, findMessageCollision leftTree.messages rightTree.messages = some (x, y) ∧
+        x ∈ leftTree.messages ∧ y ∈ rightTree.messages ∧ MessageCollision x y := by
+  rcases beaconBlockHeader_root_binding cachedRoot otherRoot with same | collision
+  · apply Or.inl
+    rw [← same, processSlot_latestBlockHeader_slot
+      (Nat.lt_trans before (by decide)) cachedOk]
+    exact advanceSlots_latestBlockHeader_slot_le before ordered advanced
+  · exact .inr collision
+
+/-- A block after C identified at an epoch boundary forces that epoch to be after C.
+
+A differing header with the same root instead supplies the explicit collision search. -/
+theorem cached_checkpoint_epoch_after_common_or_collision (before : fork < .altair)
+    {count : Nat} {atStep cached common : BeaconState preset fork}
+    {other : BeaconBlockHeader} {epoch : Epoch} {root : Root}
+    (ordered : state.latestBlockHeader.slot.toNat ≤ state.slot.toNat)
+    (advanced : advanceSlots config count state = .ok atStep)
+    (cachedOk : processSlot atStep = .ok cached)
+    (boundary : computeStartSlotAtEpoch preset epoch = .ok atStep.slot)
+    (later : common.slot.toNat < other.slot.toNat)
+    (cachedRoot : SszType.hashTreeRoot cached.latestBlockHeader = .ok root)
+    (otherRoot : SszType.hashTreeRoot other = .ok root) :
+    (getCurrentEpoch common).toNat + 1 ≤ epoch.toNat ∨ ∃ leftTree rightTree,
+      valueTree (SszType.desc BeaconBlockHeader)
+        (SszType.toValue cached.latestBlockHeader) = .ok leftTree ∧
+      valueTree (SszType.desc BeaconBlockHeader) (SszType.toValue other) = .ok rightTree ∧
+      ∃ x y, findMessageCollision leftTree.messages rightTree.messages = some (x, y) ∧
+        x ∈ leftTree.messages ∧ y ∈ rightTree.messages ∧ MessageCollision x y := by
+  rcases cached_blockRoot_slot_le_or_collision before ordered advanced cachedOk cachedRoot
+    otherRoot with slotLe | collision
+  · exact .inl (computeEpochAtSlot_lt_of_lt_start boundary (Nat.lt_of_lt_of_le later slotLe))
+  · exact .inr collision
+
+/-- A readable root reached on a valid chain identifies no block after its requested slot.
+
+Otherwise a cache computation on that chain supplies the two inputs of a SHA-256 collision. -/
+theorem stateTransition_chain_readBlockRoot_slot_le_or_collision
+    {engine : ExecutionEngine preset fork}
+    {blocks : List (SignedBeaconBlock preset fork)} {slot : Slot} {root : Root}
+    {other : BeaconBlockHeader}
+    (before : fork < .altair)
+    (ordered : state.latestBlockHeader.slot.toNat ≤ state.slot.toNat)
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block true) state = .ok after)
+    (reached : state.slot.toNat ≤ slot.toNat)
+    (read : getBlockRootAtSlot after slot = .ok root)
+    (otherRoot : SszType.hashTreeRoot other = .ok root) :
+    other.slot.toNat ≤ slot.toNat ∨
+      ∃ earlier block later atBlock atStep cached leftTree rightTree,
+        blocks = earlier ++ block :: later ∧
+        earlier.foldlM
+          (fun state block => stateTransition config checks engine state block true)
+            state = .ok atBlock ∧
+        advanceSlots config (slot.toNat - atBlock.slot.toNat) atBlock = .ok atStep ∧
+        atStep.slot = slot ∧ processSlot atStep = .ok cached ∧
+        valueTree (SszType.desc BeaconBlockHeader)
+          (SszType.toValue cached.latestBlockHeader) = .ok leftTree ∧
+        valueTree (SszType.desc BeaconBlockHeader) (SszType.toValue other) = .ok rightTree ∧
+        ∃ x y, findMessageCollision leftTree.messages rightTree.messages = some (x, y) ∧
+          x ∈ leftTree.messages ∧ y ∈ rightTree.messages ∧ MessageCollision x y := by
+  obtain ⟨earlier, block, later, atBlock, atStep, cached, split, prefixOk, advanced,
+    atSlot, cachedOk, cachedRoot⟩ :=
+    stateTransition_chain_readBlockRoot_at_slot before computed reached read
+  have atOrdered : atBlock.latestBlockHeader.slot.toNat ≤ atBlock.slot.toNat := by
+    by_cases empty : earlier = []
+    · subst earlier
+      cases prefixOk
+      exact ordered
+    · rw [stateTransition_chain_latestBlockHeader_slot before empty prefixOk]
+      exact Nat.le_refl _
+  rcases cached_blockRoot_slot_le_or_collision before atOrdered advanced cachedOk cachedRoot
+    otherRoot with slotLe | collision
+  · exact .inl (atSlot ▸ slotLe)
+  · obtain ⟨leftTree, rightTree, leftOk, rightOk, found⟩ := collision
+    exact .inr ⟨earlier, block, later, atBlock, atStep, cached, leftTree, rightTree,
+      split, prefixOk, advanced, atSlot, cachedOk, leftOk, rightOk, found⟩
+
 /-- Targets later than C were included on its fork suffix, even when counted at a cached slot.
 
 Initialization supplies the pending-epoch invariant at C; no absence of pending votes is assumed. -/
@@ -1684,6 +1777,55 @@ theorem pendingIncluded_after_common_at_cached_slot
   exact stateTransition_chain_pending_origin_of_target_gt before
     (pendingEpochsMatch_of_initialized_chain before initialized commonRun) forkRun
     (advanceSlots_pending_mem before count advanced atMember) laterTarget
+
+/-- Target matching above C supplies only pending records included in its fork suffix. -/
+theorem matchingTarget_included_after_common_at_cached_slot
+    {engine : ExecutionEngine preset fork}
+    {genesis common after atStep cached : BeaconState preset fork}
+    {eth1BlockHash : Hash32} {eth1Timestamp : UInt64} {deposits : Array Deposit}
+    {commonBlocks blocks : List (SignedBeaconBlock preset fork)} {count : Nat}
+    {pending : PendingAttestation preset} {epoch : Epoch}
+    {attestations : Array (PendingAttestation preset)}
+    (before : fork < .altair)
+    (initialized : initializeBeaconStateFromEth1 config checks eth1BlockHash eth1Timestamp
+      deposits = .ok genesis)
+    (commonRun : commonBlocks.foldlM
+      (fun state block => stateTransition config checks engine state block true)
+        genesis = .ok common)
+    (forkRun : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block true) common = .ok after)
+    (advanced : advanceSlots config count after = .ok atStep)
+    (cachedOk : processSlot atStep = .ok cached)
+    (matching : getMatchingTargetAttestations cached before epoch = .ok attestations)
+    (member : pending ∈ attestations)
+    (laterTarget : getCurrentEpoch common < epoch) :
+    ∃ earlier block later atBlock atSlot,
+      blocks = earlier ++ block :: later ∧
+      earlier.foldlM
+        (fun state block => stateTransition config checks engine state block true)
+          common = .ok atBlock ∧
+      processSlots config atBlock block.message.slot = .ok atSlot ∧
+      PendingIncludedInBlock config checks before atSlot block.message pending := by
+  have fullRun : (commonBlocks ++ blocks).foldlM
+      (fun state block => stateTransition config checks engine state block true) genesis =
+        .ok after := by
+    rw [List.foldlM_append, commonRun]
+    exact forkRun
+  have epochs := (pending_invariants_at_cached_slot_of_initialized_chain before
+    initialized fullRun advanced cachedOk).2
+  obtain ⟨_, _, sources, _, included, _⟩ := getMatchingTargetAttestations_mem matching member
+  have pendingMember : pending ∈ (cached.currentEpochAttestations before).data ∨
+      pending ∈ (cached.previousEpochAttestations before).data := by
+    simp only [getMatchingSourceAttestations, bind_ok_iff, ensure_ok_iff, pure, Except.pure,
+      Except.ok.injEq] at sources
+    obtain ⟨_, _, rfl⟩ := sources
+    split at included
+    · exact .inl included
+    · exact .inr included
+  apply pendingIncluded_after_common_at_cached_slot before initialized commonRun forkRun
+    advanced cachedOk pendingMember
+  rw [(getMatchingTargetAttestations_slot_epoch epochs matching member).1]
+  exact laterTarget
 
 /-- A candidate state launches the chain exactly when it is late enough.
 

@@ -888,4 +888,36 @@ theorem getDomain_total (config : Config) (state : BeaconState preset fork)
     state.genesisValidatorsRoot
   exact ⟨domain, by simp only [computed]; rfl⟩
 
+/-- Reading a historical block root enforces both bounds and reads the circular buffer.
+
+The upper bound includes the last readable slot before its position is overwritten. -/
+theorem getBlockRootAtSlot_ok {preset : Preset} {fork : Fork}
+    {state : BeaconState preset fork} {slot : Slot} {root : Root}
+    (computed : getBlockRootAtSlot state slot = .ok root) :
+    slot.toNat < state.slot.toNat ∧
+      state.slot.toNat ≤ slot.toNat + preset.SLOTS_PER_HISTORICAL_ROOT.toNat ∧
+      readCircular state.blockRoots slot = .ok root := by
+  unfold getBlockRootAtSlot at computed
+  split at computed
+  · simp only [bind_ok_iff, liftArith, mapError_ok_iff, addChecked_ok_iff] at computed
+    obtain ⟨last, ⟨_, sum⟩, computed⟩ := computed
+    split at computed
+    · exact ⟨UInt64.lt_iff_toNat_lt.mp ‹_›, by
+        have le := UInt64.le_iff_toNat_le.mp ‹state.slot ≤ last›
+        omega, computed⟩
+    · cases computed
+  · cases computed
+
+/-- An epoch-root read supplies its checked boundary slot and actual buffer read. -/
+theorem getBlockRoot_ok {preset : Preset} {fork : Fork}
+    {state : BeaconState preset fork} {epoch : Epoch} {root : Root}
+    (computed : getBlockRoot state epoch = .ok root) :
+    ∃ slot, computeStartSlotAtEpoch preset epoch = .ok slot ∧
+      slot.toNat < state.slot.toNat ∧
+      state.slot.toNat ≤ slot.toNat + preset.SLOTS_PER_HISTORICAL_ROOT.toNat ∧
+      readCircular state.blockRoots slot = .ok root := by
+  simp only [getBlockRoot, bind_ok_iff, liftArith, mapError_ok_iff] at computed
+  obtain ⟨slot, started, read⟩ := computed
+  exact ⟨slot, started, getBlockRootAtSlot_ok read⟩
+
 end EthLib.Consensus
