@@ -3,6 +3,7 @@ module
 public import EthLib.Consensus.Proofs.ForkChoice.Runs
 public import EthLib.Consensus.Proofs.ForkChoice.StoreConflict
 public import EthLib.Consensus.Proofs.Transition.FfgHistories
+public import EthLib.Consensus.Proofs.Transition.GenesisHeader
 
 /-!
 # Proofs: accountable safety for the checkpoints of a fork-choice store
@@ -119,7 +120,7 @@ Each holds, or a state or a cached header of the chain has the zero root. -/
 theorem justified_root_facts {g x : ForkedBeaconState preset}
     (genesis : Genesis config checks g)
     (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
-    (genesisHeaderSlot : g.state.latestBlockHeader.slot = GENESIS_SLOT) {c : Checkpoint}
+    {c : Checkpoint}
     (notGenesis : c.epoch ≠ GENESIS_EPOCH)
     (justified : JustifiedOrStart config checks g x c ∨ JustifiedByCall config checks g x c) :
     (c.root ≠ Vector.replicate 32 0 ∨ ZeroHeaderFound config checks g x) ∧
@@ -148,7 +149,7 @@ theorem justified_root_facts {g x : ForkedBeaconState preset}
   · obtain ⟨header, rootOk, -, slotEq⟩ := block.header
     exact .inl ⟨header, rootOk, by rw [slotEq]; exact below⟩
   · refine .inl ⟨_, rootOk, ?_⟩
-    simp only [genesisHeaderSlot, GENESIS_SLOT]
+    simp only [genesis_latestBlockHeader_slot genesis, GENESIS_SLOT]
     exact Nat.zero_le _
   · exact .inr found
 
@@ -182,7 +183,6 @@ block headers with one root, or a block whose root is zero. -/
 theorem store_accountable_safety {anchorState : BeaconState preset fork}
     {anchorBlock : BeaconBlock preset fork} {store : Store preset fork}
     (genesis : Genesis config checks ⟨fork, anchorState⟩)
-    (genesisHeaderSlot : anchorState.latestBlockHeader.slot = GENESIS_SLOT)
     (wide4 : 4 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (within : ∀ (fork' : Base.Fork) (state : BeaconState preset fork'),
@@ -240,9 +240,9 @@ theorem store_accountable_safety {anchorState : BeaconState preset fork}
     · rw [← h0]
       exact justifiedAt 0 hk
   obtain ⟨fNonzero, fHeader, fFits⟩ :=
-    justified_root_facts genesis wide genesisHeaderSlot notGenesis finalizedJustified
+    justified_root_facts genesis wide notGenesis finalizedJustified
   obtain ⟨jNonzero, -, -⟩ :=
-    justified_root_facts genesis wide genesisHeaderSlot justifiedNotGenesis justified
+    justified_root_facts genesis wide justifiedNotGenesis justified
   refine ⟨a, b, onA, onB, fun ω₀ D hD => ?_⟩
   -- Hash evidence on either chain ends the proof.
   rcases fNonzero with fNonzero | zero

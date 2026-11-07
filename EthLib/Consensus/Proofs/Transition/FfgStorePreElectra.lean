@@ -112,7 +112,6 @@ theorem store_accountable_safety_preElectra {anchorState : BeaconState preset fo
     (caps : EffectiveBalanceCaps preset) (before : fork < .pectra)
     (two : 2 ≤ preset.SLOTS_PER_EPOCH.toNat)
     (genesis : Genesis config checks ⟨fork, anchorState⟩)
-    (genesisHeaderSlot : anchorState.latestBlockHeader.slot = GENESIS_SLOT)
     (wide4 : 4 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (reachable : Store.ReachableWith config checks anchorState anchorBlock store)
@@ -159,7 +158,7 @@ theorem store_accountable_safety_preElectra {anchorState : BeaconState preset fo
     have same : fork' = fork := chain.fork_eq_of_notDue notDue
     subst same
     exact BeaconState.registryWithinLimit_of_lt (Nat.lt_of_lt_of_le before (by decide)) state
-  obtain ⟨a, b, onA, onB, safety⟩ := store_accountable_safety genesis genesisHeaderSlot wide4
+  obtain ⟨a, b, onA, onB, safety⟩ := store_accountable_safety genesis wide4
     lookahead within reachable notDue anchorSlot anchorParent headOk notGenesis hle notDescends
   refine ⟨a, b, onA, onB, within, safety ω₀ ?_⟩
   -- Each weighing call between the two epochs drifts by at most the closed form.
@@ -267,7 +266,6 @@ theorem store_accountable_safety_preElectra_from {anchorState : BeaconState pres
     (caps : EffectiveBalanceCaps preset) (before : fork < .pectra)
     (two : 2 ≤ preset.SLOTS_PER_EPOCH.toNat)
     (genesis : Genesis config checks ⟨fork, anchorState⟩)
-    (genesisHeaderSlot : anchorState.latestBlockHeader.slot = GENESIS_SLOT)
     (wide4 : 4 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (reachable : Store.ReachableWith config checks anchorState anchorBlock store)
@@ -323,7 +321,7 @@ theorem store_accountable_safety_preElectra_from {anchorState : BeaconState pres
     have same : fork' = fork := chain.fork_eq_of_notDue notDue
     subst same
     exact BeaconState.registryWithinLimit_of_lt (Nat.lt_of_lt_of_le before (by decide)) state
-  obtain ⟨a, b, onA, onB, safety⟩ := store_accountable_safety genesis genesisHeaderSlot wide4
+  obtain ⟨a, b, onA, onB, safety⟩ := store_accountable_safety genesis wide4
     lookahead within reachable notDue anchorSlot anchorParent headOk notGenesis hle notDescends
   refine ⟨a, b, onA, onB, within, fun placed => safety ω₀ ?_⟩
   -- Each weighing call between the two epochs drifts from `X` by at most the closed form.
