@@ -407,7 +407,8 @@ theorem WeighingCall.voters_signed_of_genesis {start after : ForkedBeaconState p
     (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (genesis : Genesis config checks start)
-    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    (call : WeighingCall config checks start after fork state cached weighed next voters
+      checkpoint) :
     .altair ≤ fork → ∀ index ∈ voters,
       ∃ data, data.target = checkpoint ∧
         SignedVote config checks start ⟨fork, state⟩ index data ∧

@@ -473,7 +473,8 @@ theorem WeighingCall.voters_signed {start after : ForkedBeaconState preset} {for
     {state cached weighed next : BeaconState preset fork} {voters : List ValidatorIndex}
     {checkpoint : Checkpoint}
     (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
-    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    (call : WeighingCall config checks start after fork state cached weighed next voters
+      checkpoint) :
     .altair ≤ fork → ∀ index ∈ voters,
       FlagAtStart start index.toNat TIMELY_TARGET_FLAG_INDEX ∨
       FlagFromAltairUpgrade config checks start ⟨fork, state⟩ index.toNat

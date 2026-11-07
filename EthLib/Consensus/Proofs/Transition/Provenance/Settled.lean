@@ -262,7 +262,8 @@ theorem CallRecord.source {start after : ForkedBeaconState preset} {fork : Fork}
 theorem WeighingCall.source {start after : ForkedBeaconState preset} {fork : Fork}
     {state cached weighed next : BeaconState preset fork} {voters : List ValidatorIndex}
     {checkpoint : Checkpoint} (reachable : Reachable config checks start)
-    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    (call : WeighingCall config checks start after fork state cached weighed next voters
+      checkpoint) :
     JustifiedOrStart config checks start after (recordSource cached checkpoint.epoch) ∧
       (recordSource cached checkpoint.epoch).epoch.toNat < checkpoint.epoch.toNat :=
   call.record.source reachable
@@ -361,7 +362,8 @@ theorem WeighingCall.voters_signed_of_reachable {start after : ForkedBeaconState
     {voters : List ValidatorIndex} {checkpoint : Checkpoint}
     (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (reachable : Reachable config checks start)
-    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    (call : WeighingCall config checks start after fork state cached weighed next voters
+      checkpoint) :
     .altair ≤ fork → ∀ index ∈ voters,
       FlagAtStart start index.toNat TIMELY_TARGET_FLAG_INDEX ∨
       FlagFromAltairUpgrade config checks start ⟨fork, state⟩ index.toNat
@@ -393,6 +395,7 @@ theorem JustifiedBy.voters_signed_of_reachable {start after : ForkedBeaconState 
           data.source = recordSource cached checkpoint.epoch) := by
   obtain ⟨fork, state, cached, _, _, voters, call⟩ := justified
   exact ⟨fork, state, cached, voters, call.head, call.toAfter, call.cachedOk, call.later,
-    call.recent, call.counted, call.passes, call.rootOk, call.voters_signed_of_reachable wide reachable⟩
+    call.recent, call.counted, call.passes, call.rootOk,
+    call.voters_signed_of_reachable wide reachable⟩
 
 end EthLib.Consensus

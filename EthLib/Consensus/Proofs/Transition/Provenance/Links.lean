@@ -141,7 +141,8 @@ theorem WeighingCall.source_pastAncestor {start after : ForkedBeaconState preset
     {checkpoint : Checkpoint}
     (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (genesis : Genesis config checks start)
-    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    (call : WeighingCall config checks start after fork state cached weighed next voters
+      checkpoint) :
     (recordSource cached checkpoint.epoch).root = Vector.replicate 32 0 ∨
       PastAncestor config checks start after
         ((recordSource cached checkpoint.epoch).epoch.toNat * preset.SLOTS_PER_EPOCH.toNat)
@@ -155,7 +156,8 @@ theorem WeighingCall.source_ancestor {start after : ForkedBeaconState preset} {f
     {checkpoint : Checkpoint}
     (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (genesis : Genesis config checks start)
-    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    (call : WeighingCall config checks start after fork state cached weighed next voters
+      checkpoint) :
     (recordSource cached checkpoint.epoch).root = Vector.replicate 32 0 ∨
       ChainAncestor config checks start after (recordSource cached checkpoint.epoch).root
         checkpoint.root ∨

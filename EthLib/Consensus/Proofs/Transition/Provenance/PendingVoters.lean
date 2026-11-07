@@ -487,7 +487,8 @@ theorem WeighingCall.pending_voters_signed {start after : ForkedBeaconState pres
     {fork : Fork} {state cached weighed next : BeaconState preset fork}
     {voters : List ValidatorIndex} {checkpoint : Checkpoint}
     (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
-    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    (call : WeighingCall config checks start after fork state cached weighed next voters
+      checkpoint) :
     fork < .altair → ∀ index ∈ voters,
       (∃ pending, PendingAtStart start pending) ∨
       ∃ data, data.target = checkpoint ∧
@@ -603,7 +604,8 @@ theorem WeighingCall.pending_voters_signed_of_genesis {start after : ForkedBeaco
     {voters : List ValidatorIndex} {checkpoint : Checkpoint}
     (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (genesis : Genesis config checks start)
-    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    (call : WeighingCall config checks start after fork state cached weighed next voters
+      checkpoint) :
     fork < .altair → ∀ index ∈ voters,
       ∃ data, data.target = checkpoint ∧
         index ∈ getActiveValidatorIndices cached checkpoint.epoch ∧

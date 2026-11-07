@@ -94,6 +94,7 @@ public import EthLib.Consensus.Proofs.Transition.Provenance.Ancestry
 public import EthLib.Consensus.Proofs.Transition.Provenance.Anchors
 public import EthLib.Consensus.Proofs.Transition.Provenance.Attestations
 public import EthLib.Consensus.Proofs.Transition.Provenance.Committees
+public import EthLib.Consensus.Proofs.Transition.Provenance.DirectCalls
 public import EthLib.Consensus.Proofs.Transition.Provenance.Finality
 public import EthLib.Consensus.Proofs.Transition.Provenance.Flags
 public import EthLib.Consensus.Proofs.Transition.Provenance.Justification
