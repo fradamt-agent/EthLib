@@ -98,7 +98,7 @@ theorem slot_le_of_mem :
       exact Nat.le_refl _
 
 /-- A run reaches every state that it passes through. -/
-theorem reaches_of_mem :
+theorem reaches_of_mem_states :
     ∀ {after : ForkedBeaconState preset} (run : Run config checks start after),
       ∀ state ∈ run.states, Reaches config checks start state
   | _, .nil, state, member => by
@@ -106,7 +106,7 @@ theorem reaches_of_mem :
     exact .refl _
   | _, .snoc run last, state, member => by
     rcases List.mem_append.mp member with earlier | now
-    · exact reaches_of_mem run state earlier
+    · exact reaches_of_mem_states run state earlier
     · rw [List.mem_singleton.mp now]
       exact Reaches.step ⟨run⟩ last
 
@@ -137,7 +137,7 @@ theorem reaches_of_slot_lt {middle after : ForkedBeaconState preset}
     state ∈ tail.states ∧ Reaches config checks middle state := by
   rcases mem_states_append head tail member with h | h
   · exact absurd (slot_le_of_mem head state h) (Nat.not_le.mpr later)
-  · exact ⟨h, reaches_of_mem tail state h⟩
+  · exact ⟨h, reaches_of_mem_states tail state h⟩
 
 end Run
 

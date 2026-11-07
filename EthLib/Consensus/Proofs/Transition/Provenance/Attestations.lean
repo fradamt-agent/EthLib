@@ -117,7 +117,7 @@ theorem foldlM_addFlagReward {total numerator numerator' : Gwei} {earned : List 
     · exact .inr new
 
 /-- The flags of an epoch after its attesters gain their earned flags. -/
-theorem foldlM_addAttesterFlags {total numerator numerator' : Gwei} {earned : List UInt64}
+theorem foldlM_addAttesterFlags_added {total numerator numerator' : Gwei} {earned : List UInt64}
     {participation participation' : EpochParticipation preset fork}
     {attesters : List ValidatorIndex}
     (computed : attesters.foldlM (addAttesterFlags state total earned) (participation, numerator) =
@@ -213,7 +213,7 @@ theorem processAttestationAltair_votes {attestation : Attestation preset fork}
       · cases final
         exact VotesKept.refl _
     exact (votesKept_increaseBalance raisedOk).trans rest
-  have added := foldlM_addAttesterFlags folded
+  have added := foldlM_addAttesterFlags_added folded
   simp only [beq_iff_eq] at added
   obtain ⟨previousPending, currentPending, currentFlags, previousFlags⟩ :=
     setEpochParticipation_votes (state := state)

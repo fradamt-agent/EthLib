@@ -1479,7 +1479,9 @@ The loss of effective balance, which the inactivity leak drives, and the placeme
 Its fields are all proved, at every fork, from genesis; checkpoints conflict as epoch-boundary pairs, as in Gasper §4.
 `store_accountable_safety` (`Transition/FfgStore.lean`) applies it to the justified and finalized checkpoints of a fork-choice store that starts at genesis.
 The store's failed descent check gives their conflict as epoch-boundary pairs, or hash evidence: a zero root, two block headers with one root, or a block whose root is zero.
-The drift bound stays a hypothesis, so the theorem is not yet about what a client runs without further assumptions.
+`store_accountable_safety_preElectra` (`Transition/FfgStorePreElectra.lean`) instantiates the drift bound before Electra, measured at genesis.
+With `J` the justified epoch it is `2 (J+1) K MAX + 2 L + 3 deficit(genesis) + 3 (J+2) K MAX + 3 INC`, where the churn windows and the cap are proved.
+Two terms stay named hypotheses: `K` bounds the churn cap over the reached states, and `L` the effective balance that genesis validators lose, which `lostStake_le_fallen` bounds by each validator's debits along a run.
 
 ### Engine API
 
