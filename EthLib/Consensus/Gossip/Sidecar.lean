@@ -28,6 +28,10 @@ Its branch must climb from its commitments to the body root of its header.
 
 Its KZG proofs must match its commitments.
 
+From Gloas a column sidecar names its block by its root, and has no header.
+
+Its commitments are those of the bid of that block, which must be known and valid.
+
 A proof that the KZG checks cannot read is an error, since the rule raises there.
 
 At Fulu a partial column sidecar carries some cells of a column, its header, or both.
@@ -35,6 +39,10 @@ At Fulu a partial column sidecar carries some cells of a column, its header, or 
 Its header passes the same checks once, and the node records it for its block.
 
 Later cells of that block are checked against the recorded header.
+
+From Gloas a partial sidecar has no header, and its group names the slot of its block.
+
+Its cells are checked against the commitments of the bid of that block, which must be valid.
 -/
 
 @[expose] public section
@@ -167,6 +175,51 @@ def Seen.recordDataColumnSidecar (seen : Seen) (before : fork < .glamsterdam)
   { seen with
     dataColumnSidecarTuples := dataColumnSidecarKey before sidecar :: seen.dataColumnSidecarTuples }
 
+/-- From Gloas: the checks of a column sidecar on a subnet, at a time in milliseconds.
+
+The first valid sidecar of a block for a column passes, and a later one is ignored.
+
+The sidecar must be on the subnet of its column, and not early.
+
+Its block must be known, and is ignored otherwise; it must have a state, and is rejected otherwise.
+
+The sidecar must have the slot of its block.
+
+It must have one cell and one proof per commitment of the bid of the block, at least one.
+
+Its cells must match those commitments, by their proofs. -/
+def validateGloasDataColumnSidecar (config : Config) (setup : TrustedSetup) (seen : Seen)
+    (store : Store preset fork) (gloas : .glamsterdam ≤ fork)
+    (sidecar : DataColumnSidecar preset fork) (currentTimeMs subnetId : UInt64) :
+    Except ForkChoiceError ValidationResult :=
+  let root := sidecar.beaconBlockRoot gloas
+  (ignoreUnless (!seen.dataColumnSidecarRoots.contains (root, sidecar.index))
+    "already seen sidecar for this block root and index").andThenM fun _ => do
+  let subnet ← (computeSubnetForDataColumnSidecar config sidecar.index).mapError
+    SubnetError.toForkChoice
+  (rejectUnless (subnet == subnetId) "sidecar is for wrong subnet").andThenM fun _ => do
+  let future ← store.isFutureSlot config (sidecar.slot gloas) currentTimeMs
+  (ignoreUnless (!future) "sidecar is from a future slot").andThenM fun _ =>
+  match store.blocks[root]? with
+  | none => return .ignore "block for sidecar's beacon block root has not been seen"
+  | some block =>
+  match store.blockStates[root]? with
+  | none => return .reject "block for sidecar's beacon block root failed validation"
+  | some _ =>
+  (rejectUnless (sidecar.slot gloas == block.slot)
+    "sidecar's slot does not match block's slot").andThenM fun _ =>
+  (rejectUnless (verifyDataColumnSidecar preset config sidecar block.bidCommitments)
+    "invalid sidecar").andThenM fun _ => do
+  let valid ← (verifyDataColumnSidecarKzgProofs setup sidecar block.bidCommitments).mapError .kzg
+  return rejectUnless valid "invalid sidecar kzg proofs"
+
+/-- From Gloas: the keys after a valid column sidecar, its block root and its column. -/
+def Seen.recordGloasDataColumnSidecar (seen : Seen) (gloas : .glamsterdam ≤ fork)
+    (sidecar : DataColumnSidecar preset fork) : Seen :=
+  { seen with
+    dataColumnSidecarRoots :=
+      (sidecar.beaconBlockRoot gloas, sidecar.index) :: seen.dataColumnSidecarRoots }
+
 /-- At Fulu: the partial headers that passed their checks, each with the root of its block.
 
 The header type depends on the preset and the fork, so these keys stay apart from the others. -/
@@ -241,7 +294,7 @@ def partialCellsOutcome (config : Config) (setup : TrustedSetup)
 The sidecar must carry a header or a cell, and one cell and one proof per set bit. -/
 def partialCountsOutcome (sidecar : PartialDataColumnSidecar preset fork) : ValidationResult :=
   let count := sidecar.cellsPresentBitmap.bits.count true
-  (rejectUnless (sidecar.header.data.size == 1 || count != 0)
+  (rejectUnless (sidecar.headers.size == 1 || count != 0)
     "partial message is semantically empty").andThen fun _ =>
   (rejectUnless (sidecar.partialColumn.data.size == count)
     "number of cells does not match number of set bits").andThen fun _ =>
@@ -256,13 +309,13 @@ A valid header is recorded before its cells are checked, so it stays recorded wh
 def validatePartialDataColumnSidecar (config : Config) (checks : SignatureChecks)
     (setup : TrustedSetup) (headers : PartialHeaders preset fork) (store : Store preset fork)
     (_fulu : .fusaka ≤ fork ∧ fork < .glamsterdam) (sidecar : PartialDataColumnSidecar preset fork)
-    (currentTimeMs : UInt64) (group : PartialDataColumnGroupID)
+    (currentTimeMs : UInt64) (group : PartialDataColumnGroupID fork)
     (columnIndex : DataAvailability.ColumnIndex) :
     Except ForkChoiceError (ValidationResult × PartialHeaders preset fork) := do
   let root := group.beaconBlockRoot
   match partialCountsOutcome sidecar with
   | .accept =>
-    let (outcome, headers) ← match sidecar.header.data[0]? with
+    let (outcome, headers) ← match sidecar.headers[0]? with
       | none => pure (ValidationResult.accept, headers)
       | some header => do
         match ← partialHeaderOutcome config checks headers store root header currentTimeMs with
@@ -275,5 +328,37 @@ def validatePartialDataColumnSidecar (config : Config) (checks : SignatureChecks
         columnIndex, headers)
     | other => return (other, headers)
   | other => return (other, headers)
+
+/-- From Gloas: the checks of a partial sidecar of a group and a column.
+
+The counts come first: at least one cell, and one cell and one proof per set bit.
+
+The block of the group must be known and valid, and in the slot that the group names.
+
+The bitmap must have one bit per commitment of the bid of that block.
+
+The cells must match those commitments, by their proofs.
+
+The rule reads no clock and records nothing. -/
+def validateGloasPartialDataColumnSidecar (setup : TrustedSetup) (store : Store preset fork)
+    (gloas : .glamsterdam ≤ fork) (sidecar : PartialDataColumnSidecar preset fork)
+    (group : PartialDataColumnGroupID fork) (columnIndex : DataAvailability.ColumnIndex) :
+    Except ForkChoiceError ValidationResult :=
+  let root := group.beaconBlockRoot
+  (partialCountsOutcome sidecar).andThenM fun _ =>
+  match store.blocks[root]? with
+  | none => return .ignore "group id's block has not been seen"
+  | some block =>
+  match store.blockStates[root]? with
+  | none => return .reject "group id's block failed validation"
+  | some _ =>
+  (rejectUnless (group.slot gloas == block.slot)
+    "group id's slot does not match the block's slot").andThenM fun _ =>
+  let commitments := block.bidCommitments gloas
+  (rejectUnless (sidecar.cellsPresentBitmap.bits.size == commitments.data.size)
+    "bitmap length does not match commitments length").andThenM fun _ => do
+  let valid ←
+    (verifyPartialDataColumnSidecarKzgProofs setup sidecar commitments columnIndex).mapError .kzg
+  return rejectUnless valid "invalid sidecar kzg proofs"
 
 end EthLib.Consensus

@@ -441,6 +441,15 @@ def rewards_deltas(
     return _native.consensus_rewards_deltas(name, fork, component, pre, replacements)
 
 
+def rewards_deltas_batch(
+    name: str, fork: str, components: list[str], pre: bytes, config: dict | None = None
+) -> list[bytes]:
+    """The SSZ bytes of the deltas of each named kind of vote, from one decode of the state."""
+    replacements = json.dumps(config).encode() if config else b""
+    kinds = [component.encode() for component in components]
+    return _native.consensus_rewards_deltas_batch(name, fork, kinds, pre, replacements)
+
+
 def process_slots(
     name: str, fork: str, pre: bytes, slots: int, config: dict | None = None
 ) -> bytes:
@@ -473,6 +482,36 @@ def state_transition_across(
     )
 
 
+def state_transitions(
+    name: str,
+    fork: str,
+    pre: bytes,
+    blocks: list[bytes],
+    verify: bool = True,
+    config: dict | None = None,
+) -> bytes:
+    """The SSZ bytes of a beacon state after signed blocks in order, or TransitionError."""
+    replacements = json.dumps(config).encode() if config else b""
+    return _native.consensus_state_transitions(name, fork, pre, blocks, replacements, verify)
+
+
+def state_transitions_across(
+    name: str,
+    fork: str,
+    pre: bytes,
+    block_forks: list[str],
+    blocks: list[bytes],
+    verify: bool = True,
+    config: dict | None = None,
+) -> bytes:
+    """The SSZ bytes of a state after blocks of the same or later forks, or TransitionError."""
+    replacements = json.dumps(config).encode() if config else b""
+    forks = [block_fork.encode() for block_fork in block_forks]
+    return _native.consensus_state_transitions_across(
+        name, fork, pre, forks, blocks, replacements, verify
+    )
+
+
 _FORK_CHOICE_STEPS = {
     "tick": 0,
     "block": 1,
@@ -500,44 +539,7 @@ def fork_choice(
     config: dict | None = None,
 ) -> list:
     """The outcome of each step of a fork choice case, from an anchor state and block."""
-    # A step is (kind, data): the tick in seconds, the SSZ bytes of a block, an attestation, an
-    # attester slashing or a PoW block, or for "checks" what the read asks.
-    # A read asks for the proposer head when its data is true.
-    # It may also be (proposer head, viable leaves, root or None): the leaves of the filtered
-    # tree with their weights, and the votes of the payload committee on the block of the root.
-    # From Gloas an "execution_payload" step is a signed envelope, and a
-    # "payload_attestation_message" step a vote of the payload committee, both in SSZ.
-    # From Deneb a block may come as (block, blobs, proofs): the node holds those for it.
-    # From Fulu a block may come as (block, columns): the node samples those SSZ columns for it,
-    # and an empty list means that it cannot get them.
-    # A "payload" step is (status, latest valid hash or None): the verdict of the execution
-    # layer on the payload of the next block, by its Engine API name.
-    # A "fast_confirmation" step, with data None, runs the fast confirmation of the slot.
-    records = b""
-    for kind, data in steps:
-        if kind == "tick":
-            data = data.to_bytes(8, "little")
-        elif kind == "checks":
-            proposer_head, viable, root = data if isinstance(data, tuple) else (data, False, None)
-            flags = bool(proposer_head) | 2 * bool(viable) | 4 * (root is not None)
-            data = bytes([flags]) + (root or b"")
-        elif kind == "fast_confirmation":
-            data = b""
-        elif kind == "payload":
-            status, latest_valid_hash = data
-            invalid = status in _INVALID_PAYLOAD
-            data = bytes([invalid]) + (latest_valid_hash or b"" if invalid else b"")
-        elif kind == "block" and isinstance(data, tuple) and len(data) == 3:
-            data, blobs, proofs = data
-            held = len(blobs).to_bytes(4, "little") + b"".join(blobs) + b"".join(proofs)
-            records += bytes([6]) + len(held).to_bytes(4, "little") + held
-        elif kind == "block" and isinstance(data, tuple):
-            data, columns = data
-            held = len(columns).to_bytes(4, "little") + b"".join(
-                len(column).to_bytes(4, "little") + column for column in columns
-            )
-            records += bytes([7]) + len(held).to_bytes(4, "little") + held
-        records += bytes([_FORK_CHOICE_STEPS[kind]]) + len(data).to_bytes(4, "little") + data
+    records = _fork_choice_records(steps)
     replacements = json.dumps(config).encode() if config else b""
     out = _native.consensus_fork_choice(
         name, fork, anchor_state, anchor_block, records, replacements, verify
@@ -564,6 +566,55 @@ def fork_choice(
             read, offset = _store_record(out, offset, data)
             outcomes.append(read)
     return outcomes
+
+
+def _fork_choice_records(steps: list) -> bytes:
+    """The steps of a fork choice case as the records that the native exports read."""
+    # A step is (kind, data), and its data is one of these:
+    # - the tick in seconds
+    # - the SSZ bytes of a block, an attestation, an attester slashing or a PoW block
+    # - for "checks", what the read asks
+    #
+    # A read asks for the proposer head when its data is true.
+    # It may also be (proposer head, viable leaves, root or None).
+    # Viable leaves asks for the leaves of the filtered tree with their weights.
+    # A root asks for the votes of the payload committee on the block of the root.
+    #
+    # From Gloas an "execution_payload" step is a signed envelope in SSZ.
+    # From Gloas a "payload_attestation_message" step is a vote of the payload committee in SSZ.
+    # From Deneb a block may come as (block, blobs, proofs): the node holds those for it.
+    # From Fulu a block may come as (block, columns): the node samples those SSZ columns for it.
+    # An empty list of columns means that the node cannot get them.
+    # A "payload" step is (status, latest valid hash or None).
+    # It is the verdict of the execution layer on the payload of the next block.
+    # The status is given by its Engine API name.
+    # A "fast_confirmation" step, with data None, runs the fast confirmation of the slot.
+    records = b""
+    for kind, data in steps:
+        if kind == "tick":
+            data = data.to_bytes(8, "little")
+        elif kind == "checks":
+            proposer_head, viable, root = data if isinstance(data, tuple) else (data, False, None)
+            flags = bool(proposer_head) | 2 * bool(viable) | 4 * (root is not None)
+            data = bytes([flags]) + (root or b"")
+        elif kind == "fast_confirmation":
+            data = b""
+        elif kind == "payload":
+            status, latest_valid_hash = data
+            invalid = status in _INVALID_PAYLOAD
+            data = bytes([invalid]) + (latest_valid_hash or b"" if invalid else b"")
+        elif kind == "block" and isinstance(data, tuple) and len(data) == 3:
+            data, blobs, proofs = data
+            held = len(blobs).to_bytes(4, "little") + b"".join(blobs) + b"".join(proofs)
+            records += bytes([6]) + len(held).to_bytes(4, "little") + held
+        elif kind == "block" and isinstance(data, tuple):
+            data, columns = data
+            held = len(columns).to_bytes(4, "little") + b"".join(
+                len(column).to_bytes(4, "little") + column for column in columns
+            )
+            records += bytes([7]) + len(held).to_bytes(4, "little") + held
+        records += bytes([_FORK_CHOICE_STEPS[kind]]) + len(data).to_bytes(4, "little") + data
+    return records
 
 
 def gossip_validation(
@@ -832,6 +883,21 @@ def get_aggregate_signature(name: str, fork: str, attestations: list) -> bytes:
     return _native.consensus_get_aggregate_signature(name, fork, attestations)
 
 
+def get_attestation_data(
+    name: str,
+    fork: str,
+    state: bytes,
+    head_root: bytes,
+    head_slot: int,
+    committee_index: int,
+    payload_status: int,
+) -> bytes:
+    """The attestation data of an attester from the head block and the state at its slot, as SSZ."""
+    return _native.consensus_get_attestation_data(
+        name, fork, state, head_root, head_slot, committee_index, payload_status
+    )
+
+
 def construct_attestation(
     name: str,
     fork: str,
@@ -932,6 +998,58 @@ def record_attestation_signing(
     return _native.consensus_record_attestation_signing(
         interchange, pubkey, source_epoch, target_epoch, signing_root
     )
+
+
+def is_execution_block(name: str, fork: str, block: bytes) -> bool:
+    """From Bellatrix, whether a block carries a payload other than the empty one."""
+    return _native.consensus_is_execution_block(name, fork, block)
+
+
+def is_optimistic_candidate_block(
+    name: str, fork: str, blocks: list, current_slot: int, block: bytes, safe_slots: int = 128
+) -> bool:
+    """From Bellatrix, whether a block may be imported optimistically, given the known blocks."""
+    return _native.consensus_is_optimistic_candidate_block(
+        name, fork, blocks, current_slot, safe_slots, block
+    )
+
+
+def _roots(data: bytes) -> list:
+    return [data[i : i + 32] for i in range(0, len(data), 32)]
+
+
+def latest_verified_ancestor(
+    name: str, fork: str, blocks: list, optimistic_roots: list, root: bytes
+) -> bytes:
+    """From Bellatrix, the root of the latest block of a chain that is not optimistic."""
+    return _native.consensus_latest_verified_ancestor(
+        name, fork, blocks, b"".join(optimistic_roots), root
+    )
+
+
+def on_valid_payload(
+    name: str, fork: str, blocks: list, optimistic_roots: list, root: bytes
+) -> list:
+    """From Bellatrix, the optimistic roots after the payload of a block is found valid."""
+    return _roots(
+        _native.consensus_on_valid_payload(name, fork, blocks, b"".join(optimistic_roots), root)
+    )
+
+
+def on_invalidated_payload(
+    name: str, fork: str, blocks: list, optimistic_roots: list, first: bytes
+) -> list:
+    """From Bellatrix, the optimistic roots after a block is found to be the first invalid one."""
+    return _roots(
+        _native.consensus_on_invalidated_payload(
+            name, fork, blocks, b"".join(optimistic_roots), first
+        )
+    )
+
+
+def is_optimistic_restricted_domain(domain_type: bytes) -> bool:
+    """Whether an optimistic validator may not sign under a domain type of 4 bytes."""
+    return _native.consensus_is_optimistic_restricted_domain(domain_type)
 
 
 def get_eth1_vote(
@@ -1056,6 +1174,7 @@ __all__ = [
     "compute_fork_digest",
     "process_epoch",
     "rewards_deltas",
+    "rewards_deltas_batch",
     "upgrade_state",
     "compute_weak_subjectivity_period",
     "is_within_weak_subjectivity_period",
@@ -1066,7 +1185,14 @@ __all__ = [
     "get_ptc_assignment",
     "get_upcoming_proposal_slots",
     "get_validator_signature",
+    "is_execution_block",
+    "is_optimistic_candidate_block",
+    "latest_verified_ancestor",
+    "on_valid_payload",
+    "on_invalidated_payload",
+    "is_optimistic_restricted_domain",
     "get_aggregate_signature",
+    "get_attestation_data",
     "construct_attestation",
     "construct_single_attestation",
     "construct_aggregate",
@@ -1082,4 +1208,6 @@ __all__ = [
     "process_slots",
     "state_transition",
     "state_transition_across",
+    "state_transitions",
+    "state_transitions_across",
 ]

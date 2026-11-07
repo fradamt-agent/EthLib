@@ -6,6 +6,18 @@
 /* Each export consumes its object arguments, so the caller never releases them. */
 
 extern lean_object*
+eth_engine_prepare_execution_payload(
+  lean_object* name, lean_object* fork, lean_object* state, lean_object* config,
+  lean_object* safe, lean_object* finalized, lean_object* fee_recipient, lean_object* pow_chain);
+
+extern lean_object*
+eth_engine_prepare_execution_payload_gloas(
+  lean_object* name, lean_object* fork, lean_object* anchor_state, lean_object* anchor_block,
+  lean_object* steps, lean_object* config, lean_object* head_root, lean_object* state,
+  lean_object* safe, lean_object* finalized, lean_object* fee_recipient, uint64_t head_status,
+  uint64_t target_gas_limit, uint8_t verify);
+
+extern lean_object*
 eth_consensus_preset(
   lean_object* name
 );
@@ -198,6 +210,15 @@ eth_consensus_rewards_deltas(
 );
 
 extern lean_object*
+eth_consensus_rewards_deltas_batch(
+  lean_object* name,
+  lean_object* fork,
+  lean_object* components,
+  lean_object* pre,
+  lean_object* config
+);
+
+extern lean_object*
 eth_consensus_process_slots(
   lean_object* name,
   lean_object* fork,
@@ -308,6 +329,11 @@ eth_consensus_compute_on_chain_aggregate(
   lean_object* name, lean_object* fork, lean_object* aggregates);
 
 extern lean_object*
+eth_consensus_get_attestation_data(
+  lean_object* name, lean_object* fork, lean_object* state, lean_object* head_root,
+  uint64_t head_slot, uint64_t committee_index, uint64_t payload_status);
+
+extern lean_object*
 eth_consensus_get_aggregate_signature(
   lean_object* name, lean_object* fork, lean_object* attestations);
 
@@ -365,6 +391,32 @@ eth_consensus_record_attestation_signing(
   lean_object* signing_root);
 
 extern lean_object*
+eth_consensus_is_execution_block(lean_object* name, lean_object* fork, lean_object* block);
+
+extern lean_object*
+eth_consensus_is_optimistic_candidate_block(
+  lean_object* name, lean_object* fork, lean_object* blocks, uint64_t current_slot,
+  uint64_t safe_slots, lean_object* block);
+
+extern lean_object*
+eth_consensus_latest_verified_ancestor(
+  lean_object* name, lean_object* fork, lean_object* blocks, lean_object* optimistic_roots,
+  lean_object* root);
+
+extern lean_object*
+eth_consensus_on_valid_payload(
+  lean_object* name, lean_object* fork, lean_object* blocks, lean_object* optimistic_roots,
+  lean_object* root);
+
+extern lean_object*
+eth_consensus_on_invalidated_payload(
+  lean_object* name, lean_object* fork, lean_object* blocks, lean_object* optimistic_roots,
+  lean_object* first);
+
+extern lean_object*
+eth_consensus_is_optimistic_restricted_domain(lean_object* domain_type);
+
+extern lean_object*
 eth_consensus_get_execution_requests(
   lean_object* name, lean_object* fork, lean_object* requests);
 
@@ -380,6 +432,27 @@ eth_consensus_state_transition_across(
   lean_object* pre,
   lean_object* block_fork,
   lean_object* block,
+  lean_object* config,
+  uint8_t verify
+);
+
+extern lean_object*
+eth_consensus_state_transitions(
+  lean_object* name,
+  lean_object* fork,
+  lean_object* pre,
+  lean_object* blocks,
+  lean_object* config,
+  uint8_t verify
+);
+
+extern lean_object*
+eth_consensus_state_transitions_across(
+  lean_object* name,
+  lean_object* fork,
+  lean_object* pre,
+  lean_object* block_forks,
+  lean_object* blocks,
   lean_object* config,
   uint8_t verify
 );
@@ -1349,6 +1422,44 @@ py_consensus_rewards_deltas(
 }
 
 PyObject*
+py_consensus_rewards_deltas_batch(
+  PyObject* self,
+  PyObject* args
+) {
+  PyObject *name_obj, *fork_obj, *components_obj, *pre_obj, *config_obj;
+  if (!PyArg_ParseTuple(args, "OOOOO", &name_obj, &fork_obj, &components_obj, &pre_obj,
+                        &config_obj)) return NULL;
+  /* Check every argument before any Lean object exists, so a failure leaks nothing. */
+  if (!PyUnicode_Check(name_obj) || !PyUnicode_Check(fork_obj)) {
+    PyErr_SetString(PyExc_TypeError, "name and fork must be str");
+    return NULL;
+  }
+  if (!PyBytes_Check(pre_obj) || !PyBytes_Check(config_obj)) {
+    PyErr_SetString(PyExc_TypeError, "pre and config must be bytes");
+    return NULL;
+  }
+  lean_object* components;
+  if (parse_bytes_sequence(components_obj, "components", &components)) return NULL;
+  lean_object* name = str_arg(name_obj, "name");
+  if (!name) {
+    lean_dec(components);
+    return NULL;
+  }
+  lean_object* fork = str_arg(fork_obj, "fork");
+  if (!fork) {
+    lean_dec(name);
+    lean_dec(components);
+    return NULL;
+  }
+  lean_object* pre = mk_bytearray(
+    (const uint8_t*) PyBytes_AS_STRING(pre_obj), PyBytes_GET_SIZE(pre_obj));
+  lean_object* config = mk_bytearray(
+    (const uint8_t*) PyBytes_AS_STRING(config_obj), PyBytes_GET_SIZE(config_obj));
+  return except_into_pybytes_list(
+    eth_consensus_rewards_deltas_batch(name, fork, components, pre, config), TRANSITION_ERROR);
+}
+
+PyObject*
 py_consensus_upgrade_state(
   PyObject* self,
   PyObject* args
@@ -1780,6 +1891,38 @@ py_consensus_process_sync_committee_contributions(
 }
 
 PyObject*
+py_consensus_get_attestation_data(
+  PyObject* self,
+  PyObject* args
+) {
+  PyObject *name_obj, *fork_obj, *slot_obj, *committee_obj, *status_obj;
+  const uint8_t *state, *head_root;
+  Py_ssize_t state_len, head_root_len;
+  if (!PyArg_ParseTuple(args, "OOy#y#OOO", &name_obj, &fork_obj, &state, &state_len, &head_root,
+                        &head_root_len, &slot_obj, &committee_obj, &status_obj))
+    return NULL;
+  uint64_t head_slot, committee, status;
+  if (parse_uint64(slot_obj, "head_slot", &head_slot) < 0) return NULL;
+  if (parse_uint64(committee_obj, "committee_index", &committee) < 0) return NULL;
+  if (parse_uint64(status_obj, "payload_status", &status) < 0) return NULL;
+  if (!PyUnicode_Check(name_obj) || !PyUnicode_Check(fork_obj)) {
+    PyErr_SetString(PyExc_TypeError, "name and fork must be str");
+    return NULL;
+  }
+  lean_object* name = str_arg(name_obj, "name");
+  if (!name) return NULL;
+  lean_object* fork = str_arg(fork_obj, "fork");
+  if (!fork) {
+    lean_dec(name);
+    return NULL;
+  }
+  return except_into_pybytes(
+    eth_consensus_get_attestation_data(name, fork, mk_bytearray(state, state_len),
+      mk_bytearray(head_root, head_root_len), head_slot, committee, status),
+    VALIDATOR_DUTY_ERROR);
+}
+
+PyObject*
 py_consensus_get_aggregate_signature(
   PyObject* self,
   PyObject* args
@@ -2003,6 +2146,119 @@ py_consensus_record_attestation_signing(
 }
 
 PyObject*
+py_consensus_is_execution_block(
+  PyObject* self,
+  PyObject* args
+) {
+  PyObject *name_obj, *fork_obj;
+  const uint8_t* block;
+  Py_ssize_t block_len;
+  if (!PyArg_ParseTuple(args, "OOy#", &name_obj, &fork_obj, &block, &block_len)) return NULL;
+  lean_object* name = str_arg(name_obj, "name");
+  if (!name) return NULL;
+  lean_object* fork = str_arg(fork_obj, "fork");
+  if (!fork) {
+    lean_dec(name);
+    return NULL;
+  }
+  return except_into_pybool(
+    eth_consensus_is_execution_block(name, fork, mk_bytearray(block, block_len)),
+    FORK_CHOICE_ERROR);
+}
+
+PyObject*
+py_consensus_is_optimistic_candidate_block(
+  PyObject* self,
+  PyObject* args
+) {
+  PyObject *name_obj, *fork_obj, *list_obj, *current_obj, *safe_obj;
+  const uint8_t* block;
+  Py_ssize_t block_len;
+  if (!PyArg_ParseTuple(args, "OOOOOy#", &name_obj, &fork_obj, &list_obj, &current_obj,
+                        &safe_obj, &block, &block_len))
+    return NULL;
+  uint64_t current, safe;
+  if (parse_uint64(current_obj, "current_slot", &current) < 0) return NULL;
+  if (parse_uint64(safe_obj, "safe_slots", &safe) < 0) return NULL;
+  lean_object* a[3];
+  if (named_list_args(name_obj, fork_obj, list_obj, "blocks", a) < 0) return NULL;
+  return except_into_pybool(
+    eth_consensus_is_optimistic_candidate_block(a[0], a[1], a[2], current, safe,
+      mk_bytearray(block, block_len)),
+    FORK_CHOICE_ERROR);
+}
+
+PyObject*
+py_consensus_latest_verified_ancestor(
+  PyObject* self,
+  PyObject* args
+) {
+  PyObject *name_obj, *fork_obj, *list_obj;
+  const uint8_t *roots, *root;
+  Py_ssize_t roots_len, root_len;
+  if (!PyArg_ParseTuple(args, "OOOy#y#", &name_obj, &fork_obj, &list_obj, &roots, &roots_len,
+                        &root, &root_len))
+    return NULL;
+  lean_object* a[3];
+  if (named_list_args(name_obj, fork_obj, list_obj, "blocks", a) < 0) return NULL;
+  return except_into_pybytes(
+    eth_consensus_latest_verified_ancestor(a[0], a[1], a[2], mk_bytearray(roots, roots_len),
+      mk_bytearray(root, root_len)),
+    FORK_CHOICE_ERROR);
+}
+
+PyObject*
+py_consensus_on_valid_payload(
+  PyObject* self,
+  PyObject* args
+) {
+  PyObject *name_obj, *fork_obj, *list_obj;
+  const uint8_t *roots, *root;
+  Py_ssize_t roots_len, root_len;
+  if (!PyArg_ParseTuple(args, "OOOy#y#", &name_obj, &fork_obj, &list_obj, &roots, &roots_len,
+                        &root, &root_len))
+    return NULL;
+  lean_object* a[3];
+  if (named_list_args(name_obj, fork_obj, list_obj, "blocks", a) < 0) return NULL;
+  return except_into_pybytes(
+    eth_consensus_on_valid_payload(a[0], a[1], a[2], mk_bytearray(roots, roots_len),
+      mk_bytearray(root, root_len)),
+    FORK_CHOICE_ERROR);
+}
+
+PyObject*
+py_consensus_on_invalidated_payload(
+  PyObject* self,
+  PyObject* args
+) {
+  PyObject *name_obj, *fork_obj, *list_obj;
+  const uint8_t *roots, *root;
+  Py_ssize_t roots_len, root_len;
+  if (!PyArg_ParseTuple(args, "OOOy#y#", &name_obj, &fork_obj, &list_obj, &roots, &roots_len,
+                        &root, &root_len))
+    return NULL;
+  lean_object* a[3];
+  if (named_list_args(name_obj, fork_obj, list_obj, "blocks", a) < 0) return NULL;
+  return except_into_pybytes(
+    eth_consensus_on_invalidated_payload(a[0], a[1], a[2], mk_bytearray(roots, roots_len),
+      mk_bytearray(root, root_len)),
+    FORK_CHOICE_ERROR);
+}
+
+PyObject*
+py_consensus_is_optimistic_restricted_domain(
+  PyObject* self,
+  PyObject* args
+) {
+  const uint8_t* domain;
+  Py_ssize_t domain_len;
+  if (!PyArg_ParseTuple(args, "y#", &domain, &domain_len)) return NULL;
+  return except_into_pybool(
+    eth_consensus_is_optimistic_restricted_domain(mk_bytearray(domain, domain_len)),
+    FORK_CHOICE_ERROR);
+}
+
+PyObject*
 py_consensus_get_execution_requests(
   PyObject* self,
   PyObject* args
@@ -2181,6 +2437,96 @@ py_consensus_state_transition_across(
     TRANSITION_ERROR);
 }
 
+PyObject*
+py_consensus_state_transitions(
+  PyObject* self,
+  PyObject* args
+) {
+  PyObject *name_obj, *fork_obj, *pre_obj, *blocks_obj, *config_obj;
+  int verify;
+  if (!PyArg_ParseTuple(args, "OOOOOp", &name_obj, &fork_obj, &pre_obj, &blocks_obj,
+                        &config_obj, &verify))
+    return NULL;
+  /* Check every argument before any Lean object exists, so a failure leaks nothing. */
+  if (!PyUnicode_Check(name_obj) || !PyUnicode_Check(fork_obj)) {
+    PyErr_SetString(PyExc_TypeError, "name and fork must be str");
+    return NULL;
+  }
+  if (!PyBytes_Check(pre_obj) || !PyBytes_Check(config_obj)) {
+    PyErr_SetString(PyExc_TypeError, "pre and config must be bytes");
+    return NULL;
+  }
+  lean_object* blocks;
+  if (parse_bytes_sequence(blocks_obj, "blocks", &blocks)) return NULL;
+  lean_object* name = str_arg(name_obj, "name");
+  if (!name) {
+    lean_dec(blocks);
+    return NULL;
+  }
+  lean_object* fork = str_arg(fork_obj, "fork");
+  if (!fork) {
+    lean_dec(name);
+    lean_dec(blocks);
+    return NULL;
+  }
+  lean_object* pre = mk_bytearray(
+    (const uint8_t*) PyBytes_AS_STRING(pre_obj), PyBytes_GET_SIZE(pre_obj));
+  lean_object* config = mk_bytearray(
+    (const uint8_t*) PyBytes_AS_STRING(config_obj), PyBytes_GET_SIZE(config_obj));
+  return except_into_pybytes(
+    eth_consensus_state_transitions(name, fork, pre, blocks, config, (uint8_t) verify),
+    TRANSITION_ERROR);
+}
+
+PyObject*
+py_consensus_state_transitions_across(
+  PyObject* self,
+  PyObject* args
+) {
+  PyObject *name_obj, *fork_obj, *pre_obj, *block_forks_obj, *blocks_obj, *config_obj;
+  int verify;
+  if (!PyArg_ParseTuple(args, "OOOOOOp", &name_obj, &fork_obj, &pre_obj, &block_forks_obj,
+                        &blocks_obj, &config_obj, &verify))
+    return NULL;
+  /* Check every argument before any Lean object exists, so a failure leaks nothing. */
+  if (!PyUnicode_Check(name_obj) || !PyUnicode_Check(fork_obj)) {
+    PyErr_SetString(PyExc_TypeError, "name and fork must be str");
+    return NULL;
+  }
+  if (!PyBytes_Check(pre_obj) || !PyBytes_Check(config_obj)) {
+    PyErr_SetString(PyExc_TypeError, "pre and config must be bytes");
+    return NULL;
+  }
+  lean_object* block_forks;
+  if (parse_bytes_sequence(block_forks_obj, "block_forks", &block_forks)) return NULL;
+  lean_object* blocks;
+  if (parse_bytes_sequence(blocks_obj, "blocks", &blocks)) {
+    lean_dec(block_forks);
+    return NULL;
+  }
+  lean_object* name = str_arg(name_obj, "name");
+  if (!name) {
+    lean_dec(blocks);
+    lean_dec(block_forks);
+    return NULL;
+  }
+  lean_object* fork = str_arg(fork_obj, "fork");
+  if (!fork) {
+    lean_dec(name);
+    lean_dec(blocks);
+    lean_dec(block_forks);
+    return NULL;
+  }
+  lean_object* pre = mk_bytearray(
+    (const uint8_t*) PyBytes_AS_STRING(pre_obj), PyBytes_GET_SIZE(pre_obj));
+  lean_object* config = mk_bytearray(
+    (const uint8_t*) PyBytes_AS_STRING(config_obj), PyBytes_GET_SIZE(config_obj));
+  return except_into_pybytes(
+    eth_consensus_state_transitions_across(name, fork, pre, block_forks, blocks, config,
+                                           (uint8_t) verify),
+    TRANSITION_ERROR);
+}
+
 /* Parse three `str` arguments into Lean byte arrays, or return 0 with an error set. */
 static int
 three_str_args(
@@ -2238,4 +2584,67 @@ py_consensus_gossip_topic_bound(
   lean_object* a[3];
   if (!three_str_args(args, "name", "fork", "topic", a)) return NULL;
   return except_into_pyint(eth_consensus_gossip_topic_bound(a[0], a[1], a[2]), CONSENSUS_ERROR);
+}
+
+PyObject*
+py_engine_prepare_execution_payload(
+  PyObject* self,
+  PyObject* args
+) {
+  PyObject *name_obj, *fork_obj, *list_obj;
+  const uint8_t *state, *config, *safe, *finalized, *fee;
+  Py_ssize_t state_len, config_len, safe_len, finalized_len, fee_len;
+  if (!PyArg_ParseTuple(args, "OOy#y#y#y#y#O", &name_obj, &fork_obj, &state, &state_len, &config,
+                        &config_len, &safe, &safe_len, &finalized, &finalized_len, &fee, &fee_len,
+                        &list_obj))
+    return NULL;
+  if (!PyUnicode_Check(name_obj) || !PyUnicode_Check(fork_obj)) {
+    PyErr_SetString(PyExc_TypeError, "name and fork must be str");
+    return NULL;
+  }
+  lean_object* pow_chain;
+  if (parse_bytes_sequence(list_obj, "pow_chain", &pow_chain)) return NULL;
+  lean_object* name = str_arg(name_obj, "name");
+  if (!name) {
+    lean_dec(pow_chain);
+    return NULL;
+  }
+  lean_object* fork = str_arg(fork_obj, "fork");
+  if (!fork) {
+    lean_dec(name);
+    lean_dec(pow_chain);
+    return NULL;
+  }
+  return except_into_pybytes(
+    eth_engine_prepare_execution_payload(name, fork, mk_bytearray(state, state_len),
+      mk_bytearray(config, config_len), mk_bytearray(safe, safe_len),
+      mk_bytearray(finalized, finalized_len), mk_bytearray(fee, fee_len), pow_chain),
+    PROPOSER_ERROR);
+}
+
+PyObject*
+py_engine_prepare_execution_payload_gloas(
+  PyObject* self,
+  PyObject* args
+) {
+  if (PyTuple_Size(args) != 14) {
+    PyErr_SetString(PyExc_TypeError, "expected 14 arguments");
+    return NULL;
+  }
+  unsigned long long head_status = PyLong_AsUnsignedLongLong(PyTuple_GET_ITEM(args, 11));
+  if (PyErr_Occurred()) return NULL;
+  unsigned long long target_gas_limit = PyLong_AsUnsignedLongLong(PyTuple_GET_ITEM(args, 12));
+  if (PyErr_Occurred()) return NULL;
+  int verify = PyObject_IsTrue(PyTuple_GET_ITEM(args, 13));
+  if (verify < 0) return NULL;
+  PyObject* inputs = PyTuple_GetSlice(args, 0, 11);
+  if (!inputs) return NULL;
+  lean_object* a[11];
+  int read = strs_bytes_args(inputs, 2, 9, a);
+  Py_DECREF(inputs);
+  if (!read) return NULL;
+  return except_into_pybytes(
+    eth_engine_prepare_execution_payload_gloas(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7],
+      a[8], a[9], a[10], (uint64_t) head_status, (uint64_t) target_gas_limit, (uint8_t) verify),
+    PROPOSER_ERROR);
 }

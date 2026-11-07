@@ -255,11 +255,12 @@ The BLS theorems check the constants, because a wrong digit in a modulus or in t
 `seven_pow_card_sub_one` and `seven_pow_div_prime_ne_one` (`Proofs/Bls/FrZMod.lean`) prove that `7` generates the multiplicative group of the scalar field; `7` is also the KZG constant `PRIMITIVE_ROOT_OF_UNITY`.
 `addOrderOf_toPoint_generator` (`Proofs/Bls/G1Order.lean`) proves that the G1 generator has order `r`.
 
-No theorem proves that `pairingCheck` computes a bilinear pairing.
+`pairingBilinear` (`Proofs/Bls/PairingAte.lean`) proves that the pairing is bilinear on the multiples of the generators: `e(a g_1, b g_2) = e(g_1, g_2)^(a b)` for all `a` and `b` in `Fr`.
 `orderOf_pairing_generators` (`Proofs/Bls/Nondegenerate.lean`) proves that the pairing of the two generators has order `r`, so it is not 1; the kernel evaluates that pairing.
 `PairingLaws.of_bilinear` (`Proofs/Bls/PairingBilinear.lean`) derives `PairingLaws` from one smaller hypothesis, `PairingBilinear`: `e(a g_1, b g_2) = e(g_1, g_2)^(a b)` for all `a` and `b` in `Fr`.
-No theorem proves `PairingBilinear` yet.
+`pairingBilinear` proves `PairingBilinear`.
 `PairingLaws` (`Proofs/Bls/PairingLaws.lean`) states the consequence that verification needs, as one hypothesis.
+`pairingLaws` (`Proofs/Bls/PairingAte.lean`) proves `PairingLaws`, so every theorem that assumes it holds once it is supplied.
 Let `P_i` represent `a_i * g_1` and `Q_i` represent `b_i * g_2`, where a representative is any valid point with that group element.
 Then the check of the pairs `(P_i, Q_i)` passes exactly when `sum_i a_i * b_i = 0` in `Fr`.
 The law holds when the check tests `prod_i e(P_i, Q_i) = 1` for any bilinear map `e` with `e(g_1, g_2) != 1` into a group of order `r`.
@@ -268,6 +269,35 @@ The law holds when the check tests `prod_i e(P_i, Q_i) = 1` for any bilinear map
 Its target is `Fp12` and its generator is `e(g_1, g_2)`.
 Under the law, `pairing P Q = e(g_1, g_2)^(a b)` when `P` represents `a * g_1` and `Q` represents `b * g_2`.
 An element of the model represents `t` in `Fr` when it is `e(g_1, g_2)^t`.
+The theorems that take `PairingLaws` as a hypothesis, or build a model of the target group from it, sit in these files:
+
+- `Consensus/Proofs/HonestAggregation.lean`
+- `Consensus/Proofs/HonestBuilder.lean`
+- `Consensus/Proofs/HonestValidator.lean`
+- `Consensus/Proofs/InclusionListCommittee.lean`
+- `Cryptography/Proofs/Bls/PairingLaws.lean`
+- `Cryptography/Proofs/Bls/Security/Refinement.lean`
+- `Cryptography/Proofs/Bls/SignaturesCorrect.lean`
+- `Cryptography/Proofs/Bls/SignaturesUnique.lean`
+- `Cryptography/Proofs/Bls/TargetGroup.lean`
+- `Cryptography/Proofs/Kzg/Arsdh.lean`
+- `Cryptography/Proofs/Kzg/BatchBinding.lean`
+- `Cryptography/Proofs/Kzg/Binding.lean`
+- `Cryptography/Proofs/Kzg/BlobVerifier.lean`
+- `Cryptography/Proofs/Kzg/CellBatchBinding.lean`
+- `Cryptography/Proofs/Kzg/CellBinding.lean`
+- `Cryptography/Proofs/Kzg/CellVerifier.lean`
+- `Cryptography/Proofs/Kzg/CeremonyChecks.lean`
+- `Cryptography/Proofs/Kzg/HonestCells.lean`
+- `Cryptography/Proofs/Kzg/PeerDasBatchGames.lean`
+- `Cryptography/Proofs/Kzg/PeerDasColumnGames.lean`
+- `Cryptography/Proofs/Kzg/PeerDasGames.lean`
+- `Cryptography/Proofs/Kzg/Verify.lean`
+- `Execution/Proofs/Evm/Precompiles/Bls12381/PairingProduct.lean`
+
+With `pairingLaws` passed for that hypothesis, none of them depends on the pairing law.
+Their other hypotheses, such as a well-formed setup, stay.
+
 `finalExponentiation_eq_pow` (`Proofs/Bls/FinalExponentiation.lean`) proves that the final exponentiation raises every element of `Fp12` to exactly `(p^12 - 1) / r`.
 `millerDouble_snd` and `millerAdd_snd` (`Proofs/Bls/MillerLoop.lean`) prove that each step of the Miller loop multiplies by the line through the untwisted points, times `c w^3` for some `c` in `Fp2`.
 The doubling step needs `T` finite with `Y ≠ 0`, and the addition step needs `T` finite with an `x` other than that of `Q`.
@@ -292,11 +322,19 @@ Let `pi` be the map `(x, y) -> (x^q, y^q)`, and let the quotient for `Q` have th
 Let `z^(N n)` be 1 for every nonzero `z`, with `n = sum_j c_j q^j`.
 Then the pairing is linear in a point `P` fixed by `pi`, when `N` is even, and linear in `Q`.
 `Q` lies in a group that `pi` maps into itself, and where `pi` fixes only `O`.
-No theorem yet applies these results to BLS12-381 or alt_bn128, so no theorem yet proves their bilinearity.
+`frobenius_of_mem` (`Proofs/Bls/AteFrobenius.lean`) applies these results to BLS12-381, where `pi` acts as the BLS parameter `x = -|x|` on the untwist of `G2`.
+`eq_zero_of_frobenius_eq` proves that `pi` fixes only `O` there, because `r` does not divide `|x| + 1`.
+`frobenius_iterate_seven` proves that `pi^7` acts as `|x|` there, because `r` divides `|x|^7 + |x|`.
+`ratioDivisor_lines` proves that Miller's function of `|x|` and a point `Q` of the untwist of `G2` has the divisor `|x| ((Q) - (O)) - ((pi^7 Q) - (O))`.
+`pow_ateExponent` proves that `z^(N (|x| - p^7))` is 1 for every nonzero `z` in `Fp12`, with `N = (p^12 - 1) / r`.
+`ateValue_add_left` (`Proofs/Bls/PairingAte.lean`) proves that Miller's function of `|x|` and `Q`, at `P` and raised to `N`, is linear in a point `P` that `pi` fixes.
+`ateValue_add_right` proves that it is linear in `Q` on the untwist of `G2`.
+`pairing_eq_ateValue` proves that the pairing of a valid finite point `P` of `G1` and a valid point `Q` of the subgroup of `G2` is that value raised to `p^6`.
+The alt_bn128 section lists the same application to alt_bn128.
 
 The pairing of the two generators equals the value that [draft-irtf-cfrg-pairing-friendly-curves-11](https://datatracker.ietf.org/doc/html/draft-irtf-cfrg-pairing-friendly-curves-11) publishes in Appendix B.
 The Python suite checks it through the bindings (`bindings/python/tests/bls/test_pairing.py`), with a few bilinearity checks.
-This evidence supports the pairing law but does not prove it.
+This evidence tests the compiled code against the published value.
 
 `keyValidatePoint_eq_ok_iff` (`Proofs/Bls/KeyValidate.lean`) proves that key validation accepts exactly the encodings of the nonzero points of order `r` in G1.
 The G1 and G2 subgroup checks accept exactly the valid points that represent a multiple of the generator.
@@ -356,12 +394,22 @@ It is the verifying operation of SEC 1 v2 §4.1.4.
 By it, a signature is valid exactly when `r` and `s` lie in `[1, n - 1]` and the key is a point of the curve other than `O`.
 The point `(e / s) G + (r / s) Q` must also be other than `O`, with `x mod n = r`.
 `verify_recover` and `recover_of_verify` (`Proofs/Secp256k1/Recovery.lean`) prove that a recovered key verifies the signature, and that every key that verifies one is recovered, when `r + n >= p`.
+`recover_eq_ok_iff` states recovery in the group of the curve.
+It is the public key recovery of SEC 1 v2 §4.1.6, with `x_R = r` only.
+By it, recovery returns `Q` exactly when `r` and `s` lie in `[1, n - 1]` and `R = (r, y)` lies on the curve.
+The parity of `y` must be the recovery id.
+`Q` must be a point of the curve other than `O`, equal to `(s / r) R - (e / r) G`.
 `verify_lowS_unique` (`Proofs/Secp256k1/Malleability.lean`) proves that two low-s signatures with one `r` that verify are equal, under the same bound.
 `verify_iff_of_verify` assumes the same bound and a valid signature `(r, s)`.
 Under them, `(r, s')` verifies under the same key and hash exactly when `s'` is `s` or `n - s`.
 `verify_and_isLowS_iff` adds that `s` is low, and then that signature is the only valid low-s one with that `r`.
 
 No theorem states unforgeability, which rests on the discrete logarithm problem.
+
+`ecdh_eq_ok_iff` (`Proofs/Secp256k1/Ecdh.lean`) states ECDH in the group of the curve.
+It is the Diffie-Hellman primitive of SEC 1 v2 §3.3.1, with no key derivation function.
+By it, ECDH returns a secret exactly when the public key is a point of the curve other than `O` and the private key is nonzero.
+The secret is then the `x` of their product, as 32 big-endian bytes.
 
 ### alt_bn128
 
@@ -384,13 +432,22 @@ The others are the line through `(6 u + 2) Q'` and `pi(Q')`, and the line throug
 This is the optimal ate pairing of Beuchat et al. (ePrint 2010/354, §2).
 `untwist_frobenius` proves that the Frobenius map of the specification is `pi` under the untwist.
 
-No theorem proves that `pairingCheck` computes a bilinear pairing.
+`AltBn128.pairingBilinear` (`Proofs/AltBn128/PairingAte.lean`) proves that the pairing is bilinear on the multiples of the generators: `e(a P1, b P2) = e(P1, P2)^(a b)` for all `a` and `b` in `Fr`.
 `orderOf_pairing_generators` (`Proofs/AltBn128/Nondegenerate.lean`) proves that the pairing of `P1` and `P2` has order `q`, so it is not 1; the kernel evaluates that pairing.
 `pairingCheck_eq_true_iff` (`Proofs/AltBn128/PairingBilinear.lean`) proves that the check passes exactly when the product of the pairings of its pairs is 1.
 The pairing law is a hypothesis, `AltBn128.PairingLaws` (`Proofs/AltBn128/PairingLaws.lean`), in the shape of the BLS one.
 It states the check of EIP-197: the pairs `(a_i P1, b_i P2)` pass exactly when `sum_i a_i b_i = 0`.
 `PairingLaws.of_bilinear` (`Proofs/AltBn128/PairingBilinear.lean`) derives it from one smaller hypothesis, `PairingBilinear`: `e(a P1, b P2) = e(P1, P2)^(a b)` for all `a` and `b` in `Fr`.
-No theorem proves `PairingBilinear` yet.
+`AltBn128.pairingLaws` (`Proofs/AltBn128/PairingAte.lean`) proves `AltBn128.PairingLaws` from it, so every theorem that assumes it holds once it is supplied.
+`Ate.frobenius_generator` (`Proofs/AltBn128/PairingAte.lean`) proves, by a kernel computation on the twist, that the Frobenius map of the specification sends `P2` to `p P2`.
+`Ate.frobenius_of_mem` proves that `pi` acts as `p` on the untwist of `G_2`.
+`Ate.eq_zero_of_frobenius_eq` proves that `pi` fixes only `O` there, because `q` does not divide `p - 1`.
+`Ate.ratioDivisor_ateLines` proves that the three values of the pairing, with the verticals through the two sums, have the divisor `s ((Q') - (O)) + ((pi Q') - (O)) + ((pi^8 Q') - (O)) - ((pi^9 Q') - (O))`, with `s = 6 u + 2`.
+`Ate.pow_ateExponent` proves that `z^(N (s + p + p^8 - p^9))` is 1 for every nonzero `z` in `Fp12`, with `N = (p^12 - 1) / q`.
+`Ate.ateValue_add_left` proves that these lines at `P`, raised to `N`, are linear in a point `P` that `pi` fixes.
+`Ate.ateValue_add_right` proves that they are linear in `Q'` on the untwist of `G_2`.
+`Ate.pairing_eq_ateValue` proves that the pairing of a finite `P` on the curve and a `Q` on the twist whose untwist lies in `G_2` is that value.
+No theorem proves that every point `Q` with `q Q = O` on the twist is a multiple of `P2`, so the law covers the pairs of EIP-197 that are multiples of the generators.
 
 `ecadd_toPoint` and `ecmul_toPoint` (`Execution/Proofs/Evm/Precompiles/AltBn128/Group.lean`) carry this group law to the precompiles.
 A call of ECADD that succeeds returns the sum of its two points, and a call of ECMUL returns its point times its 32-byte scalar.
@@ -426,6 +483,16 @@ No theorem states unforgeability.
 The AES theorems are correctness statements, and none states a security property.
 `invCipher_cipher` and `ciphInv_ciph` (`Proofs/Aes/Block.lean`) prove that the inverse cipher of FIPS 197 undoes the cipher, for every key schedule and so for every key.
 `sbox_eq` proves that each entry of the S-box table equals the inverse in GF(2^8) followed by the affine map of FIPS 197 §5.1.1.
+`ciph_eq_spec` proves that AES-128 and AES-256 equal a model of FIPS 197, for every key and every block.
+The model follows Algorithms 1 and 2 of FIPS 197 over the state `s[r, c]` of §3.4.
+It multiplies bytes as polynomials modulo `m(x)`, and it builds its S-box from the inverse `b^254` and the affine map of §5.1.1.
+So the model shares no table and no GF(2^8) arithmetic with the code.
+`sbox_eq_spec` proves that each entry of the S-box table equals the S-box of the model.
+`getElem_keyExpansion_of_lt` proves that the first `Nk` words of the key schedule are the words of the key.
+`getElem_keyExpansion_of_le` proves that each later word follows the recurrence of Algorithm 2, for a key of at least one word.
+EthLib has no AES-192, so no theorem covers it.
+No theorem compares the inverse cipher with a model of Algorithm 3.
+`ciphInv_spec_ciph` proves only that the inverse cipher undoes the cipher of the model.
 `ctr_ctr` (`Proofs/Aes/Ctr.lean`) proves that CTR decryption of SP 800-38A returns the plaintext, for every forward cipher and initial counter.
 `repeat_inc_injOn` proves that, for `m <= 128`, the first `2^m` counters that the standard increment gives from one block are distinct.
 The CTR keystream applies one increment per block, so these are the counters of the first `2^m` blocks of a message, as Appendix B.1 states.
@@ -448,6 +515,20 @@ No theorem proves that the modulus is irreducible, so none proves that these res
 Under them, the counters of the text differ from each other and from `J_0`, the counter of the tag.
 `encrypt_shortTag` and `decrypt_shortTag` prove that both functions reject the 64-bit and 32-bit tags, which SP 800-38D Appendix C restricts.
 The Python tests check seven test cases of the NIST CAVP file `gcmtestvectors.zip`, one of them a forged tag that decryption rejects.
+
+### RIPEMD-160
+
+`compress_toBitVec` (`Proofs/Hash/Ripemd160.lean`) proves that the compression of one block, read as 32-bit vectors, is the compression of a model of the authors' pseudo-code.
+The statement holds for every chaining variable and every 64-byte block.
+The model runs both lines in one loop, rotates 32-bit vectors, and reads each word least significant byte first.
+It shares the constants, the word orders and the rotation amounts with the code.
+`K_from_square_roots` and `K'_from_cube_roots` derive the constants from square and cube roots.
+`r_groups_permute` and `r'_groups_permute` check only that each group of a word order reads every word once.
+`hash_eq_spec` proves that the hash of every message is the hash of the model, with no bound on the length.
+The model pads the message as MD4 does (RFC 1320 §3.1 and §3.2), with the low 64 bits of the bit length.
+It runs the blocks from its own initial value, and its digest puts the least significant byte of each word first.
+`pad_eq_spec` proves that the padding of the code is the padding of the model.
+The Python tests (`bindings/python/tests/precompile/test_ripemd160.py`) check the hash against the test vectors on Bosselaers' RIPEMD-160 page.
 
 ### KZG
 
@@ -648,41 +729,159 @@ Its first relation covers frames that send no message.
 `Triple S P Q` says that every frame of `P` reaches a frame of `Q` by the steps of `S`, and `Hoare fork` is `Triple` over `Step`.
 `Spec fork P Q` is total correctness for such frames: every frame of `P` reaches a stopped frame of `Q`.
 A run that ends out of gas ends in an exceptional halt, so a postcondition of a normal halt needs a precondition with enough gas.
-`Return42.runFrame_spec` proves the specification of one contract, `0x602a60005260206000f3`, which returns the word 42 for 18 gas with the one-counter meter of the forks before Glamsterdam.
 `Logic/Rules.lean` gives rules for the opcodes that read call data and the caller, compare, jump, hash memory, read and write storage, and return or revert.
 `Logic/Stack.lean` gives rules for POP, SWAP1 to SWAP16, EXP and the opcodes of three operands, at every fork with the one-counter meter.
 `Logic/Rules.lean` gives the rule for DUP1 to DUP16, and the rule for DUP1 is its case at depth 0.
 Every opcode whose instruction takes one, two or three operands runs by the matching rule, with its instruction from the fork.
 DUPN, SWAPN and EXCHANGE of Glamsterdam have no rule yet.
+`Logic/NatCode.lean` stores a code of `size` bytes as one natural number.
+It states the size of the code, its bytes and the data of a PUSH from that number.
+`NatCode.valid_of_walk` proves that a JUMPDEST is a valid jump destination when a walk along the opcodes from position 0 reaches it.
+`decide +kernel` checks the walk.
+`Logic/Steps.lean` defines the tactic `evm_step`, which applies the rule of the opcode at the program counter and proves the facts about the code by evaluation.
+The tactic proves nothing on its own: each step it takes applies one of the rules above, and the kernel checks the result.
+`Logic/Fault.lean` gives the postcondition `Faulted` of a frame that halts exceptionally: no output, the error, no gas with the one-counter meter, and the state and substate the frame had.
+The caller discards that state; no theorem here states it.
+`Logic.invalid` is the rule for a byte that is no opcode at the fork, such as `0xfe` at every fork.
+`Logic.jump_invalid` and `Logic.jumpi_invalid` are the rules for a jump to a position that is not a valid jump destination.
+`Logic.push_of_readFrame` is the rule for an opcode whose instruction pushes a word that the code, the message, the program counter and the memory fix.
+`Logic.callvalue`, `Logic.address`, `Logic.origin`, `Logic.caller`, `Logic.calldatasize`, `Logic.codesize`, `Logic.pc_rule` and `Logic.msize` are its cases.
+A size is pushed modulo 2^256, as the instruction pushes it.
+`Logic.jumpi_of_eq_zero` is the rule for JUMPI on a condition proved equal to 0.
+`Logic.Subroutine` is the specification of a block of code that a caller jumps to with a return address under its arguments.
+It holds for every return address that is a JUMPDEST of the code, and every stack under it that leaves room for the block.
+`Logic.callSubroutine` proves that a push of the address of the block and a JUMP reach the return address with the results.
+It needs both addresses to be JUMPDESTs of the code, and room on the stack below 1024 words.
+`Logic.KnownSubroutine` is the same specification over frames that know only the size of memory and some facts.
+`Logic.callKnownSubroutine` proves its call, with the push and the jump keeping the size and every fact.
+`Logic.stop` is the rule for STOP, which stops the frame with no error and an empty output.
+`Logic.stop_of_size_le` is the rule for a frame at or past the end of its code, which stops the same way.
+`Logic.sstore_of_account` restates the rule for SSTORE when the current account exists.
+It gives a state that holds the new word in the slot, and that the frame reaches.
+That state keeps every other slot, the original words and the accounts.
+`recordStorageRead_recordStorageRead` proves that recording a storage read twice records it once.
+`Logic.insert_insert_getD_self` proves that recording the access of a slot twice records it once.
+`Logic.mem_insert_getD_self` proves that a slot whose access is recorded is warm.
+`Logic.mem_insert_getD_of_ne` proves that the record leaves every other slot as cold or warm as it was.
+`Logic.le_sloadCost` proves that from Berlin, SLOAD costs at least 100.
+`Logic.gas_rule` is the rule for GAS, which pushes the gas left after its own price of 2.
+`Logic.extcodesize` is the rule for EXTCODESIZE from Berlin to before Glamsterdam.
+It charges the prices of EIP-2929, and needs the state to hold the code of the account.
+`Logic.mstore8` is the rule for MSTORE8, which writes the lowest byte of a word.
+`Logic.mcopy` is the rule for MCOPY from Dencun, which grows memory for both ranges before it reads the source.
+`Logic.copyWith` is the rule for a copy of a buffer of the frame to memory, with zeros past its end.
+`Logic.calldatacopy` is its case for CALLDATACOPY.
+`Logic.codecopy` is its case for CODECOPY.
+`Logic.returndatacopy` is the rule for RETURNDATACOPY from Byzantium, for a range that ends within the return data.
+`Logic.extcodecopy` is the rule for EXTCODECOPY from Berlin to before Glamsterdam.
+It charges the prices of EIP-2929 and 3 gas a word, and needs the state to hold the code of the account.
+`Logic.Holds` says that memory covers a range and that the range reads as given bytes.
+`Logic.holds_memoryWrite` proves that a write within memory holds the written bytes.
+`Logic.Holds.memoryWrite_of_disjoint` proves that such a write keeps every range it does not touch.
+`Logic.Holds.memoryExtend` proves that growth keeps every range.
+`Logic.Holds.append` proves that two adjacent ranges hold their bytes in order.
+`Logic.Holds.left` proves that a range that holds two blocks holds the first from its start.
+`Logic.Holds.right` proves that it holds the second after the first.
+`Logic.Holds.loadWord` proves that a range that holds the bytes of a word reads as that word.
+`Logic.extendMemory_of_le` proves that a range within memory grows nothing and costs nothing.
+`Logic.extendMemory_of_lt` proves that a range of some bytes past memory grows it to the rounded end of the range.
+It needs a size of memory that is a multiple of 32.
+That growth costs the price of the new size minus the price of the old size.
+`Logic.size_memoryExtend_extendMemory` proves that memory then has the greater of its old size and that rounded end.
+`Logic.Known` is a running frame whose memory is named only by its size, a multiple of 32, and by facts that `Holds` states.
+`Logic.Known.of_at` proves that a rule that keeps memory, for every memory, keeps the size and every fact.
+`Logic.known_of_write` proves that after a write, memory holds the written fact and every fact apart from the write.
+`Logic.Known.join` proves that the facts of two adjacent ranges join into one.
+`Logic.mstore_known` gives MSTORE this form, with memory grown by the growth for its size.
+`Logic.mstore8_known` gives MSTORE8 this form.
+`Logic.mcopy_known` gives MCOPY this form, from Dencun, for a source that is the range of a fact.
+`Logic.calldatacopy_known` gives CALLDATACOPY this form.
+`Logic.codecopy_known` gives CODECOPY this form.
+`Logic.returndatacopy_known` gives RETURNDATACOPY this form, from Byzantium, for a range within the return data.
+`Logic.extcodecopy_known` gives EXTCODECOPY this form, from Berlin to before Glamsterdam.
+These write rules ask for a range of some bytes.
+`Logic.mload_known` proves that MLOAD of the range of a fact with a word pushes that word.
+`Logic.return_known` proves that RETURN of the range of a fact returns the bytes of the fact.
+`Logic.revert_known` proves the same for REVERT from Byzantium.
+`memoryReadBytes_memoryWrite_eq_append` proves that a read that ends where a write ends gives the bytes before the write, then the value.
+`Logic.staticcallWith` is the rule for STATICCALL from Berlin to before Glamsterdam.
+Its message carries no value and is static.
+`Logic.staticcall` is its case with empty ranges of input and output.
+`Logic.callStep_child` gives the step of a call that sends no value of its own, for each kind of call.
+`Logic.callKindWith` is the rule for such a call from Berlin to before Glamsterdam.
+`Logic.delegatecallWith` is the rule for DELEGATECALL from Berlin to before Glamsterdam.
+Its message runs the code of the address on the current account, with the sender and the value of the current message.
+`Logic.callcodeWith` is the rule for CALLCODE with no value from Berlin to before Glamsterdam.
+Its message runs the code of the address on the current account, as its sender.
+`Logic.createStep_child` gives the step of CREATE or CREATE2 that sends its message, from Berlin to before Glamsterdam.
+It needs the new address to hold no code and a nonce of 0, as EIP-684 asks.
+`Logic.createKindWith` is the rule for such a creation, under an assumption on the frame that ends it.
+`Logic.createWith` is its case for CREATE.
+`Logic.create2With` is its case for CREATE2.
+`Logic.resumeCreate_eq` proves that the creator pushes the new address, or 0 when the frame that ends the creation has an error.
+`Logic.createMessageGas_of_tangerineWhistle` proves that from Tangerine Whistle a creation passes on all but one 64th of the gas left.
+`Logic.depositCode_of_ok` proves that from Berlin to before Glamsterdam a frame with no error deposits its output as code, at 200 gas a byte.
+It needs the output to hold at most 24576 bytes (EIP-170), and from London not to start with `0xEF` (EIP-3541).
+`Logic.depositCode_of_prefix` proves that from London an output that starts with `0xEF` fails with all the gas taken, the state put back and no output.
+`Logic.depositCode_of_outOfGas` proves that an output too long or too dear fails the same way, out of gas.
+`Logic.processCreateMessage_eq_ok` proves that a creation with no value and no precompile ends as its init code ends, then deposits.
+`Logic.meets_of_spec_create` proves that the runner of the interpreter meets `CreatesAs` for a specification of the init code.
+`Logic.running_eq_false_of_sstore_of_isStatic` proves that in a static frame, a step at SSTORE stops the frame.
+`Logic.running_eq_false_of_log_of_isStatic` proves the same for LOG0 to LOG4.
+`memoryReadBytes_memoryWrite_of_disjoint` proves that a write within memory leaves a read of a disjoint range unchanged.
+`memoryReadBytes_memoryWrite_memoryWrite` proves that a read across two adjacent writes gives both values in order.
+`memoryWrite_comm_of_disjoint` proves that two writes within memory to disjoint ranges commute.
+`memoryReadBytes_memoryWrite_memoryWrite_rev` proves the same read when the higher write comes first.
 From Berlin, the rule for SLOAD takes as a hypothesis whether the slot is cold, and charges 2100 or 100 by EIP-2929.
 `Logic.sstore` is the rule for SSTORE from Berlin to before Glamsterdam, in a frame that may change the state and holds more than 2300 gas.
 It charges `sstoreCost` and adds `sstoreRefund` to the refund counter, from the original, current and new words and whether the slot is cold.
 It takes the state that the write gives as a hypothesis, since the write needs the account of the current address.
-`Counter.runFrame_spec` proves a contract that reads the slot at key 0, adds 1, writes the sum back and returns it.
-The slot then holds the sum, and the gas and the refund are those of SLOAD and SSTORE.
 `Logic.log` (`Logic/Log.lean`) is the rule for LOG0 to LOG4, at every fork with the one-counter meter, in a frame that may change the state.
 It appends one log of the current address with the topics and the range of memory.
 It pays 375, 8 for each byte, 375 for each topic and the growth of memory.
 It says nothing of the order of the logs of several frames, or of logs that a revert drops.
-`Emit.runFrame_spec` proves a contract that appends one log with a topic and a word of its call data, for 1036 gas.
-`SlotOfCalldata.runFrame_match` proves a contract that compares the top four bytes of its call data with a constant, at the forks from Berlin with the one-counter meter.
-On a match, it returns the word of storage at the Keccak-256 hash of two words of its call data, for 122 gas and SLOAD.
-`SlotOfCalldata.runFrame_mismatch` proves that it reverts with no output otherwise, for 37 gas.
-`HashedSlot.runFrame_spec` proves a contract that writes the word of its call data to a slot it derives.
-The slot is the Keccak-256 hash of the address of the caller as a word and then the word 0.
-The slot then holds the word, for 83 gas and SSTORE, from Berlin to before Glamsterdam.
-No theorem covers a read at a slot derived from another key word, which needs the two hashes to differ.
 `Logic.branchTable` (`Logic/Branch.lean`) is the rule for a table of entries that branches on the top word of the stack.
 It holds at every fork with the one-counter meter.
 Each entry is DUP1, a push of a key of `n` bytes, EQ, a push of a destination of `m` bytes, and JUMPI.
 The run jumps to the destination of the first entry whose key is the word, or goes on past the table.
 It pays 22 gas for each entry it tests, and needs each destination to be a valid destination of a jump.
-`KeyBranch.runFrame_key1` and `KeyBranch.runFrame_key2` prove a contract with a table of two keys of 4 bytes, which returns 1 or 2.
-`KeyBranch.runFrame_miss` proves that it reverts with no output on any other word, from Byzantium.
 `Triple.loop` (`Logic/Loop.lean`) proves a loop from an invariant for each value of a natural measure.
 A run of the loop then ends by the measure, not by the gas.
-`SumLoop.runFrame_spec` proves a contract that loops `n` times, for the word `n` of its call data, with the one-counter meter.
-With at least `45 + 55 n` gas, it returns `n (n + 1) / 2` modulo `2^256`.
+`Triple.loop_gas` proves a loop whose invariant carries the gas, with a price for each run that may depend on the runs left.
+The loop then needs the sum of those prices and the price of its exit.
+`Logic.holds_empty` proves that memory holds no bytes from an offset within it.
+`Logic.Stored` is a running frame that knows ranges of memory, the facts of some slots, and the refund counter.
+A fact of a slot gives its account, its key, its word before the transaction, its word now, and whether it is warm.
+`Logic.Agrees` says that a state and its accessed keys agree with a base outside a list of slots.
+There each word reads as in the base state, and each slot is warm exactly when the base keys hold it.
+The words before the transaction, the accounts, the codes and the block are those of the base state.
+A `Stored` frame agrees with its base outside the slots of its facts.
+`Logic.Agrees.trans` proves that agreement composes, outside both lists of slots.
+`Logic.Stored.of_known` proves that a rule that keeps the state and the substate keeps every fact.
+`Logic.Stored.of_at` proves the same for a rule that also keeps memory.
+`Logic.sload_stored` proves that from Berlin, SLOAD of the key of a fact of the frame's account pushes its word now.
+It makes the slot warm.
+`Logic.sstore_stored` proves that from Berlin to before Glamsterdam, SSTORE to the key of such a fact writes it and makes it warm.
+It needs a frame that may change the state, more than 2300 gas, and the account of the frame in the base state.
+It pays the price of EIP-2200 with the prices of EIP-2929 from the facts of the slot, and adds the refund of the write.
+`Logic.StoppedStored.of_known` proves that a rule that halts and keeps the state and the substate keeps every fact.
+`Logic.stop_stored` proves that STOP keeps every fact.
+These frames say nothing of the logs, the accessed addresses and the other fields of the substate.
+`Logic.Effect` (`Logic/Effect.lean`) is the effect of a message on storage, from the frame that sends it.
+Outside the slots it touches, the state after agrees with the state before, and a failed message touches no slot.
+A message that succeeds gives the facts of some slots and adds a refund.
+`Logic.effects_rollbackOnError` proves that a callee whose stopped frame agrees with its start outside some slots has such an effect after the rollback.
+`Logic.call_stored` proves that from Berlin to before Glamsterdam, CALL with no value keeps the facts of a `Stored` frame.
+It keeps each fact of a slot that the effect of the callee does not touch.
+It needs an input range that a fact of memory holds, an empty output range, and the gas of a cold call.
+It also needs an assumption that gives the effect of each frame that ends the message.
+On success the frame gains the facts and the refund of the effect.
+On failure it keeps its facts, and the assumption may rule a failure out.
+Its new base agrees with the old one outside the touched slots and the slots of the facts.
+`Logic.meets_runsAll` proves that the runner of the interpreter meets the specifications of a family of codes that call each other, at every bound.
+Each specification is a triple under the assumption that the whole family runs as specified, so a callee may call its caller back.
+The proof is an induction on the bound on the gas of messages.
+`HoareUnder.of_exists` proves a triple from a precondition that gives a witness, with a triple for each witness.
 `StepBy` (`Logic/Message.lean`) adds the steps that send a message, which a runner of messages ends with a frame.
 `runFrame_eq_of_reaches` proves that `runFrame` runs a frame as it runs each frame that it reaches.
 It holds for every relation whose steps `runFrame` runs alike at both ends, as `Step` and `StepBy` do.
@@ -715,27 +914,9 @@ It holds from Berlin to before Glamsterdam, with the one-counter meter.
 It pays 2600 or 100 for the access to the address, by EIP-2929.
 It passes on at most all but one 64th of the gas left, by EIP-150.
 Its postcondition gives the state and substate that the frame that ends the message gives, and nothing more.
-`CallFlag.runFrame_spec` proves a contract that calls the address in its call data and returns 1 when the callee ends with no error, and 0 otherwise.
-With every runner that meets the assumption, the run returns that word or aborts with an error that aborts the run.
-`CallFlag.runFrame_process` states it for the runner of messages of the interpreter.
 `meets_process_noCode` proves that the runner of the interpreter meets one more assumption.
 That assumption says that a message with no code, to an account that is no precompile, ends with no error.
-So `CallFlag.runFrame_process_noCode` proves that the contract returns 1 when the address holds no code and is no precompile, unless the run aborts.
-`CallReturn42.runFrame_process` composes the contract with the contract that returns 42 at the called address, through `meets_of_spec`.
-With the runner of the interpreter, the caller then stops with no error and returns the word 1, or the run aborts.
-`CallChain.runFrame_process` chains three frames.
-The contract calls an address that holds its own code, which calls the address of the word 0, which holds no code.
-With the runner of the interpreter, the outer frame stops with no error and returns the word 1, or the run aborts.
-Before Paris, the call to the address of the word 0 may create its empty account.
-No frame writes the account of the called address or of the outer frame.
-So the result holds even when the two are the same address.
-`CallEcho.runFrame_process` proves a contract that sends a word to a callee that returns its call data, with an output range of 64 bytes.
-With the runner of the interpreter, it returns that word and 32 zero bytes, since the callee returns only 32, or the run aborts.
 `Logic.callWith` and `Logic.call` also state that the message is static when the frame is.
-`CallRevert.runFrame_process` proves a contract that calls a callee that writes a slot and then reverts with the word 42.
-With the runner of the interpreter, it returns the word 42 and then the word 0 that CALL pushes, or the run aborts.
-When it returns, every word of storage reads as before the call, from Berlin to before Glamsterdam.
-It states nothing of the gas that the callee leaves.
 `Logic.callValue` is the rule for CALL with a value that is not 0, from Berlin to before Glamsterdam.
 The frame must be one that may change the state.
 It pays the access of EIP-2929, 9000 for the value, 25000 more when the callee is dead by EIP-161, and the growth of memory.
@@ -743,14 +924,8 @@ The message gets the gas that EIP-150 allows and the stipend of 2300, and carrie
 `Logic.callValueLow` is the rule for such a CALL when the current account holds less than the value.
 It sends no message, pushes 0, and gives back the gas it would pass on with the stipend.
 `Logic.callStep_value_low` also proves that this step empties the return data.
-`Pay.spec_low` and `Pay.runFrame_process_noCode` prove a contract that sends the value in its call data to an address in its call data.
-It returns 0 when the balance is too small.
-With the runner of the interpreter, it returns 1 when the address holds no code, or the run aborts.
 `meets_paidNoCode` (`Logic/Callee.lean`) proves that the runner ends a message with value to no code with no error.
 Its frame ends in the state that the move of the value gives.
-`Pay.runFrame_process_paid` proves that the contract then returns 1, or the run aborts.
-When it returns, the current account holds the value less and the called address the value more.
-It needs the called address to differ from the current one, and holds from Berlin to before Glamsterdam.
 No rule covers CREATE, DELEGATECALL or STATICCALL.
 
 ### SHA-256 precompile
@@ -770,22 +945,32 @@ These theorems state agreement with EIP-198 and EIP-7823.
 `compute_eq_pow_mod` (`Execution/Proofs/Evm/Precompiles/Modexp/Core.lean`) proves that the output is `BASE ^ EXPONENT mod MODULUS`, or 0 for a zero modulus.
 It rests on `powMod_eq` (`Execution/Proofs/Evm/PowMod.lean`), which proves that the square-and-multiply loop equals `b ^ e % m`.
 `modexp_outOfGas` and `modexp_ok` (`Execution/Proofs/Evm/Precompiles/Modexp/Core.lean`) prove that, with every length within the EIP-7823 bound, a call fails exactly when the gas is below the price.
+`modexp_eq_ok_iff` (`Execution/Proofs/Evm/Precompiles/Modexp/Core.lean`) proves that a call succeeds exactly when, from Fusaka, every length is within the EIP-7823 bound and the gas covers the price, and that it then returns the computed output.
+`modexp_eq_error_iff` (`Execution/Proofs/Evm/Precompiles/Modexp/Core.lean`) proves that a call fails exactly on the first oversized length, from Fusaka, in the order base, exponent, modulus, or else on gas below the price.
 
 No theorem relates the module to the execution-specs code it follows.
 
 ### BLAKE2F
 
-The theorems pin down the input format exactly, and leave the compression function F to test vectors.
+The theorems pin down the input format exactly, and state the compression function F against a model of RFC 7693.
 `output_invalidInputLength`, `output_invalidFlag` and `output_ok` (`Execution/Proofs/Evm/Precompiles/Blake2f.lean`) prove that a call fails exactly when the input is not 213 bytes long, or its flag byte is neither `0` nor `1`.
 Otherwise it returns `compute` of the input, which decodes the fields and runs F of RFC 7693 on them.
+`blake2f_eq_ok_iff` (`Execution/Proofs/Evm/Precompiles/Blake2f.lean`) proves that a call succeeds exactly on a 213-byte input with enough gas and a flag byte of `0` or `1`, returning `compute` of the input with that flag.
 `readWord_toNat`, `readRounds_toNat` and `writeState_word` state the encoding of EIP-152 for every input: the rounds field big-endian, every word little-endian, and the output in the encoding of the input.
 
 `roundsFrom_bijective` (`Cryptography/Proofs/Hash/Blake2b.lean`) proves that the rounds of F permute the work vector.
 The statement holds for every round count, message block and starting round.
-The output of F is checked by the Python tests (`bindings/python/tests/precompile/test_blake2f.py`).
+
+`compress_toBitVec` (`Cryptography/Proofs/Hash/Blake2b.lean`) proves that F, read word by word as 64-bit vectors, is the F of a model of RFC 7693 §3.1 and §3.2.
+The statement holds for every round count, state, message block, offset counter and flag.
+The model rotates 64-bit vectors, and takes the offset counter as one 128-bit vector whose high word is `t1`.
+It shares the IV and the message schedule with the code.
+`IV_sqrt` derives the IV from square roots, and `SIGMA_perm` checks only that each row of the schedule is a permutation.
+
+The output of F is also checked by the Python tests (`bindings/python/tests/precompile/test_blake2f.py`).
 They run test vectors 0 to 7 of EIP-152, and read the rounds field of test vector 8.
 They also run one full block of the BLAKE2 test vectors, and one call that sets `t1`.
-Test vector 8 asks for `2^32 - 1` rounds, so nothing checks its output.
+Test vector 8 asks for `2^32 - 1` rounds, so no test checks its output.
 
 ### ECRECOVER
 
@@ -839,7 +1024,7 @@ Each scalar `m_i` is the integer of its 32 bytes, not reduced modulo the subgrou
 It then returns the word of `pairingCheck` on the decoded pairs.
 `exists_represents_of_decodePairs` (`PairingProduct.lean`) proves that each decoded `P_i` represents some `a_i • g_1`, and each `Q_i` some `b_i • g_2`.
 `bls12Pairing_eq_one_iff` proves that the output is the word 1 exactly when `sum_i a_i * b_i = 0`, that is, when the product of the pairings is 1.
-It assumes `PairingLaws`, which EthLib states but does not prove for its Miller loop.
+It assumes `PairingLaws`, which `pairingLaws` proves.
 `bls12Pairing_encodePairs` computes the output on the encodings of any represented pairs.
 `bls12Pairing_generators` and `bls12Pairing_generator_neg` apply it to reach both outputs: 0 for `(g_1, g_2)`, and 1 for `(g_1, g_2)` with `(-g_1, g_2)`.
 
@@ -851,6 +1036,12 @@ So `bls12MapFpToG1_isOk_iff` and `bls12MapFp2ToG2_isOk_iff` (`Map.lean`) prove t
 `bls12MapFpToG1_pad` and `bls12MapFp2ToG2_pad` prove that the padded encoding of every field element succeeds with enough gas.
 
 No theorem relates the module to the execution-specs code it follows.
+
+### Transaction gas
+
+`processTransaction_gasUsed` (`Execution/Proofs/Transactions/Process.lean`) gives the gas used of a transaction that runs, from Pectra to BPO5.
+It is the gas limit minus the gas that the message leaves and the capped refund, or the call data floor when that is larger.
+Before Pectra and from Glamsterdam, no theorem states the gas used of a run.
 
 ### Merkle Patricia Trie
 
@@ -922,7 +1113,10 @@ At the mainnet parameters, `computeWeakSubjectivityPeriodElectra_le_mainnet` giv
 `computeWeakSubjectivityPeriodGloas_le` bounds the Gloas period by a function of the parameters alone when the activation floor covers the rounding losses.
 At the mainnet parameters, `computeWeakSubjectivityPeriodGloas_le_mainnet` gives at most 1658 epochs, and a Python test reaches that bound.
 Its state is not one that a chain can reach: one validator holds about 1.4 billion ether.
-No theorem bounds the Phase 0 period.
+`computeWeakSubjectivityPeriodPhase0_le` bounds the Phase 0 period by the withdrawal delay plus the longer of two terms, `160 N / (600 delta)` and `230 N / (600 Delta)`.
+Here `N` is the number of active validators, `delta` the churn of validators in one epoch and `Delta` the deposits that fit in one epoch.
+The bound needs no condition beyond success of the computation.
+It depends on the state through `N` and `delta`, so it gives no number for the parameters alone.
 
 `isWithinWeakSubjectivityPeriod_eq_ok_iff` states when the check of a checkpoint succeeds and what it answers.
 The state must hold the root of the checkpoint at its epoch and be at that epoch.
@@ -940,7 +1134,7 @@ It finds the committee of a validator in an epoch, whether it proposes, and, fro
 It also signs each message that a validator sends, under the domain type and the epoch that the receivers check.
 The theorems in `Consensus/Proofs/HonestValidator.lean` relate these duties to the checks of the transition and of gossip.
 
-The signature theorems assume `PairingLaws`, the hypothesis of BLS correctness listed under BLS12-381.
+The signature theorems assume `PairingLaws`, the hypothesis of BLS correctness that `pairingLaws` proves under BLS12-381.
 Under it, `isValidSignatureAtEpoch_of_signAtEpoch` shows that a duty signature passes the check of a signature at the same domain type and epoch, under the public key of the secret key.
 `verifyBlockSignature_of_getBlockSignature` shows that a block signed by its proposer passes the check of the block signature.
 `processRandao_ne_invalidRandaoReveal` shows that the RANDAO reveal of the proposer never fails the RANDAO check.
@@ -974,14 +1168,28 @@ It checks each payload timeliness assignment and the upcoming proposal slots aga
 
 ### Honest aggregation
 
-`Consensus/HonestAggregation.lean` holds the vote of an honest attester and the aggregates that an honest aggregator builds from votes.
+`Consensus/HonestAggregation.lean` holds the attestation data and the vote of an honest attester, and the aggregates that an honest aggregator builds from votes.
 Before Electra the vote is an attestation with one bit, and from Electra it is a single attestation.
 An aggregator joins the votes of one committee on the same data into one attestation.
 From Altair, a sync aggregator joins the messages on one block root into the contribution of its subcommittee.
 The theorems are in `Consensus/Proofs/HonestAggregation.lean`.
-Each of them assumes only that the construction succeeds, except the theorem on signatures.
+Each of them assumes only that the construction succeeds, except the theorem on signatures and the two that attestation data and the root of its target have a value.
+
+An attester first builds attestation data from the head block and the state at its slot.
+`getAttestationData_eq_ok_iff` states that data: its slot is the slot of the state, it votes for the root of the head block, its source is the current justified checkpoint and its target epoch is the current epoch.
+`getEpochBoundaryBlockRoot_eq_ok_iff` states the root of the target.
+At a slot that the length of an epoch divides, it is the root of the head block, and otherwise the root that the state records for the first slot of the epoch.
+`target_epoch_eq_of_getAttestationData` shows that the target epoch is the epoch of the slot, which the processing of an attestation checks.
+The index follows its fork: the committee index before Electra and zero from Electra (`attestationDataIndex_of_lt_pectra`, `attestationDataIndex_of_pectra_of_lt_glamsterdam`).
+From Gloas it is zero for a head block of the slot, and otherwise 0 or 1 for an empty or a full payload, while a pending status fails (`attestationDataIndex_of_glamsterdam_of_eq`, `attestationDataIndex_of_glamsterdam_of_ne`).
+`isValidDataIndex_of_attestationDataIndex` shows that from Electra the index passes the check of the index of a vote.
+`exists_getAttestationData_eq_ok_iff` shows that the data has a value unless that index fails.
+It assumes that the length of an epoch is positive and at most the number of recorded roots, and that the slot plus that number fits in 64 bits.
+The data takes the head block and the status of its payload as arguments, since the fork choice computes them.
+The slot of the data is the slot of the state, so the caller passes the state of the head block processed up to the slot of the duty, as the guide does.
 
 `getAttestingIndices_constructAttestation` shows that the attestation of a validator has that validator as its only attester.
+Before Electra, `getAttestingIndices_constructAttestation_getAttestationData` composes it with the data: the attestation names the committee of the slot at the index given, which holds the validator.
 `mem_getAttestingIndices_constructAggregate` shows that the attesters of an aggregate are the attesters of its attestations with the same data.
 From Electra, `mem_getAttestingIndices_constructAggregateOfSingleAttestations` shows that the attesters of an aggregate are the attesters of its single attestations with the same data and committee.
 `getCommitteeIndices_constructAggregateOfSingleAttestations` shows that the committee bits of that aggregate name its one committee.
@@ -1030,6 +1238,59 @@ The Python suite checks the new state root against the state root of each valid 
 It checks the Eth1 vote, the pending deposit count, the custody requirement, the on-chain aggregate, the sync aggregate and the execution requests.
 The test works out the expected values from the guides, with py_ecc for the aggregate signatures.
 
+### Payload preparation
+
+`Engine/PreparePayload.lean` holds the forkchoice update that an honest proposer sends to the execution layer, from Bellatrix to Fulu.
+The update names the parent of the payload as its head, and carries the payload attributes: the time of the slot, the RANDAO mix of its epoch and the suggested fee recipient.
+From Capella the attributes add the withdrawals that the state expects, and from Deneb the root of the latest block header.
+Before the merge the head is the terminal block of proof of work, which the proposer looks for in a chain that it is given as a list.
+The module lives in the Engine layer because it builds the payload attributes of the Engine API from a beacon state.
+The theorems are in `Engine/Proofs/PreparePayload.lean`.
+
+The search for the terminal block reads the list in order, and finds a block by its own hash.
+When two blocks share a hash it finds the first, and when two blocks are terminal it returns the first.
+`getPowBlockAtTerminalTotalDifficulty_go_eq_ok_some` shows that a block it returns reaches the terminal total difficulty, and that its parent is the zero hash or a block of the chain below that difficulty.
+`getPowBlockAtTerminalTotalDifficulty_go_eq_ok_none_iff` states exactly when it returns none, and `getPowBlockAtTerminalTotalDifficulty_go_eq_error` that it fails only on a block that reaches the difficulty with a parent the chain does not hold.
+`prepareExecutionPayload_eq_ok_some` states each field of the update, and `prepareExecutionPayload_eq_ok_none_iff` when the proposer asks for nothing.
+`payloadHeadBlockHash_of_merged`, `payloadHeadBlockHash_of_inactive` and `payloadHeadBlockHash_of_premerge` state the head before and after the merge.
+
+The theorems that link the update to the checks of a block are the reason for the module.
+`processBlockExecution_eq_error_of_prepareExecutionPayload` takes a block that passes the header step on the state of the proposer.
+Its payload names the head of the update as its parent, and carries the mix, the timestamp and, from Capella, the withdrawals of the attributes.
+The execution part of the block then fails only on the number of blobs, the execution layer, a hash or an accessor, and never on the parent, the mix, the time or the withdrawals.
+It rests on `processExecutionPayload_eq_error_of_prepareExecutionPayload`, which assumes only that the checking state shares the slot, the genesis time, the RANDAO mixes and the latest payload header of the state of the proposer.
+It also rests on `getExpectedWithdrawals_latestBlockHeader`, which shows that the expected withdrawals do not read the latest block header, and on `payloadInputs_processWithdrawals`.
+From Deneb, `parentBeaconBlockRoot_newPayloadRequest_of_prepareExecutionPayload` shows that the request to the execution layer names the parent root of the attributes.
+
+Before the merge, `validateMergeBlock_of_payloadHeadBlockHash_of_configured` and `validateMergeBlock_of_payloadHeadBlockHash_of_difficulty` show that the fork choice accepts a first payload on the head.
+With a configured terminal block hash, the block must be of the slot of the state.
+Without one, the fork choice must look blocks up in the same chain, its hashes must differ, and no block may name the zero hash as its parent.
+The search of the guide accepts a terminal block whose parent is the zero hash, while the merge check of the fork choice looks that parent up, so the theorem leaves such blocks out.
+No theorem covers the payload that the execution layer builds, or the safe and finalized blocks, which come from the fork choice.
+
+The Python suite checks each case of the terminal block search, the configured terminal block hash, the withdrawals and the parent root against values worked out in the test from the guides.
+
+From Gloas, `prepareExecutionPayloadGloas` reads the fork choice store and a head node.
+The proposer builds on the full node of the head when the fork choice says so at the current slot.
+It then applies the payload that the store holds for the head to a copy of the state, and reads the withdrawals of that copy.
+Otherwise it keeps the state and the withdrawals that the state records.
+From Heze it also reads the transactions of the inclusion lists of the slot before, which the payload attributes of the Engine API here do not carry.
+`prepareExecutionPayloadGloas_eq_ok` states each field of the update.
+`payloadParentGloas_eq_ok` states the two cases of the parent.
+
+The theorems that link the update to a block assume that the bid of the block builds on the head of the update.
+From a full parent the block must carry the requests of the payload that the store holds, and the two hashes of the latest bid must differ.
+`slot_of_prepareExecutionPayloadGloas` shows that the state after the parent, header and withdrawal steps has the slot, the time and the mix of the attributes.
+`parentRoot_of_prepareExecutionPayloadGloas` shows that the block names the parent root of the attributes.
+`latestBlockHash_of_prepareExecutionPayloadGloas` also assumes that the latest block hash is the parent hash of the latest bid.
+It shows that the state after those steps has the head as its latest block hash.
+`payloadExpectedWithdrawals_of_prepareExecutionPayloadGloas` makes the same assumption.
+It shows that this state records the withdrawals of the attributes.
+It rests on `applyParentExecutionPayload_latestExecutionPayloadBid`, which shows that the payload of a parent keeps the latest bid.
+No theorem covers the envelope that carries the payload, or the inclusion lists, which come from the store.
+
+The Python suite builds the store of a fork choice case and checks the update on the full and the empty parent at Gloas and Heze.
+
 ### Slashing protection
 
 `Consensus/SlashingProtection.lean` holds the slashing protection of a signer, and the interchange file of EIP-3076 that moves it between clients.
@@ -1056,6 +1317,27 @@ No theorem says what `ofJson` does on a document that another client wrote.
 
 The Python suite checks each condition and each malformed field against cases worked out from the EIP.
 With release archives enabled, it runs the 38 interchange tests of `eth-clients/slashing-protection-interchange-tests` as a signer that keeps every message.
+
+### Optimistic sync
+
+`Consensus/ForkChoice/OptimisticSync.lean` holds the optimistic sync of Bellatrix: the blocks that a node imports before the execution layer judges their payload.
+An optimistic store keeps their roots beside the blocks of the node, and the rules read only that store.
+The theorems are in `Consensus/Proofs/ForkChoice/OptimisticSync.lean`, and each assumes only that its function succeeds.
+
+`isOptimisticCandidateBlock_eq_ok_iff` states when a block may be imported optimistically: its known parent carries a payload, or its slot is far enough before the clock.
+`latestVerifiedAncestor_spec` shows that the latest verified ancestor of a block is reached through optimistic blocks only.
+The same theorem shows that this ancestor is not optimistic, or has the zero parent root.
+`onValidPayload_spec` shows that a valid payload removes exactly the block and its known ancestors from the optimistic set.
+`onInvalidatedPayload_spec` shows that the first invalid block removes exactly the optimistic roots whose chain holds it.
+`isOptimisticRestrictedDomain_iff` lists the seven domain types under which an optimistic validator may not sign.
+
+The rule of the latest valid hash in `Consensus/ForkChoice/Optimistic.lean` names the first invalid block.
+The theorems here take that block as given.
+No theorem relates the optimistic set to the blocks that the store of the fork choice removes.
+The second case of an optimistic node, a block tree without a viable branch, is not defined.
+Neither is the re-run of the merge block checks, nor the answer to an execution layer that fails to respond.
+From Gloas these rules are not specified.
+The Python suite checks each rule on Bellatrix blocks built in the test, with roots from the SSZ export.
 
 ### Light client
 
@@ -1147,8 +1429,12 @@ With the state of a chain, `valid_iff_of_newPayloadOnChain` shows that the answe
 `newPayloadOnChain_of_stateTransition_ok` shows the converse for a block whose parent is the last block of the chain.
 
 The JSON decoders read back the hex encoding of any bytes (`bytesOf_hexString`, `Proofs/Json.lean`).
+An address decodes exactly from `0x` and two hex digits for each byte, in either case, whose lowercase forms encode the address (`address_eq_ok_iff_map_toLower`).
 A 64-bit number decodes to `x` exactly when the number read with the bound `2^64` is `x` (`uint64_eq_ok_iff`).
+A payload of version 4 decodes exactly when it holds the fields of version 4 and each part decodes (`payloadV4_eq_ok_iff`).
 A field that appears at a fork decodes exactly when it is present from that fork on and absent before (`exists_since_iff`, `Proofs/ExecutionEngine.lean`).
+So a decoded payload takes a fork exactly when its version is that of the fork (`exists_atFork_iff_of_anyPayload`).
+Version 1 takes the forks before Shapella, version 2 takes Shapella and version 3 takes the forks from Dencun.
 
 The theorems about `engine_forkchoiceUpdated` are in `Proofs/ForkchoiceUpdated.lean`.
 `forkchoiceUpdated_valid` shows that a valid answer selects a valid head that the execution layer holds, with its safe and finalized blocks on its chain.
@@ -1202,7 +1488,8 @@ A conditional theorem is only as strong as its hypotheses.
 The ceremony theorem `checksSufficient_of_subgroupChecks` is one, and its hypotheses are listed under KZG.
 `PairingLaws`, listed under BLS12-381 and alt_bn128, is the hypothesis of every theorem about the result of a pairing check.
 It is a `Prop` passed as an explicit argument, never an axiom, so `lake exe check-decls` still sees only the standard axioms.
-If it were false, every theorem that assumes it would hold vacuously.
+`pairingLaws` proves the BLS12-381 law, so the theorems that assume it hold once it is supplied.
+`AltBn128.pairingLaws` proves the alt_bn128 law in the same way.
 Whatever those hypotheses leave unproved is part of what a reader trusts.
 
 ### A3. Side channels
@@ -1311,12 +1598,12 @@ A proof is unaffected unless it uses one of the tactics of C2.
 Between the Lean exports and Python sits a layer of hand-written C.
 
 <!-- generated: exports -->
-Lean exports 275 operations and 41 size constants.
-The Python extension calls 275 of the operations and 41 of the constants.
+Lean exports 287 operations and 41 size constants.
+The Python extension calls 287 of the operations and 41 of the constants.
 <!-- end generated -->
 
 <!-- generated: c-lines -->
-9252 lines of hand-written C sit between them and Python: `aes.c` (119), `blocks.c` (432), `bls.c` (378), `chain.c` (79), `consensus.c` (2241), `crc32.c` (38), `crc32c.c` (38), `devp2p.c` (59), `discv4.c` (78), `discv5.c` (345), `engine.c` (88), `enr.c` (205), `eth.c` (225), `ethash.c` (112), `evm.c` (140), `fees.c` (101), `forkid.c` (90), `gossip.c` (66), `hmac.c` (102), `keccak.c` (85), `kzg.c` (511), `module.c` (1161), `pow.c` (105), `precompile.c` (95), `reqresp.c` (85), `rlp.c` (162), `rlpx.c` (194), `secp256k1.c` (169), `secp256r1.c` (42), `sha256.c` (38), `snap.c` (114), `snappy.c` (146), `sphincs.c` (85), `ssz.c` (88), `state.c` (108), `transactions.c` (251), `trie.c` (120), `vrf.c` (119), `wrappers.h` (504), `xmss.c` (134).
+9732 lines of hand-written C sit between them and Python: `aes.c` (119), `blocks.c` (432), `bls.c` (378), `chain.c` (79), `consensus.c` (2650), `crc32.c` (38), `crc32c.c` (38), `devp2p.c` (59), `discv4.c` (78), `discv5.c` (345), `engine.c` (88), `enr.c` (205), `eth.c` (225), `ethash.c` (112), `evm.c` (140), `fees.c` (101), `forkid.c` (90), `gossip.c` (66), `hmac.c` (102), `keccak.c` (85), `kzg.c` (511), `module.c` (1211), `pow.c` (105), `precompile.c` (95), `reqresp.c` (85), `rlp.c` (162), `rlpx.c` (194), `secp256k1.c` (169), `secp256r1.c` (42), `sha256.c` (38), `snap.c` (114), `snappy.c` (146), `sphincs.c` (85), `ssz.c` (88), `state.c` (108), `transactions.c` (251), `trie.c` (120), `vrf.c` (119), `wrappers.h` (525), `xmss.c` (134).
 <!-- end generated -->
 
 That C converts arguments, owns and frees Lean objects, and turns errors into Python exceptions.

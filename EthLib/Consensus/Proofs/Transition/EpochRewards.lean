@@ -29,6 +29,8 @@ The finality delay is the distance from the finalized epoch, and the leak is a d
 
 The earliest inclusions have one entry for each validator, and each comes from a signed attestation.
 
+A fold whose steps each act on the balance at their own position acts on each of those balances.
+
 For a registry within its limit, deltas that apply add each reward to its balance below `2^64`.
 
 They then subtract each penalty, stopping at zero.
@@ -36,6 +38,10 @@ They then subtract each penalty, stopping at zero.
 After the first epoch, the step applies the attestation deltas once before Altair.
 
 From Altair it applies the deltas of each flag, then those of inactivity.
+
+Take a step that succeeds on a registry within its limit.
+
+Then each addition of a reward to a balance stays below `2^64`.
 
 The balances past the registry stay.
 -/
@@ -460,6 +466,49 @@ theorem applyDeltas_eq_ok_iff {rewards penalties : Array Gwei} {index : Nat} :
     exact ⟨_, ⟨inside, fits, rfl⟩, by simpa [BeaconState.putBalance] using inside,
       by simp [BeaconState.putBalance]⟩
 
+/-- A fold over the first positions whose step acts on the balance at its own position.
+
+Each step from a state with a kept property gives a state with that property.
+
+It relates the old and new entries at its position, and keeps the other entries.
+
+The fold then gives a state with that property.
+
+It relates the old and new entries at each of those positions, and keeps the entries past them. -/
+theorem foldlM_range_balances {ε : Type}
+    {step : BeaconState preset fork → Nat → Except ε (BeaconState preset fork)}
+    (Keep : BeaconState preset fork → Prop) (Relates : Nat → Option Gwei → Option Gwei → Prop)
+    {count : Nat}
+    (stepped : ∀ {last next : BeaconState preset fork} {j : Nat}, j < count → Keep last →
+      step last j = .ok next → Keep next ∧
+        Relates j last.balances.data[j]? next.balances.data[j]? ∧
+        ∀ k, k ≠ j → next.balances.data[k]? = last.balances.data[k]?)
+    (kept : Keep state)
+    (computed : (List.range count).foldlM step state = .ok after) :
+    Keep after ∧ ∀ i, (i < count → Relates i state.balances.data[i]? after.balances.data[i]?) ∧
+      (count ≤ i → after.balances.data[i]? = state.balances.data[i]?) := by
+  induction count generalizing after with
+  | zero =>
+    simp only [List.range_zero, List.foldlM_nil, pure, Except.pure, Except.ok.injEq] at computed
+    subst computed
+    exact ⟨kept, fun _ => ⟨fun lt => absurd lt (Nat.not_lt_zero _), fun _ => rfl⟩⟩
+  | succ count ih =>
+    rw [List.range_succ, List.foldlM_append, bind_ok_iff] at computed
+    obtain ⟨middle, folded, last⟩ := computed
+    simp only [List.foldlM_cons, List.foldlM_nil, bind_ok_iff, pure, Except.pure,
+      Except.ok.injEq] at last
+    obtain ⟨final, step, rfl⟩ := last
+    obtain ⟨keptMiddle, low⟩ := ih (fun lt => stepped (Nat.lt_succ_of_lt lt)) folded
+    obtain ⟨keptFinal, atCount, other⟩ := stepped (Nat.lt_succ_self count) keptMiddle step
+    rw [(low count).2 (Nat.le_refl _)] at atCount
+    refine ⟨keptFinal, fun i => ⟨fun lt => ?_, fun ge => ?_⟩⟩
+    · rcases Nat.lt_succ_iff_lt_or_eq.mp lt with lt | rfl
+      · rw [other i (by omega)]
+        exact (low i).1 lt
+      · exact atCount
+    · rw [other i (by omega)]
+      exact (low i).2 (by omega)
+
 /-- The deltas of the first positions, at most `2^64` of them, each apply at their own position.
 
 The other balances stay. -/
@@ -471,42 +520,19 @@ private theorem foldlM_applyDeltas_balances {rewards penalties : Array Gwei} {co
       after.balances.data[i]? =
         some (saturatingSub (balance + rewards.getD i 0) (penalties.getD i 0))) ∧
     (count ≤ i → after.balances.data[i]? = state.balances.data[i]?) := by
-  induction count generalizing after with
-  | zero =>
-    simp only [List.range_zero, List.foldlM_nil, pure, Except.pure, Except.ok.injEq] at computed
-    subst computed
-    exact fun _ => ⟨fun lt => absurd lt (Nat.not_lt_zero _), fun _ => rfl⟩
-  | succ count ih =>
-    rw [List.range_succ, List.foldlM_append, bind_ok_iff] at computed
-    obtain ⟨middle, folded, last⟩ := computed
-    simp only [List.foldlM_cons, List.foldlM_nil, bind_ok_iff, pure, Except.pure,
-      Except.ok.injEq] at last
-    obtain ⟨final, step, rfl⟩ := last
-    have low := ih (by omega) folded
-    have same : count.toUInt64.toNat = count := by
-      rw [Nat.toUInt64_eq, UInt64.toNat_ofNat', Nat.mod_eq_of_lt (by omega)]
-    -- The last position is below `2^64`, so it is its own validator index.
-    obtain ⟨balance, found, fits, atCount, other⟩ : ∃ balance,
-        middle.balances.data[count]? = some balance ∧
-          balance.toNat + (rewards.getD count 0).toNat < 2 ^ 64 ∧
-          final.balances.data[count]? =
-            some (saturatingSub (balance + rewards.getD count 0) (penalties.getD count 0)) ∧
-          ∀ j, j ≠ count → final.balances.data[j]? = middle.balances.data[j]? := by
-      obtain ⟨inside, fits, rfl⟩ := applyDeltas_eq_ok_iff.mp step
-      have inside' : count < middle.balances.data.size := same ▸ inside
-      refine ⟨middle.balances.data[count], Array.getElem?_eq_getElem inside',
-        by simpa [same] using fits, ?_, fun j ne => ?_⟩
-      · simp [BeaconState.putBalance, same, inside']
-      · simp [BeaconState.putBalance, same, Ne.symm ne]
-    rw [(low count).2 (Nat.le_refl _)] at found
-    intro i
-    refine ⟨fun lt => ?_, fun ge => ?_⟩
-    · rcases Nat.lt_succ_iff_lt_or_eq.mp lt with lt | rfl
-      · rw [other i (by omega)]
-        exact (low i).1 lt
-      · exact ⟨balance, found, fits, atCount⟩
-    · rw [other i (by omega)]
-      exact (low i).2 (by omega)
+  refine (foldlM_range_balances (fun _ => True) (fun i old new => ∃ balance, old = some balance ∧
+    balance.toNat + (rewards.getD i 0).toNat < 2 ^ 64 ∧
+    new = some (saturatingSub (balance + rewards.getD i 0) (penalties.getD i 0)))
+    (fun {middle final j} lt _ step => ?_) trivial computed).2
+  have same : j.toUInt64.toNat = j := by
+    rw [Nat.toUInt64_eq, UInt64.toNat_ofNat', Nat.mod_eq_of_lt (by omega)]
+  -- The position is below `2^64`, so it is its own validator index.
+  obtain ⟨inside, fits, rfl⟩ := applyDeltas_eq_ok_iff.mp step
+  have inside' : j < middle.balances.data.size := same ▸ inside
+  refine ⟨trivial, ⟨middle.balances.data[j], Array.getElem?_eq_getElem inside',
+    by simpa [same] using fits, ?_⟩, fun k ne => ?_⟩
+  · simp [BeaconState.putBalance, same, inside']
+  · simp [BeaconState.putBalance, same, Ne.symm ne]
 
 /-- For a registry within its limit, applying some deltas changes the balance of each validator.
 
@@ -531,7 +557,11 @@ theorem applyAllDeltas_balances {rewards penalties : Array Gwei}
 
 /-- For a registry within its limit, a list of deltas acts on each balance in the order of the list.
 
+This holds when the deltas apply.
+
 Each one adds the reward of the validator, then subtracts its penalty, stopping at zero.
+
+Each of those sums stays below `2^64`, so a checked addition of each reward succeeds.
 
 The balances past the registry stay. -/
 theorem foldlM_applyAllDeltas_balances {deltas : List (Array Gwei × Array Gwei)}
@@ -540,12 +570,17 @@ theorem foldlM_applyAllDeltas_balances {deltas : List (Array Gwei × Array Gwei)
     (i < state.validators.data.size → after.balances.data[i]? =
       state.balances.data[i]?.map fun balance => deltas.foldl (fun balance delta =>
         saturatingSub (balance + delta.1.getD i 0) (delta.2.getD i 0)) balance) ∧
+    (i < state.validators.data.size → ∀ balance, state.balances.data[i]? = some balance →
+      deltas.foldlM (fun balance delta => (addChecked balance (delta.1.getD i 0)).map
+          fun raised => saturatingSub raised (delta.2.getD i 0)) balance =
+        .ok (deltas.foldl (fun balance delta =>
+          saturatingSub (balance + delta.1.getD i 0) (delta.2.getD i 0)) balance)) ∧
     (state.validators.data.size ≤ i → after.balances.data[i]? = state.balances.data[i]?) := by
   induction deltas generalizing state with
   | nil =>
     simp only [List.foldlM_nil, pure, Except.pure, Except.ok.injEq] at computed
     subst computed
-    exact ⟨fun _ => by cases state.balances.data[i]? <;> rfl, fun _ => rfl⟩
+    exact ⟨fun _ => by cases state.balances.data[i]? <;> rfl, fun _ _ _ => rfl, fun _ => rfl⟩
   | cons delta deltas ih =>
     rw [List.foldlM_cons, bind_ok_iff] at computed
     obtain ⟨middle, applied, folded⟩ := computed
@@ -556,14 +591,19 @@ theorem foldlM_applyAllDeltas_balances {deltas : List (Array Gwei × Array Gwei)
     rw [sizes.1] at later
     have first := applyAllDeltas_balances (rewards := delta.1) (penalties := delta.2) within
       applied i
-    refine ⟨fun lt => ?_, fun ge => (later.2 ge).trans (first.2 ge)⟩
-    obtain ⟨balance, found, -, raised⟩ := first.1 lt
-    rw [later.1 lt, raised, found]
-    rfl
+    refine ⟨fun lt => ?_, fun lt balance held => ?_, fun ge => (later.2.2 ge).trans (first.2 ge)⟩
+    · obtain ⟨balance, found, -, raised⟩ := first.1 lt
+      rw [later.1 lt, raised, found]
+      rfl
+    · obtain ⟨balance', found, fits, raised⟩ := first.1 lt
+      obtain rfl : balance' = balance := Option.some.inj (found.symm.trans held)
+      -- The first reward fits, so the checked addition gives the wrapping sum.
+      rw [List.foldlM_cons, addChecked_of_lt fits]
+      exact later.2.1 lt _ raised
 
 /-- Before Altair and after the first epoch, rewards and penalties apply the attestation deltas.
 
-The registry must be within its limit.
+This holds when the step succeeds.
 
 The balance of each validator becomes the old balance plus the reward, minus the penalty.
 
@@ -573,8 +613,7 @@ That old balance exists, and adding the reward to it stays below `2^64`.
 
 The balances past the registry stay. -/
 theorem processRewardsAndPenalties_balances_of_lt_altair {config : Config}
-    (before : fork < .altair) (within : state.RegistryWithinLimit)
-    (later : getCurrentEpoch state ≠ GENESIS_EPOCH)
+    (before : fork < .altair) (later : getCurrentEpoch state ≠ GENESIS_EPOCH)
     (computed : processRewardsAndPenalties config state = .ok after) :
     ∃ rewards penalties, getAttestationDeltas config state before = .ok (rewards, penalties) ∧
       ∀ i, (i < state.validators.data.size → ∃ balance, state.balances.data[i]? = some balance ∧
@@ -586,17 +625,22 @@ theorem processRewardsAndPenalties_balances_of_lt_altair {config : Config}
   simp only [processRewardsAndPenalties, later, notAltair, ↓reduceIte, ↓reduceDIte,
     bind_ok_iff] at computed
   obtain ⟨⟨rewards, penalties⟩, found, applied⟩ := computed
+  -- Before Gloas the type of the registry keeps it within its limit.
+  have within : state.RegistryWithinLimit :=
+    state.validators.bound (Nat.lt_trans before (by decide))
   exact ⟨rewards, penalties, found, applyAllDeltas_balances within applied⟩
 
 /-- From Altair and after the first epoch, rewards and penalties apply the deltas of each flag.
 
 They then apply the inactivity deltas.
 
-The registry must be within its limit.
+This holds when the step succeeds on a registry within its limit.
 
 Each set of deltas adds the reward of a validator to its balance, then subtracts its penalty.
 
 The balance stops at zero when the penalty is larger.
+
+Each of those sums stays below `2^64`, so a checked addition of each reward succeeds.
 
 The balances past the registry stay. -/
 theorem processRewardsAndPenalties_balances_of_altair {config : Config}
@@ -611,6 +655,12 @@ theorem processRewardsAndPenalties_balances_of_altair {config : Config}
         state.balances.data[i]?.map fun balance =>
           (flagDeltas ++ [inactivityDeltas]).foldl (fun balance delta =>
             saturatingSub (balance + delta.1.getD i 0) (delta.2.getD i 0)) balance) ∧
+      (i < state.validators.data.size → ∀ balance, state.balances.data[i]? = some balance →
+        (flagDeltas ++ [inactivityDeltas]).foldlM (fun balance delta =>
+            (addChecked balance (delta.1.getD i 0)).map
+              fun raised => saturatingSub raised (delta.2.getD i 0)) balance =
+          .ok ((flagDeltas ++ [inactivityDeltas]).foldl (fun balance delta =>
+            saturatingSub (balance + delta.1.getD i 0) (delta.2.getD i 0)) balance)) ∧
       (state.validators.data.size ≤ i → after.balances.data[i]? = state.balances.data[i]?) := by
   simp only [processRewardsAndPenalties, later, altair, ↓reduceIte, ↓reduceDIte,
     bind_ok_iff] at computed

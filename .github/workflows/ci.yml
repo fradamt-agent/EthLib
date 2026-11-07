@@ -269,6 +269,26 @@ jobs:
       - name: vector suites
         run: bash scripts/build_timing_report.sh run test_path "$BUILD_TIMING_RESULTS" -- uv run --no-sync pytest -n auto --dist worksteal --durations=25
 
+      # The catalogue checks of the consensus parity read the member lists of its two archives.
+      # Without them, the check that each runnable group keeps vendored cases skips.
+      # The fetcher downloads an archive only when its member list is missing from the cache.
+      - name: restore archive member lists
+        if: matrix.python == '3.12'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/archives/*.members.json
+          key: ethlib-archive-members-${{ hashFiles('tests/sources.toml') }}
+          restore-keys: |
+            ethlib-archive-members-
+
+      - name: consensus parity catalogue
+        if: matrix.python == '3.12'
+        env:
+          ETHLIB_ARCHIVES: ${{ runner.temp }}/archives
+        run: >-
+          uv run --no-sync pytest -m archive bindings/python/tests/parity/test_consensus.py
+          -k "not test_case"
+
       # The generators rewrite every case, so a changed vector shows up as a diff.
       - name: unchanged vectors
         run: git diff --exit-code -- tests/cryptography
@@ -355,6 +375,12 @@ jobs:
       - name: exception messages, unit tests
         run: uv run --no-sync python -m unittest scripts/test_check_raises.py
 
+      - name: release watcher, unit tests
+        run: uv run --no-sync python -m unittest scripts/test_check_spec_releases.py
+
+      - name: parity shard merge, unit tests
+        run: uv run --no-sync python -m unittest scripts/test_merge_parity.py
+
       # A module docstring is one line, and no docstring wraps a sentence onto a second line.
       - name: docstrings
         run: uv run --no-sync python scripts/check_docstrings.py
@@ -429,12 +455,21 @@ jobs:
 
       - run: uv run --no-project --python 3.12 python -m unittest scripts/test_check_lean_layout.py
 
-      # In a Python comment, no sentence runs onto a second line.
-      # The check reads the pairs of lines where the pull request changes at least one line.
-      - name: Python comments of the changed lines
+      # A pull request adds no hand conversion to the Python package.
+      # The allowlist names every conversion that remains.
+      - name: Python package, no hand conversion on the changed lines
         if: github.event_name == 'pull_request'
         env:
           BASE_REF: ${{ github.base_ref }}
-        run: uv run --no-project --python 3.12 python scripts/check_python_comments.py --base "origin/${BASE_REF}" --github
+        run: uv run --no-project --python 3.12 python scripts/check_python_boundary.py --base "origin/${BASE_REF}"
+
+      - name: Python package, no hand conversion outside the allowlist
+        run: uv run --no-project --python 3.12 python scripts/check_python_boundary.py
+
+      - run: uv run --no-project --python 3.12 python -m unittest scripts/test_check_python_boundary.py
+
+      # No sentence of a Python comment runs onto a second line, in any file.
+      - name: Python comments, one sentence per line
+        run: uv run --no-project --python 3.12 python scripts/check_python_comments.py --all --github
 
       - run: uv run --no-project --python 3.12 python -m unittest scripts/test_check_python_comments.py

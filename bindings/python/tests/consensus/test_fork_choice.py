@@ -42,10 +42,7 @@ GLOAS_HANDLERS = (
 )
 SPECIFIED = ("altair", "bellatrix", "capella", "deneb", "electra", "fulu", "gloas", "heze")
 
-# The forks of the fast confirmation cases, which wait at Gloas for its own rule.
-FAST_CONFIRMATION_FORKS = ("altair", "bellatrix", "capella", "deneb", "electra", "fulu")
-
-# The suites of the fast confirmation cases, which EthLib runs at the forks above.
+# The suites of the fast confirmation cases, which EthLib runs at every fork above.
 FAST_CONFIRMATION = (
     "basic",
     "current_epoch",
@@ -59,8 +56,9 @@ FAST_CONFIRMATION = (
     "variables",
 )
 
-# The checks that read the store of the fast confirmation rule. A checks step with them follows a
-# run of that rule, which the case leaves implicit at the start of each slot.
+# The checks that read the store of the fast confirmation rule.
+# A checks step with them follows a run of that rule.
+# The case leaves that run implicit at the start of each slot.
 FAST_CONFIRMATION_CHECKS = (
     "previous_epoch_observed_justified_checkpoint",
     "current_epoch_observed_justified_checkpoint",
@@ -93,7 +91,7 @@ _YAML = YAML(typ="safe")
 def runs(fork: str, runner: str, handler: str) -> bool:
     """Whether EthLib runs the cases of a handler at a fork."""
     if runner == "fast_confirmation":
-        return fork in FAST_CONFIRMATION_FORKS and handler in FAST_CONFIRMATION
+        return fork in SPECIFIED and handler in FAST_CONFIRMATION
     return fork in SPECIFIED and handler in HANDLERS + GLOAS_HANDLERS
 
 
@@ -254,9 +252,7 @@ def _archive_cases() -> list:
         paths += [f"tests/{preset}/{fork}/sync" for fork in sync]
         # The fast confirmation cases are minimal only.
         if preset == "minimal":
-            paths += [
-                f"tests/{preset}/{fork}/fast_confirmation" for fork in FAST_CONFIRMATION_FORKS
-            ]
+            paths += [f"tests/{preset}/{fork}/fast_confirmation" for fork in SPECIFIED]
         base = archives.unpack(name, *paths) / "tests" / preset
         found = [
             *base.glob("*/fork_choice/*/*/*/steps.yaml"),
@@ -298,7 +294,7 @@ def test_case(preset, fork, case):
     run_case(preset, fork, case)
 
 
-@pytest.mark.parametrize("preset, fork, case", _archive_cases())
+@archives.parametrize("preset, fork, case", _archive_cases)
 def test_archive_case(preset, fork, case):
     run_case(preset, fork, case)
 

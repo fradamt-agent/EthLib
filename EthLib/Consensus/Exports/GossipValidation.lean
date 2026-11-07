@@ -5,6 +5,7 @@ public import EthLib.Cryptography.Exports.Kzg
 public import EthLib.Consensus.Gossip.Attestation
 public import EthLib.Consensus.Gossip.Bid
 public import EthLib.Consensus.Gossip.Block
+public import EthLib.Consensus.Gossip.InclusionList
 public import EthLib.Consensus.Gossip.Operations
 public import EthLib.Consensus.Gossip.Payload
 public import EthLib.Consensus.Gossip.ProposerPreferences
@@ -59,6 +60,8 @@ After each message comes one byte: 0 when it is valid, 1 when it is ignored, 2 w
 An ignore or a reject carries a 4-byte length and its reason in UTF-8.
 
 Numbers are little-endian.
+
+From Heze a valid inclusion list also joins the inclusion lists of the store, as timely.
 
 An error of the fork choice, such as a head that cannot be computed, fails the whole run.
 
@@ -144,14 +147,20 @@ def readGossipBlocks : (rounds : Nat) → ByteArray → Nat → Result (List Gos
 
 /-- The store with the envelope of the payload of a block, from Gloas, when there is one.
 
-The envelope was verified when it arrived, so the store keeps it by the root of the block. -/
+The envelope was verified when it arrived, so the store keeps it by the root of the block.
+
+From Heze the execution layer answers that the payload satisfied its inclusion lists. -/
 def importGossipEnvelope {preset : Preset} {fork : Fork} (store : Store preset fork)
     (root : Root) (bytes : ByteArray) : Result (Store preset fork) := do
   if bytes.isEmpty then return store
   if gloas : .glamsterdam ≤ fork then
     let signed ← decodeInput (SignedExecutionPayloadEnvelope preset fork) bytes
     let payloads := (store.payloads gloas).insert root signed.message
-    return { store with payloads := fun _ => payloads }
+    let store := { store with payloads := fun _ => payloads }
+    if heze : .hegota ≤ fork then
+      let satisfaction := (store.payloadInclusionListSatisfaction heze).insert root true
+      return { store with payloadInclusionListSatisfaction := fun _ => satisfaction }
+    else return store
   else throw (0, "a block has the envelope of a payload only from Gloas")
 
 /-- The store and the statuses after a block that follows the anchor.
@@ -191,19 +200,17 @@ The sync committee has topics from Altair, and changes of BLS credentials from C
 
 Blob sidecars travel at Deneb and Electra, and column sidecars at Fulu.
 
-At Gloas seven topics are specified here: blocks, votes, aggregates and the four new topics.
-
-At Heze no topic is specified yet. -/
+Gloas adds four topics, and Heze adds inclusion lists. -/
 def gossipValidationSpecified (fork : Fork) : String → Bool
-  | "attester_slashing" | "proposer_slashing" | "voluntary_exit" => fork < .glamsterdam
-  | "beacon_block" | "beacon_attestation" | "beacon_aggregate_and_proof" => fork < .hegota
-  | "sync_committee" | "sync_committee_contribution_and_proof" =>
-    .altair ≤ fork && fork < .glamsterdam
-  | "bls_to_execution_change" => .shapella ≤ fork && fork < .glamsterdam
+  | "attester_slashing" | "proposer_slashing" | "voluntary_exit" | "beacon_block"
+  | "beacon_attestation" | "beacon_aggregate_and_proof" => true
+  | "sync_committee" | "sync_committee_contribution_and_proof" => .altair ≤ fork
+  | "bls_to_execution_change" => .shapella ≤ fork
   | "blob_sidecar" => .dencun ≤ fork && fork < .fusaka
-  | "data_column_sidecar" | "partial_data_column_sidecar" => .fusaka ≤ fork && fork < .glamsterdam
+  | "data_column_sidecar" | "partial_data_column_sidecar" => .fusaka ≤ fork
   | "proposer_preferences" | "execution_payload" | "payload_attestation_message"
-  | "execution_payload_bid" => .glamsterdam ≤ fork && fork < .hegota
+  | "execution_payload_bid" => .glamsterdam ≤ fork
+  | "inclusion_list" => .hegota ≤ fork
   | _ => false
 
 /-- The outcome of one message of a topic, and the keys seen after it.
@@ -285,12 +292,17 @@ def validateGossipInput {preset : Preset} {fork : Fork} (config : Config)
     else throw (0, "blob sidecars travel only at Deneb and Electra")
   | "data_column_sidecar" =>
     let sidecar ← decodeInput (DataColumnSidecar preset fork) input.data
-    if columns : .fusaka ≤ fork ∧ fork < .glamsterdam then
+    if gloas : .glamsterdam ≤ fork then
+      let setup ← runForkChoice (embeddedSetup.mapError .kzg)
+      let outcome ← runForkChoice (validateGloasDataColumnSidecar config setup seen store gloas
+        sidecar input.currentTimeMs input.subnetId)
+      return record outcome (·.recordGloasDataColumnSidecar gloas sidecar)
+    else if columns : .fusaka ≤ fork ∧ fork < .glamsterdam then
       let setup ← runForkChoice (embeddedSetup.mapError .kzg)
       let outcome ← runForkChoice (validateDataColumnSidecar config checks setup seen store columns
         sidecar input.currentTimeMs input.subnetId)
       return record outcome (·.recordDataColumnSidecar columns.2 sidecar)
-    else throw (0, "column sidecars travel only from Fulu, before Gloas")
+    else throw (0, "column sidecars travel only from Fulu")
   | "proposer_preferences" =>
     let signed ← decodeInput SignedProposerPreferences input.data
     if gloas : .glamsterdam ≤ fork then
@@ -319,44 +331,76 @@ def validateGossipInput {preset : Preset} {fork : Fork} (config : Config)
         signed input.currentTimeMs)
       return record outcome (·.recordExecutionPayloadBid signed)
     else throw (0, "the bids of builders travel only from Gloas")
+  | "inclusion_list" =>
+    let signed ← decodeInput SignedInclusionList input.data
+    let outcome ← runForkChoice
+      (validateInclusionList config checks seen store signed input.currentTimeMs)
+    return record outcome (·.recordInclusionList signed)
   | _ => throw (0, s!"gossip validation of the topic {topic} is not yet specified")
 
-/-- At Fulu: the outcomes of the partial sidecars of a case, after the headers it records first.
+/-- From Fulu: the outcomes of the partial sidecars of a case, after the headers it records first.
 
-The bytes of a message start with a kind byte, then the root of its group.
+The bytes of a message start with a kind byte, then the group of the message.
+
+The group holds the root of a block, and from Gloas also its slot.
 
 Kind 1 is a header that the node validated before the case, and gives no outcome.
 
-Kind 0 is a partial sidecar, whose column is the subnet field of the message. -/
+Kind 0 is a partial sidecar, whose column is the subnet field of the message.
+
+At Fulu a sidecar is checked against the recorded headers, and from Gloas against its block. -/
 def validatePartialInputs {preset : Preset} {fork : Fork} (config : Config)
     (checks : SignatureChecks) (store : Store preset fork) (inputs : List GossipInput) :
     Result ByteArray := do
-  if fulu : .fusaka ≤ fork ∧ fork < .glamsterdam then
+  if fulu : .fusaka ≤ fork then
     let setup ← runForkChoice (embeddedSetup.mapError .kzg)
+    let groupEnd := if .glamsterdam ≤ fork then 41 else 33
     let mut headers : PartialHeaders preset fork := []
     let mut out := ByteArray.empty
     for input in inputs do
-      if input.data.size < 33 then throw (0, "a partial message is cut short")
-      let root ← decodeInput Root (input.data.extract 1 33)
-      let rest := input.data.extract 33 input.data.size
+      if input.data.size < groupEnd then throw (0, "a partial message is cut short")
+      let group ← decodeInput (PartialDataColumnGroupID fork) (input.data.extract 1 groupEnd)
+      let rest := input.data.extract groupEnd input.data.size
       match (input.data.data[0]? : Option UInt8) with
       | some 1 =>
-        headers := headers.record root (← decodeInput (PartialDataColumnHeader preset fork) rest)
+        headers := headers.record group.beaconBlockRoot
+          (← decodeInput (PartialDataColumnHeader preset fork) rest)
       | some 0 =>
         let sidecar ← decodeInput (PartialDataColumnSidecar preset fork) rest
-        let (outcome, next) ← runForkChoice (validatePartialDataColumnSidecar config checks setup
-          headers store fulu sidecar input.currentTimeMs ⟨root⟩ input.subnetId)
-        headers := next
-        out := out ++ outcomeRecord outcome
+        if gloas : .glamsterdam ≤ fork then
+          let outcome ← runForkChoice (validateGloasPartialDataColumnSidecar setup store gloas
+            sidecar group input.subnetId)
+          out := out ++ outcomeRecord outcome
+        else
+          let (outcome, next) ← runForkChoice (validatePartialDataColumnSidecar config checks
+            setup headers store ⟨fulu, Nat.lt_of_not_le gloas⟩ sidecar input.currentTimeMs group
+            input.subnetId)
+          headers := next
+          out := out ++ outcomeRecord outcome
       | _ => throw (0, "the kind of a partial message is 0 or 1")
     return out
-  else throw (0, "partial column sidecars travel only at Fulu")
+  else throw (0, "partial column sidecars travel only from Fulu")
+
+/-- From Heze: the store after a message, which keeps a valid inclusion list as timely.
+
+The node passes a valid list to its fork choice, which the bids of later messages read.
+
+A list that arrives on gossip in its slot counts as timely, as the cases assume.
+
+Any other message leaves the store as it is. -/
+def recordGossipInclusionList {preset : Preset} {fork : Fork} (store : Store preset fork)
+    (topic : String) (outcome : ValidationResult) (input : GossipInput) :
+    Result (Store preset fork) := do
+  if heze : .hegota ≤ fork then
+    if topic = "inclusion_list" ∧ outcome.isAccept then
+      let signed ← decodeInput SignedInclusionList input.data
+      let lists := (store.inclusionLists heze).process signed true
+      return { store with inclusionLists := fun _ => lists }
+  return store
 
 /-- Validate the messages of a topic in turn, against the store of an anchor and later blocks.
 
-At Gloas seven topics are specified here: blocks, votes, aggregates and the four new topics.
-
-At Heze no topic is specified yet. -/
+Every topic is specified here up to Heze. -/
 @[export eth_consensus_gossip_validation]
 def gossipValidationExport
     (name fork anchorState anchorBlock blocks finalized topic messages replacements : ByteArray)
@@ -395,6 +439,7 @@ def gossipValidationExport
       validateGossipInput config checks store statuses messageTopic seen input
     seen := next
     out := out ++ outcomeRecord outcome
+    store ← recordGossipInclusionList store messageTopic outcome input
   return out
 
 end EthLib.Consensus.Exports

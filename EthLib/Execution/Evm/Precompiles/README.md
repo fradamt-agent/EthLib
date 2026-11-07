@@ -375,6 +375,8 @@ From Fusaka, each oversized length fails the call whatever the gas (`modexp_leng
 `modexp_lengthTooLarge_exponent`, `modexp_lengthTooLarge_modulus`).
 With every length in bounds, a call fails exactly when the gas is below the price, at every fork
 (`modexp_outOfGas`, `modexp_ok`).
+A call succeeds exactly when, from Fusaka, every length is in bounds and the gas covers the price (`modexp_eq_ok_iff`).
+It fails exactly on the first oversized length, from Fusaka, or else on too little gas (`modexp_eq_error_iff`).
 
 The price of each fork has its theorem (`gasCost_of_lt_berlin`, `gasCost_of_berlin_le`).
 From Fusaka, the price is at least 500, does not fall when a length grows, and is at most
@@ -497,6 +499,7 @@ The proofs are in `EthLib/Execution/Proofs/Evm/Precompiles/Blake2f.lean` and
 A call fails exactly on a wrong length, too little gas or a wrong flag byte, in that order
 (`blake2f_eq_error_iff`).
 Otherwise it returns F on the decoded fields (`blake2f_of_gas`, `output_ok`).
+A call succeeds exactly on a 213-byte input with enough gas and a flag byte of `0` or `1` (`blake2f_eq_ok_iff`).
 Every field is decoded with its own byte order, and the output words keep the order of the input
 (`readRounds_toNat`, `readWord_toNat`, `writeState_word`).
 Each word of the initialization vector is the square root of its prime, and each row of the

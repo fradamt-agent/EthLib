@@ -419,6 +419,10 @@ def consensus_rewards_deltas(name: str, fork: str, component: str, pre: bytes, c
     """The rewards and the penalties of each validator for one kind of vote, as SSZ bytes."""
     ...
 
+def consensus_rewards_deltas_batch(name: str, fork: str, components: list[bytes], pre: bytes, config: bytes) -> list[bytes]:
+    """The deltas of several kinds of vote for one state, as SSZ bytes, in the order of the kinds."""
+    ...
+
 def consensus_process_slots(name: str, fork: str, pre: bytes, config: bytes, slots: int) -> bytes:
     """The state some slots later, as SSZ bytes."""
     ...
@@ -429,6 +433,14 @@ def consensus_state_transition(name: str, fork: str, pre: bytes, block: bytes, c
 
 def consensus_state_transition_across(name: str, fork: str, pre: bytes, block_fork: str, block: bytes, config: bytes, verify: bool) -> bytes:
     """The state after a signed block of a fork, from a state of that fork or an earlier one."""
+    ...
+
+def consensus_state_transitions(name: str, fork: str, pre: bytes, blocks: list[bytes], config: bytes, verify: bool) -> bytes:
+    """The state after signed blocks in order, as SSZ bytes, with each state root checked."""
+    ...
+
+def consensus_state_transitions_across(name: str, fork: str, pre: bytes, block_forks: list[bytes], blocks: list[bytes], config: bytes, verify: bool) -> bytes:
+    """The state after signed blocks in order, as SSZ bytes, across the fork epochs on the way."""
     ...
 
 def consensus_initialize_genesis(name: str, fork: str, eth1_block_hash: bytes, deposits: bytes, config: bytes, eth1_timestamp: int, verify: bool) -> bytes:
@@ -473,6 +485,10 @@ def consensus_get_upcoming_proposal_slots(name: str, fork: str, state: bytes, co
 
 def consensus_get_validator_signature(name: str, fork: str, state: bytes, config: bytes, duty: str, object: bytes, secret_key: bytes) -> bytes:
     """The signature of the object of a duty, by a secret key of 32 big-endian bytes."""
+    ...
+
+def consensus_get_attestation_data(name: str, fork: str, state: bytes, head_root: bytes, head_slot: int, committee_index: int, payload_status: int) -> bytes:
+    """The attestation data of an attester, from the head block and the state at its slot, as SSZ."""
     ...
 
 def consensus_get_aggregate_signature(name: str, fork: str, attestations: list[bytes]) -> bytes:
@@ -521,6 +537,30 @@ def consensus_record_block_signing(interchange: bytes, pubkey: bytes, slot: int,
 
 def consensus_record_attestation_signing(interchange: bytes, pubkey: bytes, source_epoch: int, target_epoch: int, signing_root: bytes) -> bytes:
     """The record after a key signs a vote, as JSON text."""
+    ...
+
+def consensus_is_execution_block(name: str, fork: str, block: bytes) -> bool:
+    """From Bellatrix: whether a block carries a payload other than the empty one."""
+    ...
+
+def consensus_is_optimistic_candidate_block(name: str, fork: str, blocks: list[bytes], current_slot: int, safe_slots: int, block: bytes) -> bool:
+    """From Bellatrix: whether a block may be imported optimistically, given the known blocks."""
+    ...
+
+def consensus_latest_verified_ancestor(name: str, fork: str, blocks: list[bytes], optimistic_roots: bytes, root: bytes) -> bytes:
+    """From Bellatrix: the root of the latest block of a chain that is not optimistic."""
+    ...
+
+def consensus_on_valid_payload(name: str, fork: str, blocks: list[bytes], optimistic_roots: bytes, root: bytes) -> bytes:
+    """From Bellatrix: the optimistic roots after the payload of a block is found valid."""
+    ...
+
+def consensus_on_invalidated_payload(name: str, fork: str, blocks: list[bytes], optimistic_roots: bytes, first: bytes) -> bytes:
+    """From Bellatrix: the optimistic roots after a block is found to be the first invalid one."""
+    ...
+
+def consensus_is_optimistic_restricted_domain(domain_type: bytes) -> bool:
+    """Whether an optimistic validator may not sign under a domain type of 4 bytes."""
     ...
 
 def consensus_get_eth1_vote(name: str, fork: str, state: bytes, config: bytes, chain: list[bytes]) -> bytes:
@@ -1101,6 +1141,14 @@ def engine_new_payload_on_chain(config: bytes, state: bytes, recent: bytes, requ
 
 def engine_forkchoice_updated(tree: bytes, finalized: bytes, request: bytes) -> bytes:
     """The response to an `engine_forkchoiceUpdated` request, against a tree of payloads."""
+    ...
+
+def engine_prepare_execution_payload(name: str, fork: str, state: bytes, config: bytes, safe_block_hash: bytes, finalized_block_hash: bytes, suggested_fee_recipient: bytes, pow_chain: list[bytes]) -> bytes:
+    """From Bellatrix to Fulu: the forkchoice update of a proposer, as JSON text."""
+    ...
+
+def engine_prepare_execution_payload_gloas(name: str, fork: str, anchor_state: bytes, anchor_block: bytes, steps: bytes, config: bytes, head_root: bytes, state: bytes, safe_block_hash: bytes, finalized_block_hash: bytes, suggested_fee_recipient: bytes, head_status: int, target_gas_limit: int, verify: bool) -> bytes:
+    """From Gloas: the forkchoice update of a proposer, as JSON text."""
     ...
 
 def __getattr__(name: str) -> int: ...

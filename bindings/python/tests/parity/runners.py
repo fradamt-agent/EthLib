@@ -3,7 +3,8 @@
 import json
 import re
 from collections import Counter
-from functools import lru_cache
+from collections.abc import Callable
+from functools import cache, lru_cache
 from pathlib import Path
 from typing import cast
 
@@ -33,42 +34,37 @@ from transactions.test_inclusion_archive import names_in_block
 from transactions.test_transactions import CHAIN_ID, FORK_OF_NETWORK
 
 from . import legacy
-from .catalogue import Case
+from .catalogue import BOGOTA_NETWORKS, Case
 
 # The groups that no runner covers yet, with the pull requests of the plan that bring them.
-# A key is a runner, or a runner and a handler, of consensus-spec-tests, or a format of
-# execution-spec-tests.
+# A key is a runner, or a runner and a handler, of consensus-spec-tests.
+# A key may also be a format of execution-spec-tests.
 NOT_YET = {
     "epoch_processing": "beacon state transition (consensus track C13 to C40)",
-    "finality": "the state transition after Phase 0 (consensus track C26 to C40)",
+    "finality": "a fork or handler that the runner of finality does not cover yet",
     "fork": "beacon state transition (consensus track C13 to C40)",
     "genesis": "the genesis after Phase 0 (consensus track C26 to C40)",
     "operations": "beacon state transition (consensus track C13 to C40)",
-    "random": "the state transition after Phase 0 (consensus track C26 to C40)",
-    "sanity": "the state transition after Phase 0 (consensus track C26 to C40)",
-    "transition": "the Electra and Fulu blocks (consensus track C35 to C40)",
-    "networking": "gossip validation of blocks, votes and sidecars (consensus track C63, C64)",
+    "random": "a fork or handler that the runner of random does not cover yet",
+    "sanity": "a fork or handler that the runner of sanity does not cover yet",
+    "transition": "a fork or handler that the runner of transition does not cover yet",
 }
 
-# The plan at Gloas and Heze, by the steps of the track for Glamsterdam
-# and Hegotá. A key is a runner, a runner and a handler, or a format, as in NOT_YET.
+# The plan at Gloas and Heze, by the steps of the track for Glamsterdam and Hegotá.
+# A key is a runner, a runner and a handler, or a format, as in NOT_YET.
 # At these forks an entry here comes before the entry of NOT_YET.
-_GLOAS = {
-    "fast_confirmation": "the Gloas fast confirmation (G73)",
-    "networking": "the Gloas data columns and unchanged topics (G77)",
-    "networking/gossip_partial_data_column_sidecar": "Gloas partial data columns (G78)",
-    "ssz_static": "the Gloas partial data column containers (G65)",
-}
-_HEZE = {
-    "fast_confirmation": "the Gloas fast confirmation (G73) on the Heze fork choice (G86)",
-    "networking": "the Heze gossip and req/resp rules (G87)",
-    "ssz_static": "the partial data column containers at Heze (G80, G81)",
+_GLOAS: dict[str, str] = {}
+_HEZE: dict[str, str] = {}
+# The plan for the Bogota networks of each devnet, whose EIPs differ.
+# The steps wait for a merge into the Bogota fork branch, or a release of Bogota.
+_BOGOTA = {
+    "tests-heze-devnet": "the Bogota of the Heze devnet: EIP-7805 (G89) and EIP-8198 (G94)",
+    "tests-bogota-devnet": (
+        "the Bogota of the Bogota devnet: EIP-8141 (G90 to G93) and "
+        "EIP-8250, 8272, 7906, 8298, 8151, 4758 and 8253 (G95 to G101)"
+    ),
 }
 NOT_YET_AT = {
-    **{
-        fork: {"networking/gossip_beacon_block": "the Electra and Fulu blocks (C35 to C40)"}
-        for fork in ("electra", "fulu")
-    },
     "gloas": _GLOAS,
     "heze": _HEZE,
 }
@@ -257,7 +253,7 @@ _TIME_FORKS = [
     "bpo5",
     "glamsterdam",
 ]
-_NETWORK_FORK = {**FORK_OF_NETWORK, "BPO1": "bpo1", "BPO2": "bpo2"}
+_NETWORK_FORK = {**FORK_OF_NETWORK, "BPO1": "bpo1", "BPO2": "bpo2", "BPO3": "bpo3", "BPO4": "bpo4"}
 
 # The block exceptions of the blockchain tests, by the error of the state transition.
 _BLOCK_EXCEPTIONS = {
@@ -493,9 +489,9 @@ def _engine_payload(fixture: dict, payload: dict, state: bytes, recent: list) ->
         assert status["status"] == "VALID", status
         assert status["latestValidHash"] == payload["params"][0]["blockHash"]
         # A valid payload gives its header and the accounts after it.
-        header, accounts = cast(bytes, header), cast(list, accounts)
+        header, accounts = cast(bytes, header), cast(bytes, accounts)
         fork = active_fork(chain_of(fixture)[1], rlp.decode(header))
-        return "valid", rlp.encode(accounts), (recent + [(fork, header, [])])[-256:]
+        return "valid", accounts, (recent + [(fork, header, [])])[-256:]
     names = expected.split("|")
     code, _, message = status["validationError"].partition(": ")
     if int(code) == 405:
@@ -506,16 +502,40 @@ def _engine_payload(fixture: dict, payload: dict, state: bytes, recent: list) ->
     return "invalid", state, recent
 
 
-def run_engine_chain(fixture: dict, pre: dict, genesis: dict) -> Counter:
-    """Run every payload of an engine fixture on its chain; return the kind of each outcome."""
+def _start(pre: dict, genesis: dict, fork: str) -> tuple[bytes, bytes]:
+    """The state of a chain before its first payload, and the header of its genesis block."""
+    from ethlib.serialization import rlp
+
+    return _pre_state(pre), rlp.encode(rlp.decode(genesis_of(fork, genesis, pre))[0])
+
+
+# The fixtures of a group of blockchain_test_engine_x share one state, of up to 14 MB of JSON.
+# Their state and genesis block take most of the time of a case, so a process computes them once.
+@cache
+def _shared_start(path: Path, fork: str) -> tuple[bytes, bytes]:
+    shared = _fixtures(path)
+    return _start(shared["pre"], shared["genesis"], fork)
+
+
+def run_engine_chain(
+    fixture: dict,
+    pre: dict,
+    genesis: dict,
+    start: Callable[[str], tuple[bytes, bytes]] | None = None,
+) -> Counter:
+    """Run every payload of an engine fixture on its chain; return the kind of each outcome.
+
+    The function `start` gives the state and the genesis header at a fork, when they are known.
+    """
     from ethlib.cryptography.keccak import keccak256
     from ethlib.serialization import rlp
 
     header = _header_of_json(genesis)
     assert "0x" + keccak256(header).hex() == genesis["hash"]
-    state = _pre_state(pre)
-    recent = [(active_fork(chain_of(fixture)[1], rlp.decode(header)), header, [])]
-    assert rlp.encode(rlp.decode(genesis_of(recent[0][0], genesis, pre))[0]) == header
+    fork = active_fork(chain_of(fixture)[1], rlp.decode(header))
+    state, computed = start(fork) if start else _start(pre, genesis, fork)
+    recent = [(fork, header, [])]
+    assert computed == header
     kinds = Counter()
     for payload in fixture["engineNewPayloads"]:
         kind, state, recent = _engine_payload(fixture, payload, state, recent)
@@ -533,8 +553,11 @@ def _blockchain_test_engine_x(root: Path, case: Case) -> None:
     # The fixtures of one group share their state and genesis in a file named by its hash.
     fixture = _fixtures(root / case.path)[case.id]
     directory = root.joinpath(*case.path.split("/")[:2])
-    shared = _fixtures(directory / "pre_alloc" / f"{fixture['preHash']}.json")
-    run_engine_chain(fixture, shared["pre"], shared["genesis"])
+    path = directory / "pre_alloc" / f"{fixture['preHash']}.json"
+    shared = _fixtures(path)
+    run_engine_chain(
+        fixture, shared["pre"], shared["genesis"], lambda fork: _shared_start(path, fork)
+    )
 
 
 def _shuffle(root: Path, case: Case) -> None:
@@ -572,8 +595,8 @@ def _gossip_data_column_sidecar(root: Path, case: Case) -> None:
     from consensus.test_data_column import run_gossip_case
     from consensus.test_gossip_validation import run_case
 
-    # Before Gloas the store is specified, so the whole validation runs; from Gloas only the
-    # sidecar checks that read no store do.
+    # Where the store is specified, the whole validation runs.
+    # Elsewhere only the sidecar checks that read no store do.
     if runs_gossip(case.fork, "gossip_data_column_sidecar"):
         run_case(case.preset, case.fork, root / case.path)
     else:
@@ -731,6 +754,8 @@ RUNNERS = {
 
 def runner(case: Case):
     """The runner of a case, or `None` if EthLib cannot run it yet."""
+    if case.fork in BOGOTA_NETWORKS:
+        return None
     run = RUNNERS.get(case.group)
     if run is _ssz_static and case.fork not in _container_forks(case.group.split("/")[1]):
         return None
@@ -761,6 +786,8 @@ def runner(case: Case):
 
 def plan(case: Case) -> str | None:
     """The plan for a case that no runner covers: its fork's entry first, then the general one."""
+    if case.fork in BOGOTA_NETWORKS:
+        return _BOGOTA[case.suite]
     for table in (NOT_YET_AT.get(case.fork, {}), NOT_YET):
         if entry := table.get(case.group) or table.get(case.group.split("/")[0]):
             return entry

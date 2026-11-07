@@ -490,6 +490,32 @@ except_into_pybytes(
 }
 
 PyObject*
+except_into_pybytes_list(
+  lean_object* result,
+  PyObject* error_class
+) {
+  if (is_error(result)) {
+    raise_lean_error(result, error_class);
+    return NULL;
+  }
+  lean_object* items = lean_ctor_get(result, 0);
+  size_t n = lean_array_size(items);
+  PyObject* out = PyList_New((Py_ssize_t) n);
+  for (size_t i = 0; out && i < n; i++) {
+    lean_object* ba = lean_array_get_core(items, i);
+    PyObject* item = PyBytes_FromStringAndSize(
+      (const char*) lean_sarray_cptr(ba), (Py_ssize_t) lean_sarray_size(ba));
+    if (!item) {
+      Py_CLEAR(out);
+      break;
+    }
+    PyList_SET_ITEM(out, (Py_ssize_t) i, item);
+  }
+  lean_dec(result);
+  return out;
+}
+
+PyObject*
 except_into_pyint(
   lean_object* result,
   PyObject* error_class
@@ -714,6 +740,8 @@ static PyMethodDef methods[] = {
    DOC_consensus_process_epoch},
   {"consensus_rewards_deltas", py_consensus_rewards_deltas, METH_VARARGS,
    DOC_consensus_rewards_deltas},
+  {"consensus_rewards_deltas_batch", py_consensus_rewards_deltas_batch, METH_VARARGS,
+   DOC_consensus_rewards_deltas_batch},
   {"consensus_upgrade_state", py_consensus_upgrade_state, METH_VARARGS,
    DOC_consensus_upgrade_state},
   {"consensus_process_slots", py_consensus_process_slots, METH_VARARGS,
@@ -722,6 +750,10 @@ static PyMethodDef methods[] = {
    DOC_consensus_state_transition},
   {"consensus_state_transition_across", py_consensus_state_transition_across, METH_VARARGS,
    DOC_consensus_state_transition_across},
+  {"consensus_state_transitions", py_consensus_state_transitions, METH_VARARGS,
+   DOC_consensus_state_transitions},
+  {"consensus_state_transitions_across", py_consensus_state_transitions_across, METH_VARARGS,
+   DOC_consensus_state_transitions_across},
   {"consensus_fork_choice", py_consensus_fork_choice, METH_VARARGS, DOC_consensus_fork_choice},
   {"consensus_gossip_validation", py_consensus_gossip_validation, METH_VARARGS,
     DOC_consensus_gossip_validation},
@@ -750,6 +782,8 @@ static PyMethodDef methods[] = {
    METH_VARARGS, DOC_consensus_get_upcoming_proposal_slots},
   {"consensus_get_validator_signature", py_consensus_get_validator_signature, METH_VARARGS,
    DOC_consensus_get_validator_signature},
+  {"consensus_get_attestation_data", py_consensus_get_attestation_data, METH_VARARGS,
+   DOC_consensus_get_attestation_data},
   {"consensus_get_aggregate_signature", py_consensus_get_aggregate_signature, METH_VARARGS,
    DOC_consensus_get_aggregate_signature},
   {"consensus_construct_attestation", py_consensus_construct_attestation, METH_VARARGS,
@@ -779,6 +813,18 @@ static PyMethodDef methods[] = {
    DOC_consensus_record_block_signing},
   {"consensus_record_attestation_signing", py_consensus_record_attestation_signing,
    METH_VARARGS, DOC_consensus_record_attestation_signing},
+  {"consensus_is_execution_block", py_consensus_is_execution_block, METH_VARARGS,
+   DOC_consensus_is_execution_block},
+  {"consensus_is_optimistic_candidate_block", py_consensus_is_optimistic_candidate_block,
+   METH_VARARGS, DOC_consensus_is_optimistic_candidate_block},
+  {"consensus_latest_verified_ancestor", py_consensus_latest_verified_ancestor, METH_VARARGS,
+   DOC_consensus_latest_verified_ancestor},
+  {"consensus_on_valid_payload", py_consensus_on_valid_payload, METH_VARARGS,
+   DOC_consensus_on_valid_payload},
+  {"consensus_on_invalidated_payload", py_consensus_on_invalidated_payload, METH_VARARGS,
+   DOC_consensus_on_invalidated_payload},
+  {"consensus_is_optimistic_restricted_domain", py_consensus_is_optimistic_restricted_domain,
+   METH_VARARGS, DOC_consensus_is_optimistic_restricted_domain},
   {"consensus_get_eth1_vote", py_consensus_get_eth1_vote, METH_VARARGS,
    DOC_consensus_get_eth1_vote},
   {"consensus_get_eth1_pending_deposit_count", py_consensus_get_eth1_pending_deposit_count,
@@ -955,6 +1001,10 @@ static PyMethodDef methods[] = {
    DOC_engine_new_payload_on_chain},
   {"engine_forkchoice_updated", py_engine_forkchoice_updated, METH_VARARGS,
    DOC_engine_forkchoice_updated},
+  {"engine_prepare_execution_payload", py_engine_prepare_execution_payload, METH_VARARGS,
+   DOC_engine_prepare_execution_payload},
+  {"engine_prepare_execution_payload_gloas", py_engine_prepare_execution_payload_gloas,
+   METH_VARARGS, DOC_engine_prepare_execution_payload_gloas},
   {NULL, NULL, 0, NULL},
 };
 

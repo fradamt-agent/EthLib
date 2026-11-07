@@ -115,6 +115,15 @@ except_into_pybytes(
   PyObject* error_class
 );
 
+/* The `Array ByteArray` of a successful result as a Python `list` of `bytes`.
+ *
+ * On an error it returns NULL with an exception set. */
+PyObject*
+except_into_pybytes_list(
+  lean_object* result,
+  PyObject* error_class
+);
+
 /* The `UInt64` of a successful result as a Python `int`, or NULL with an exception set. */
 PyObject*
 except_into_pyint(
@@ -324,9 +333,12 @@ PyObject* py_consensus_process_operation (PyObject* self, PyObject* args);
 PyObject* py_consensus_upgrade_state (PyObject* self, PyObject* args);
 PyObject* py_consensus_process_epoch (PyObject* self, PyObject* args);
 PyObject* py_consensus_rewards_deltas (PyObject* self, PyObject* args);
+PyObject* py_consensus_rewards_deltas_batch (PyObject* self, PyObject* args);
 PyObject* py_consensus_process_slots (PyObject* self, PyObject* args);
 PyObject* py_consensus_state_transition (PyObject* self, PyObject* args);
 PyObject* py_consensus_state_transition_across (PyObject* self, PyObject* args);
+PyObject* py_consensus_state_transitions (PyObject* self, PyObject* args);
+PyObject* py_consensus_state_transitions_across (PyObject* self, PyObject* args);
 PyObject* py_consensus_fork_choice (PyObject* self, PyObject* args);
 PyObject* py_consensus_gossip_validation (PyObject* self, PyObject* args);
 PyObject* py_consensus_initialize_genesis (PyObject* self, PyObject* args);
@@ -341,12 +353,19 @@ PyObject* py_consensus_get_ptc_assignment (PyObject* self, PyObject* args);
 PyObject* py_consensus_get_upcoming_proposal_slots (PyObject* self, PyObject* args);
 PyObject* py_consensus_get_validator_signature (PyObject* self, PyObject* args);
 PyObject* py_consensus_get_eth1_vote (PyObject* self, PyObject* args);
+PyObject* py_consensus_is_execution_block (PyObject* self, PyObject* args);
+PyObject* py_consensus_is_optimistic_candidate_block (PyObject* self, PyObject* args);
+PyObject* py_consensus_latest_verified_ancestor (PyObject* self, PyObject* args);
+PyObject* py_consensus_on_valid_payload (PyObject* self, PyObject* args);
+PyObject* py_consensus_on_invalidated_payload (PyObject* self, PyObject* args);
+PyObject* py_consensus_is_optimistic_restricted_domain (PyObject* self, PyObject* args);
 PyObject* py_consensus_read_slashing_interchange (PyObject* self, PyObject* args);
 PyObject* py_consensus_import_slashing_interchange (PyObject* self, PyObject* args);
 PyObject* py_consensus_check_block_signing (PyObject* self, PyObject* args);
 PyObject* py_consensus_check_attestation_signing (PyObject* self, PyObject* args);
 PyObject* py_consensus_record_block_signing (PyObject* self, PyObject* args);
 PyObject* py_consensus_record_attestation_signing (PyObject* self, PyObject* args);
+PyObject* py_consensus_get_attestation_data (PyObject* self, PyObject* args);
 PyObject* py_consensus_get_aggregate_signature (PyObject* self, PyObject* args);
 PyObject* py_consensus_construct_attestation (PyObject* self, PyObject* args);
 PyObject* py_consensus_construct_single_attestation (PyObject* self, PyObject* args);
@@ -500,5 +519,7 @@ PyObject* py_active_fork                                  (PyObject* self, PyObj
 PyObject* py_engine_new_payload                          (PyObject* self, PyObject* args);
 PyObject* py_engine_new_payload_on_chain                 (PyObject* self, PyObject* args);
 PyObject* py_engine_forkchoice_updated                   (PyObject* self, PyObject* args);
+PyObject* py_engine_prepare_execution_payload            (PyObject* self, PyObject* args);
+PyObject* py_engine_prepare_execution_payload_gloas      (PyObject* self, PyObject* args);
 
 #endif /* ETHCS_WRAPPERS_H */

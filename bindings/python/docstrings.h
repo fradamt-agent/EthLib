@@ -314,6 +314,9 @@
 #define DOC_consensus_rewards_deltas \
   "The rewards and the penalties of each validator for one kind of vote, as SSZ bytes."
 
+#define DOC_consensus_rewards_deltas_batch \
+  "The deltas of several kinds of vote for one state, as SSZ bytes, in the order of the kinds."
+
 #define DOC_consensus_process_slots \
   "The state some slots later, as SSZ bytes."
 
@@ -322,6 +325,12 @@
 
 #define DOC_consensus_state_transition_across \
   "The state after a signed block of a fork, from a state of that fork or an earlier one."
+
+#define DOC_consensus_state_transitions \
+  "The state after signed blocks in order, as SSZ bytes, with each state root checked."
+
+#define DOC_consensus_state_transitions_across \
+  "The state after signed blocks in order, as SSZ bytes, across the fork epochs on the way."
 
 #define DOC_consensus_initialize_genesis \
   "The candidate genesis state of a block of the proof-of-work chain, as SSZ bytes."
@@ -355,6 +364,9 @@
 
 #define DOC_consensus_get_validator_signature \
   "The signature of the object of a duty, by a secret key of 32 big-endian bytes."
+
+#define DOC_consensus_get_attestation_data \
+  "The attestation data of an attester, from the head block and the state at its slot, as SSZ."
 
 #define DOC_consensus_get_aggregate_signature \
   "The aggregate of the signatures of attestations, as 96 bytes."
@@ -391,6 +403,24 @@
 
 #define DOC_consensus_record_attestation_signing \
   "The record after a key signs a vote, as JSON text."
+
+#define DOC_consensus_is_execution_block \
+  "From Bellatrix: whether a block carries a payload other than the empty one."
+
+#define DOC_consensus_is_optimistic_candidate_block \
+  "From Bellatrix: whether a block may be imported optimistically, given the known blocks."
+
+#define DOC_consensus_latest_verified_ancestor \
+  "From Bellatrix: the root of the latest block of a chain that is not optimistic."
+
+#define DOC_consensus_on_valid_payload \
+  "From Bellatrix: the optimistic roots after the payload of a block is found valid."
+
+#define DOC_consensus_on_invalidated_payload \
+  "From Bellatrix: the optimistic roots after a block is found to be the first invalid one."
+
+#define DOC_consensus_is_optimistic_restricted_domain \
+  "Whether an optimistic validator may not sign under a domain type of 4 bytes."
 
 #define DOC_consensus_get_eth1_vote \
   "Before Heze: the Eth1 vote of a proposer on a state, as the SSZ bytes of the Eth1 data."
@@ -826,5 +856,11 @@
 
 #define DOC_engine_forkchoice_updated \
   "The response to an `engine_forkchoiceUpdated` request, against a tree of payloads."
+
+#define DOC_engine_prepare_execution_payload \
+  "From Bellatrix to Fulu: the forkchoice update of a proposer, as JSON text."
+
+#define DOC_engine_prepare_execution_payload_gloas \
+  "From Gloas: the forkchoice update of a proposer, as JSON text."
 
 #endif /* ETHLIB_DOCSTRINGS_H */

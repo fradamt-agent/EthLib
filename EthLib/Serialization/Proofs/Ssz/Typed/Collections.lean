@@ -9,6 +9,8 @@ public import EthLib.Serialization.Proofs.Ssz.Typed.Basic
 A collection converts each element on its own, so its laws follow from those of its elements.
 
 A count that the type fixes or bounds is checked when the collection reads back.
+
+A byte list reads back from bytes exactly when they fit its limit and the offset width.
 -/
 
 @[expose] public section
@@ -137,6 +139,24 @@ instance {limit : Nat} : LawfulSszType (SszList UInt8 limit) where
       rfl
     · simp [within] at made
 
+/-- A byte list reads back from bytes exactly when they fit the offset width, as those same bytes.
+
+The limit of the list is the bound that the read value carries. -/
+theorem SszList.deserialize_uint8_eq_ok_iff {limit : Nat} {data : ByteArray}
+    {l : SszList UInt8 limit} :
+    SszType.deserialize (SszList UInt8 limit) data = .ok l ↔
+      data.size < 2 ^ (8 * bytesPerOffset) ∧ l.data = data.data := by
+  obtain ⟨items, bound⟩ := l
+  have size : data.size = data.data.size := rfl
+  simp only [SszType.deserialize, SszType.decode, Ssz.deserialize, bind, Except.bind, pure,
+    Except.pure, throw, throwThe, MonadExceptOf.throw]
+  by_cases wide : 2 ^ (8 * bytesPerOffset) ≤ data.size
+  · simp [wide, Nat.not_lt.mpr wide]
+  · by_cases over : limit < data.size
+    · have : items ≠ data.data := fun same => by subst same; omega
+      simp [wide, over, Nat.lt_of_not_le wide, this]
+    · simp [wide, over, Nat.lt_of_not_le wide, Nat.le_of_not_lt over, eq_comm]
+
 instance {length : Nat} [NeZero length] : LawfulSszType (Bitvector length) where
   wellFormed := by simp [desc, Desc.wellFormed, NeZero.ne length]
   fits b := .bitVector b.bits.size_toArray
@@ -193,9 +213,8 @@ theorem listSlices_empty (element : Desc) (limit : Option Nat) :
 /-- The empty bytes decode to the empty progressive list. -/
 theorem deserialize_progressiveList_empty {α : Type} [SszType α] :
     SszType.deserialize (ProgressiveList α) ByteArray.empty = .ok ⟨#[]⟩ := by
-  unfold SszType.deserialize
+  unfold SszType.deserialize SszType.decode
   show (do SszType.ofValue (← Ssz.deserialize _ #[])) = _
-  simp only [SszType.desc]
   rw [Ssz.deserialize]
   simp [listSlices_empty, deserializeEach_nil, bind, Except.bind, pure, Except.pure,
       SszType.ofValue, SszType.ofElements, SszType.ofElementsOnto, Functor.map, Except.map]

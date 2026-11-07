@@ -361,6 +361,9 @@ def bindings : List Binding := [
   ⟨"consensus_rewards_deltas", `EthLib.Consensus.Exports.rewardsDeltasExport,
     "(name: str, fork: str, component: str, pre: bytes, config: bytes) -> bytes",
     [`EthLib.Consensus.TransitionError], some "TransitionError"⟩,
+  ⟨"consensus_rewards_deltas_batch", `EthLib.Consensus.Exports.rewardsDeltasBatchExport,
+    "(name: str, fork: str, components: list[bytes], pre: bytes, config: bytes) -> list[bytes]",
+    [`EthLib.Consensus.TransitionError], some "TransitionError"⟩,
   ⟨"consensus_process_slots", `EthLib.Consensus.Exports.processSlotsExport,
     "(name: str, fork: str, pre: bytes, config: bytes, slots: int) -> bytes",
     [`EthLib.Consensus.TransitionError], some "TransitionError"⟩,
@@ -371,6 +374,15 @@ def bindings : List Binding := [
     `EthLib.Consensus.Exports.stateTransitionAcrossExport,
     "(name: str, fork: str, pre: bytes, block_fork: str, block: bytes, config: bytes, " ++
       "verify: bool) -> bytes",
+    [`EthLib.Consensus.TransitionError], some "TransitionError"⟩,
+  ⟨"consensus_state_transitions", `EthLib.Consensus.Exports.stateTransitionsExport,
+    "(name: str, fork: str, pre: bytes, blocks: list[bytes], config: bytes, verify: bool) " ++
+      "-> bytes",
+    [`EthLib.Consensus.TransitionError], some "TransitionError"⟩,
+  ⟨"consensus_state_transitions_across",
+    `EthLib.Consensus.Exports.stateTransitionsAcrossExport,
+    "(name: str, fork: str, pre: bytes, block_forks: list[bytes], blocks: list[bytes], " ++
+      "config: bytes, verify: bool) -> bytes",
     [`EthLib.Consensus.TransitionError], some "TransitionError"⟩,
   ⟨"consensus_initialize_genesis", `EthLib.Consensus.Exports.initializeGenesisExport,
     "(name: str, fork: str, eth1_block_hash: bytes, deposits: bytes, config: bytes, " ++
@@ -417,6 +429,10 @@ def bindings : List Binding := [
     `EthLib.Consensus.Exports.getValidatorSignatureExport,
     "(name: str, fork: str, state: bytes, config: bytes, duty: str, object: bytes, " ++
       "secret_key: bytes) -> bytes",
+    [`EthLib.Consensus.ValidatorDutyError], some "ValidatorDutyError"⟩,
+  ⟨"consensus_get_attestation_data", `EthLib.Consensus.Exports.getAttestationDataExport,
+    "(name: str, fork: str, state: bytes, head_root: bytes, head_slot: int, " ++
+      "committee_index: int, payload_status: int) -> bytes",
     [`EthLib.Consensus.ValidatorDutyError], some "ValidatorDutyError"⟩,
   ⟨"consensus_get_aggregate_signature",
     `EthLib.Consensus.Exports.getAggregateSignatureExport,
@@ -467,6 +483,27 @@ def bindings : List Binding := [
     "(interchange: bytes, pubkey: bytes, source_epoch: int, target_epoch: int, " ++
       "signing_root: bytes) -> bytes",
     [`EthLib.Consensus.SlashingProtectionError], some "SlashingProtectionError"⟩,
+  ⟨"consensus_is_execution_block", `EthLib.Consensus.Exports.isExecutionBlockExport,
+    "(name: str, fork: str, block: bytes) -> bool",
+    [`EthLib.Consensus.ForkChoiceError], some "ForkChoiceError"⟩,
+  ⟨"consensus_is_optimistic_candidate_block",
+    `EthLib.Consensus.Exports.isOptimisticCandidateBlockExport,
+    "(name: str, fork: str, blocks: list[bytes], current_slot: int, safe_slots: int, " ++
+      "block: bytes) -> bool",
+    [`EthLib.Consensus.ForkChoiceError], some "ForkChoiceError"⟩,
+  ⟨"consensus_latest_verified_ancestor",
+    `EthLib.Consensus.Exports.latestVerifiedAncestorExport,
+    "(name: str, fork: str, blocks: list[bytes], optimistic_roots: bytes, root: bytes) -> bytes",
+    [`EthLib.Consensus.ForkChoiceError], some "ForkChoiceError"⟩,
+  ⟨"consensus_on_valid_payload", `EthLib.Consensus.Exports.onValidPayloadExport,
+    "(name: str, fork: str, blocks: list[bytes], optimistic_roots: bytes, root: bytes) -> bytes",
+    [`EthLib.Consensus.ForkChoiceError], some "ForkChoiceError"⟩,
+  ⟨"consensus_on_invalidated_payload", `EthLib.Consensus.Exports.onInvalidatedPayloadExport,
+    "(name: str, fork: str, blocks: list[bytes], optimistic_roots: bytes, first: bytes) -> bytes",
+    [`EthLib.Consensus.ForkChoiceError], some "ForkChoiceError"⟩,
+  ⟨"consensus_is_optimistic_restricted_domain",
+    `EthLib.Consensus.Exports.isOptimisticRestrictedDomainExport,
+    "(domain_type: bytes) -> bool", [], some "ForkChoiceError"⟩,
   ⟨"consensus_get_eth1_vote", `EthLib.Consensus.Exports.getEth1VoteExport,
     "(name: str, fork: str, state: bytes, config: bytes, chain: list[bytes]) -> bytes",
     [`EthLib.Consensus.ProposerError], some "ProposerError"⟩,
@@ -950,7 +987,19 @@ def bindings : List Binding := [
     [`EthLib.Engine.EngineError], some "EngineError"⟩,
   ⟨"engine_forkchoice_updated", `EthLib.Engine.Exports.forkchoiceUpdatedExport,
     "(tree: bytes, finalized: bytes, request: bytes) -> bytes",
-    [`EthLib.Engine.EngineError], some "EngineError"⟩
+    [`EthLib.Engine.EngineError], some "EngineError"⟩,
+  ⟨"engine_prepare_execution_payload", `EthLib.Engine.Exports.prepareExecutionPayloadExport,
+    "(name: str, fork: str, state: bytes, config: bytes, safe_block_hash: bytes, " ++
+      "finalized_block_hash: bytes, suggested_fee_recipient: bytes, pow_chain: list[bytes]) " ++
+      "-> bytes",
+    [`EthLib.Consensus.ProposerError], some "ProposerError"⟩,
+  ⟨"engine_prepare_execution_payload_gloas",
+    `EthLib.Engine.Exports.prepareExecutionPayloadGloasExport,
+    "(name: str, fork: str, anchor_state: bytes, anchor_block: bytes, steps: bytes, " ++
+      "config: bytes, head_root: bytes, state: bytes, safe_block_hash: bytes, " ++
+      "finalized_block_hash: bytes, suggested_fee_recipient: bytes, head_status: int, " ++
+      "target_gas_limit: int, verify: bool) -> bytes",
+    [`EthLib.Consensus.ProposerError], some "ProposerError"⟩
 ]
 
 /-- The table as plain data, which the generator reads without the structure.

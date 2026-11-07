@@ -18,12 +18,12 @@ FILES = Path(__file__).resolve().parents[4] / "tests" / "consensus" / "gossip"
 
 # The topics that EthLib validates, with the first fork of their cases.
 TOPICS = {
-    "attester_slashing": "altair",
-    "proposer_slashing": "altair",
-    "voluntary_exit": "altair",
-    "beacon_block": "altair",
-    "beacon_attestation": "altair",
-    "beacon_aggregate_and_proof": "altair",
+    "attester_slashing": "phase0",
+    "proposer_slashing": "phase0",
+    "voluntary_exit": "phase0",
+    "beacon_block": "phase0",
+    "beacon_attestation": "phase0",
+    "beacon_aggregate_and_proof": "phase0",
     "sync_committee_message": "altair",
     "sync_committee_contribution_and_proof": "altair",
     "bls_to_execution_change": "capella",
@@ -34,21 +34,22 @@ TOPICS = {
     "execution_payload_envelope": "gloas",
     "payload_attestation_message": "gloas",
     "execution_payload_bid": "gloas",
+    "inclusion_list": "heze",
 }
-SPECIFIED = ("altair", "bellatrix", "capella", "deneb", "electra", "fulu", "gloas")
-# The topics whose cases stop at a fork other than Fulu, with their last fork.
+SPECIFIED = (
+    "phase0",
+    "altair",
+    "bellatrix",
+    "capella",
+    "deneb",
+    "electra",
+    "fulu",
+    "gloas",
+    "heze",
+)
+# The topics whose cases stop before Heze, with their last fork.
 # Blob sidecars travel only at Deneb and Electra.
-# The topics that stop at Gloas wait for their Heze rules.
-LAST = {
-    "blob_sidecar": "electra",
-    "beacon_block": "gloas",
-    "beacon_attestation": "gloas",
-    "beacon_aggregate_and_proof": "gloas",
-    "proposer_preferences": "gloas",
-    "execution_payload_envelope": "gloas",
-    "payload_attestation_message": "gloas",
-    "execution_payload_bid": "gloas",
-}
+LAST = {"blob_sidecar": "electra"}
 
 # The release archives that hold the cases.
 ARCHIVES = {
@@ -59,10 +60,12 @@ ARCHIVES = {
 _YAML = YAML(typ="safe")
 
 # The topics of the messages that a case of another topic sends, by the prefix of their file.
-# A bid case sends the preferences and the envelopes that its bids rely on.
+# A bid case sends the preferences and the envelopes.
+# From Heze it also sends the inclusion lists that its bids rely on.
 _MESSAGE_TOPICS = {
     "proposer_preferences": "proposer_preferences",
     "execution_payload_envelope": "execution_payload",
+    "inclusion_list": "inclusion_list",
 }
 
 # The statuses of a payload, as the specification numbers them.
@@ -77,7 +80,7 @@ def runs(fork: str, handler: str) -> bool:
         and topic in TOPICS
         and SPECIFIED.index(TOPICS[topic])
         <= SPECIFIED.index(fork)
-        <= SPECIFIED.index(LAST.get(topic, "fulu"))
+        <= SPECIFIED.index(LAST.get(topic, "heze"))
     )
 
 
@@ -96,7 +99,7 @@ def _partial_messages(case: Path, meta: dict) -> list:
 
     Each message starts with its kind, 1 for such a header and 0 for a sidecar.
 
-    The root of its block follows.
+    The group of the message follows: the root of its block, and from Gloas its slot.
 
     The column of a sidecar takes the place of the subnet.
     """
@@ -233,7 +236,7 @@ def test_case(preset, fork, case):
     run_case(preset, fork, case)
 
 
-@pytest.mark.parametrize("preset, fork, case", _archive_cases())
+@archives.parametrize("preset, fork, case", _archive_cases)
 def test_archive_case(preset, fork, case):
     run_case(preset, fork, case)
 
