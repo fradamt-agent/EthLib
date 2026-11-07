@@ -17,8 +17,9 @@ The previous justified checkpoint is at least two epochs back, from epoch 2 on.
 
 In epochs 0 and 1 it is the genesis checkpoint, as is the current justified one.
 
-The reason is that the call at the end of an epoch makes the old current justified checkpoint
-the previous one, and the current one is at most the previous epoch.
+The call at the end of an epoch makes the old current justified checkpoint the previous one.
+
+The current one is at most the previous epoch.
 
 The first two epochs weigh nothing, so their checkpoints stay those of genesis.
 -/
@@ -57,9 +58,11 @@ theorem genesis_previousSettled {forked : ForkedBeaconState preset}
   have frame := (Frame.foldlM (fun _ _ _ ok => frame_genesisDeposit ok) depositedOk).trans
     (Frame.foldlM (fun _ _ _ ok => frame_activateAtGenesis ok) activatedOk)
   have slot : forked.state.slot = GENESIS_SLOT := by rw [← same]; exact frame.slot
-  have previous : forked.state.previousJustifiedCheckpoint = ⟨GENESIS_EPOCH, Vector.replicate 32 0⟩ := by
+  have previous :
+      forked.state.previousJustifiedCheckpoint = ⟨GENESIS_EPOCH, Vector.replicate 32 0⟩ := by
     rw [← same]; exact frame.previousJustified
-  have current : forked.state.currentJustifiedCheckpoint = ⟨GENESIS_EPOCH, Vector.replicate 32 0⟩ := by
+  have current :
+      forked.state.currentJustifiedCheckpoint = ⟨GENESIS_EPOCH, Vector.replicate 32 0⟩ := by
     rw [← same]; exact frame.currentJustified
   have epoch : (getCurrentEpoch forked.state).toNat = 0 := by
     rw [getCurrentEpoch_toNat, slot]
@@ -232,8 +235,9 @@ theorem recordSource_epoch_lt {forked : ForkedBeaconState preset}
 
 Take a chain from a state reached from genesis, and a call of it that justified a checkpoint.
 
-The call's source for the checkpoint's epoch is one of the start's checkpoints, or a call of the
-chain justified it.
+The call's source for the checkpoint's epoch is one of the start's checkpoints.
+
+Or a call of the chain justified it.
 
 Its epoch is below the checkpoint's. -/
 theorem CallRecord.source {start after : ForkedBeaconState preset} {fork : Fork}

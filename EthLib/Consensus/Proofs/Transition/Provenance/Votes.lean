@@ -296,7 +296,8 @@ theorem votesKept_processDeposit {before : fork < .hegota} {deposit : Deposit}
     (computed : processDeposit config checks before state deposit = .ok after) :
     VotesKept state after := by
   obtain ⟨_, _, next, _, applied⟩ := processDeposit_ok computed
-  exact (show VotesKept state { state with eth1DepositIndex := fun _ => next } from .of_votes rfl).trans
+  exact (show VotesKept state { state with eth1DepositIndex :=
+    fun _ => next } from .of_votes rfl).trans
     (votesKept_applyDeposit applied)
 
 theorem votesKept_processVoluntaryExit {signed : SignedVoluntaryExit}
@@ -310,7 +311,8 @@ theorem votesKept_processVoluntaryExit {signed : SignedVoluntaryExit}
 /-! ## Requests of the execution layer -/
 
 theorem votesKept_processDepositRequest {electra : .pectra ≤ fork} {request : DepositRequest}
-    (computed : processDepositRequest state electra request = .ok after) : VotesKept state after := by
+    (computed : processDepositRequest state electra request = .ok after) :
+    VotesKept state after := by
   obtain ⟨start, recorded⟩ :=
     recordDepositRequestsStart_eq (state := state) (index := request.index)
   simp only [processDepositRequest, recorded, liftAccessor_ok, addPendingDeposit, bind_ok_iff,
@@ -329,7 +331,8 @@ theorem votesKept_computeExitEpochAndUpdateChurn {electra : .pectra ≤ fork} {e
   cases computed
   exact .of_votes rfl
 
-theorem votesKept_computeConsolidationEpochAndUpdateChurn {electra : .pectra ≤ fork} {balance : Gwei}
+theorem votesKept_computeConsolidationEpochAndUpdateChurn {electra : .pectra ≤ fork}
+    {balance : Gwei}
     {epoch : Epoch}
     (computed :
       computeConsolidationEpochAndUpdateChurn config state electra balance = .ok (after, epoch)) :
@@ -368,7 +371,8 @@ theorem votesKept_processWithdrawalRequest {electra : .pectra ≤ fork} {request
     | exact votesKept_requestPartialWithdrawal computed
 
 theorem votesKept_queueExcessActiveBalance {electra : .pectra ≤ fork} {index : ValidatorIndex}
-    (computed : queueExcessActiveBalance state electra index = .ok after) : VotesKept state after := by
+    (computed : queueExcessActiveBalance state electra index = .ok after) :
+    VotesKept state after := by
   simp only [queueExcessActiveBalance, bind_ok_iff] at computed
   obtain ⟨_, _, computed⟩ := computed
   split at computed
@@ -421,7 +425,8 @@ theorem votesKept_processExecutionRequests {body : BeaconBlockBody preset fork}
   simp only [processExecutionRequests, bind_ok_iff, ← Array.foldlM_toList] at computed
   obtain ⟨_, depositsOk, _, withdrawalsOk, consolidationsOk⟩ := computed
   exact (VotesKept.foldlM (fun _ _ _ ok => votesKept_processDepositRequest ok) depositsOk).trans <|
-    (VotesKept.foldlM (fun _ _ _ ok => votesKept_processWithdrawalRequest ok) withdrawalsOk).trans <|
+    (VotesKept.foldlM
+      (fun _ _ _ ok => votesKept_processWithdrawalRequest ok) withdrawalsOk).trans <|
     VotesKept.foldlM (fun _ _ _ ok => votesKept_processConsolidationRequest ok) consolidationsOk
 
 /-! ## Withdrawals -/
@@ -437,7 +442,8 @@ theorem votesKept_applyWithdrawal {withdrawal : Withdrawal}
   · exact votesKept_decreaseBalance computed
 
 theorem votesKept_updateNextWithdrawalIndex {withdrawals : Array Withdrawal}
-    (computed : updateNextWithdrawalIndex state withdrawals = .ok after) : VotesKept state after := by
+    (computed : updateNextWithdrawalIndex state withdrawals = .ok after) :
+    VotesKept state after := by
   unfold updateNextWithdrawalIndex at computed
   split at computed
   · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at computed
@@ -505,7 +511,8 @@ theorem votesKept_applyExpectedWithdrawals {capella : .shapella ≤ fork}
     · simp only [pure, Except.pure, Except.ok.injEq] at ok
       exact ok ▸ VotesKept.refl _
   exact one.trans <| (votesKept_updateNextWithdrawalIndex indexedOk).trans <| (queued _).trans <|
-    (partials _).trans <| (swept _ sweptOk).trans (votesKept_updateNextWithdrawalValidatorIndex last)
+    (partials _).trans <| (swept _ sweptOk).trans
+      (votesKept_updateNextWithdrawalValidatorIndex last)
 
 theorem votesKept_processWithdrawals {capella : .shapella ≤ fork}
     {payload : Until .glamsterdam fork (ExecutionPayload preset fork)}
@@ -595,9 +602,12 @@ theorem votesKept_processParentExecutionPayload {gloas : .glamsterdam ≤ fork}
     requestedOk
   exact (votesKept_settleParentPayment settledOk).trans <|
     (VotesKept.foldlM (fun _ _ _ ok => votesKept_processDepositRequest ok) depositsOk).trans <|
-    (VotesKept.foldlM (fun _ _ _ ok => votesKept_processWithdrawalRequest ok) withdrawalsOk).trans <|
-    (VotesKept.foldlM (fun _ _ _ ok => votesKept_processConsolidationRequest ok) consolidationsOk).trans <|
-    (VotesKept.foldlM (fun _ _ _ ok => votesKept_processBuilderDepositRequest ok) buildersOk).trans <|
+    (VotesKept.foldlM
+      (fun _ _ _ ok => votesKept_processWithdrawalRequest ok) withdrawalsOk).trans <|
+    (VotesKept.foldlM
+      (fun _ _ _ ok => votesKept_processConsolidationRequest ok) consolidationsOk).trans <|
+    (VotesKept.foldlM
+      (fun _ _ _ ok => votesKept_processBuilderDepositRequest ok) buildersOk).trans <|
     (VotesKept.foldlM (fun _ _ _ ok => votesKept_processBuilderExitRequest ok) exitsOk).trans
       (.of_votes rfl)
 
@@ -622,7 +632,8 @@ theorem votesKept_processBlockExecution {body : BeaconBlockBody preset fork}
   split at computed
   · simp only [bind_ok_iff] at computed
     obtain ⟨_, withdrawnOk, bid⟩ := computed
-    exact (votesKept_processWithdrawals withdrawnOk).trans (votesKept_processExecutionPayloadBid bid)
+    exact (votesKept_processWithdrawals withdrawnOk).trans
+      (votesKept_processExecutionPayloadBid bid)
   split at computed
   · simp only [bind_ok_iff] at computed
     obtain ⟨_, withdrawnOk, paid⟩ := computed
@@ -703,7 +714,8 @@ theorem processOperations_votes {body : BeaconBlockBody preset fork} {parentSlot
         (Kept.foldlM (fun _ _ _ ok => kept_processAttesterSlashing ok) attestersOk),
       attestedOk,
       (VotesKept.foldlM (fun _ _ _ ok => votesKept_processVoluntaryExit ok) exitsOk).trans <|
-      (VotesKept.foldlM (fun _ _ _ ok => votesKept_processBlsToExecutionChange ok) changesOk).trans <|
+      (VotesKept.foldlM
+        (fun _ _ _ ok => votesKept_processBlsToExecutionChange ok) changesOk).trans <|
       VotesKept.foldlM (fun _ _ _ ok => by
         rw [processPayloadAttestation_eq ok]
         exact VotesKept.refl _) paid,
@@ -1021,7 +1033,8 @@ theorem rotatesVotes_processParticipationRecordUpdates
 /-! ## The steps of an epoch from Altair -/
 
 theorem votesKept_processInactivityUpdates {altair : .altair ≤ fork}
-    (computed : processInactivityUpdates config state altair = .ok after) : VotesKept state after := by
+    (computed : processInactivityUpdates config state altair = .ok after) :
+    VotesKept state after := by
   unfold processInactivityUpdates at computed
   split at computed
   · simp only [pure, Except.pure, Except.ok.injEq] at computed
@@ -1114,7 +1127,8 @@ theorem votesKept_passPendingConsolidations {nextEpoch : Epoch} :
         (votesKept_passPendingConsolidations (result := (passed, read)) passedOk)
 
 theorem votesKept_processPendingConsolidations {electra : .pectra ≤ fork}
-    (computed : processPendingConsolidations state electra = .ok after) : VotesKept state after := by
+    (computed : processPendingConsolidations state electra = .ok after) :
+    VotesKept state after := by
   unfold processPendingConsolidations at computed
   simp only [bind, Except.bind, pure, Except.pure] at computed
   repeat' (split at computed <;> try cases computed)
@@ -1123,7 +1137,8 @@ theorem votesKept_processPendingConsolidations {electra : .pectra ≤ fork}
       (.of_votes rfl)
 
 theorem votesKept_processPendingBalances
-    (computed : processPendingBalances config checks state = .ok after) : VotesKept state after := by
+    (computed : processPendingBalances config checks state = .ok after) :
+    VotesKept state after := by
   unfold processPendingBalances at computed
   split at computed
   · simp only [bind_ok_iff] at computed
@@ -1293,7 +1308,8 @@ theorem votesKept_queuePreActivation {electra : .pectra ≤ fork} {index : Valid
   exact .of_votes rfl
 
 theorem votesKept_queueCompoundingExcess {electra : .pectra ≤ fork} {index : Nat}
-    (computed : queueCompoundingExcess state electra index = .ok after) : VotesKept state after := by
+    (computed : queueCompoundingExcess state electra index = .ok after) :
+    VotesKept state after := by
   unfold queueCompoundingExcess at computed
   split at computed
   · split at computed
@@ -1310,9 +1326,11 @@ theorem upgradeNext_flags {pre : ForkedBeaconState preset}
     {post : {post : ForkedBeaconState preset // pre.fork < post.fork}}
     (computed : upgradeNext config checks pre = .ok post) (altair : .altair ≤ pre.fork) :
     FlagsWithin (pre.state.previousEpochParticipation altair).data
-        (post.val.state.previousEpochParticipation (Nat.le_trans altair (Nat.le_of_lt post.2))).data ∧
+        (post.val.state.previousEpochParticipation (Nat.le_trans altair
+          (Nat.le_of_lt post.2))).data ∧
       FlagsWithin (pre.state.currentEpochParticipation altair).data
-        (post.val.state.currentEpochParticipation (Nat.le_trans altair (Nat.le_of_lt post.2))).data := by
+        (post.val.state.currentEpochParticipation (Nat.le_trans altair
+          (Nat.le_of_lt post.2))).data := by
   obtain ⟨fork, state⟩ := pre
   cases fork <;>
     simp only [upgradeNext, bind_ok_iff, pure, Except.pure, Except.ok.injEq, throw,

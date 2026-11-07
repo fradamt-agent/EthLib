@@ -5,13 +5,15 @@ public import EthLib.Consensus.Proofs.Transition.Provenance.Settled
 /-!
 # Proofs: the source block of a weighing call is an ancestor of its target block
 
-A weighing call reads its target root from the block roots, for the first slot of the target's
-epoch.
+A weighing call reads its target root from the block roots.
+
+It reads it for the first slot of the target's epoch.
 
 Its source is a checkpoint that an earlier call justified, with a root read the same way.
 
-Along one chain, a root read for an earlier slot is an ancestor of a root read for a later one,
-following the parent links of the blocks of the chain.
+Along one chain, a root read for an earlier slot is an ancestor of a root read for a later one.
+
+It is one along the parent links of the blocks of the chain.
 
 So the source block is an ancestor of the target block.
 
@@ -75,8 +77,7 @@ The buffer of roots must span two epochs.
 
 The call's source for the checkpoint's epoch has the zero root of genesis.
 
-Or its root is an ancestor of the checkpoint's root, along the parent links of the chain's
-blocks.
+Or its root is an ancestor of the checkpoint's root, along the parent links of the blocks.
 
 The source's root is the root of the latest block at or before the first slot of its epoch.
 
@@ -182,8 +183,9 @@ theorem JustifiedBy.source_ancestor {start after : ForkedBeaconState preset}
   exact ⟨fork, state, cached, call.head, call.toAfter, call.cachedOk, call.recent,
     call.source_ancestor wide genesis⟩
 
-/-- A checkpoint that a call justified is read again at the end of the chain, while still in
-the buffer. -/
+/-- A checkpoint that a call justified is read again at the end of the chain.
+
+That holds while its root is still in the buffer. -/
 theorem JustifiedBy.read_at_end {start after : ForkedBeaconState preset} {checkpoint : Checkpoint}
     (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (justified : JustifiedBy config checks start after checkpoint)
@@ -210,13 +212,15 @@ The chain starts at genesis, and both checkpoints are still in the buffer at its
 
 The buffer of roots must span two epochs.
 
-The earlier checkpoint's root is an ancestor of the later one's, along the parent links of the
-blocks of a chain from genesis to the end.
+The earlier checkpoint's root is an ancestor of the later one's.
+
+It is one along the parent links of the blocks of a chain from genesis to the end.
 
 Each of those blocks is past the first slot of the earlier checkpoint's epoch.
 
 Or a state of that chain has the zero root. -/
-theorem JustifiedBy.pastAncestor {start after : ForkedBeaconState preset} {first second : Checkpoint}
+theorem JustifiedBy.pastAncestor {start after : ForkedBeaconState preset}
+    {first second : Checkpoint}
     (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (genesis : Genesis config checks start)
     (firstJustified : JustifiedBy config checks start after first)

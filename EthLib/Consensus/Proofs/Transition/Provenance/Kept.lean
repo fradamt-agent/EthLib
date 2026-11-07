@@ -37,8 +37,9 @@ variable {preset : Preset} {fork : Base.Fork} {config : Config} {checks : Signat
   {engine : ExecutionEngine preset fork}
   {state after : BeaconState preset fork}
 
-/-- The fields that record history: the slot, the latest header, the two buffers of roots, the
-justification bits and the three checkpoints. -/
+/-- The fields that record history.
+
+They are the slot, the latest header, the two buffers of roots, the bits and the checkpoints. -/
 def BeaconState.history (state : BeaconState preset fork) :
     Slot × BeaconBlockHeader × RootedVector Root preset.SLOTS_PER_HISTORICAL_ROOT.toNat ×
       RootedVector Root preset.SLOTS_PER_HISTORICAL_ROOT.toNat ×

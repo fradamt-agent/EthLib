@@ -9,16 +9,16 @@ Before Altair a state keeps pending attestations with their bits, and no list of
 
 The weighing call finds the signers again: it computes each committee anew, in its own state.
 
-So the signers it counts are the signers that the inclusion checked only if the committee is
-the same in both states.
+So the signers it counts are the signers that the inclusion checked only if both states agree.
+
+They must have the same committee.
 
 A committee of an epoch is computed from two inputs of the state.
 
 - The validators active in that epoch.
 - The RANDAO mix at the position that the seed of that epoch reads.
 
-This file shows that both stay fixed while the current epoch is the epoch itself or the next
-one.
+This file shows that both stay fixed while the current epoch is the epoch or the next one.
 
 Every step that sets an activation or an exit epoch sets one past the current epoch.
 
@@ -46,8 +46,8 @@ def activity (state : BeaconState preset fork) (epoch : Epoch) : List Bool :=
 - The registry may grow, but each validator keeps whether it is active in the epoch.
   Each new validator is not active in it.
 - The mix that the seed of the epoch reads is the same.
-  The seed reads the mix of `epoch + N - MIN_SEED_LOOKAHEAD - 1`, for `N` the length of the
-  buffer of mixes. -/
+  The seed reads the mix of `epoch + N - MIN_SEED_LOOKAHEAD - 1`, for `N` the number of mixes.
+  -/
 structure ShuffleKept (epoch : Epoch) (state after : BeaconState preset fork) : Prop where
   active : ∃ added, activity after epoch = activity state epoch ++ List.replicate added false
   mix : ∀ mixEpoch : Epoch,
@@ -68,7 +68,8 @@ theorem trans {first second third : BeaconState preset fork}
   active := by
     obtain ⟨added, oneActive⟩ := one.active
     obtain ⟨added', twoActive⟩ := two.active
-    exact ⟨added + added', by rw [twoActive, oneActive, List.append_assoc, List.replicate_append_replicate]⟩
+    exact ⟨added + added', by rw [twoActive, oneActive, List.append_assoc,
+      List.replicate_append_replicate]⟩
   mix mixEpoch reads := (two.mix mixEpoch reads).trans (one.mix mixEpoch reads)
 
 /-- A step that keeps the registry and the mixes keeps the inputs. -/
@@ -167,7 +168,8 @@ theorem ShuffleKept.getActiveValidatorIndices {epoch : Epoch}
   rw [getActiveValidatorIndices_eq_activity, getActiveValidatorIndices_eq_activity, active,
     List.zipIdx_append, List.filterMap_append]
   -- A new validator is not active, so it adds no index.
-  have none : (List.zipIdx (List.replicate added false) (0 + (activity state epoch).length)).filterMap
+  have none :
+      (List.zipIdx (List.replicate added false) (0 + (activity state epoch).length)).filterMap
       (fun (active, index) => if active then some index.toUInt64 else none) = [] := by
     apply List.filterMap_eq_nil_iff.mpr
     intro pair member
@@ -388,7 +390,8 @@ theorem addValidatorToRegistry (before : fork < .altair) (finite : epoch ≠ FAR
   · cases computed
     refine ⟨⟨1, ?_⟩, fun _ _ => rfl⟩
     have inactive : isActiveValidator
-        (getValidatorFromDeposit preset fork pubkey withdrawalCredentials amount) epoch = false := by
+        (getValidatorFromDeposit preset fork pubkey withdrawalCredentials amount) epoch =
+          false := by
       have below : ¬FAR_FUTURE_EPOCH ≤ epoch := by
         intro le
         apply finite
@@ -428,7 +431,8 @@ theorem processDeposit (before : fork < .altair) (finite : epoch ≠ FAR_FUTURE_
   unfold applyDeposit at applied
   split at applied
   · exact absurd ‹_› (not_le_of_before before (by decide))
-  exact (of_eq (state := state) (after := { state with eth1DepositIndex := fun _ => next }) rfl rfl).trans
+  exact (of_eq (state := state)
+    (after := { state with eth1DepositIndex := fun _ => next }) rfl rfl).trans
     (applyPendingDeposit before finite applied)
 
 theorem processVoluntaryExit (before : fork < .altair) (bound : epoch ≤ getCurrentEpoch state)
@@ -440,8 +444,9 @@ theorem processVoluntaryExit (before : fork < .altair) (bound : epoch ≤ getCur
   obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, exited⟩ := computed
   exact initiateValidatorExit (not_le_of_before before (by decide)) bound exited
 
-/-- The RANDAO reveal writes the mix of the current epoch, which the seed of the epoch or of the
-one before does not read. -/
+/-- The RANDAO reveal writes the mix of the current epoch.
+
+The seed of the epoch, or of the one before, does not read that mix. -/
 theorem processRandao
     (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (bound : epoch ≤ getCurrentEpoch state)
@@ -770,8 +775,9 @@ theorem processSlashingsReset (computed : processSlashingsReset state = .ok afte
   obtain ⟨_, _, _, _, rfl⟩ := processSlashingsReset_eq computed
   exact of_eq rfl rfl
 
-/-- The reset of the mixes writes the mix of the next epoch, which the seed of the epoch does not
-read while the next epoch is at most one past the epoch. -/
+/-- The reset of the mixes writes the mix of the next epoch.
+
+The seed of the epoch does not read it while the next epoch is at most one past the epoch. -/
 theorem processRandaoMixesReset
     (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (bound : epoch ≤ getCurrentEpoch state)
@@ -841,7 +847,8 @@ theorem processEpoch (before : fork < .altair)
     (processSlashings before slashedOk).trans <| (processEth1DataReset resetOk).trans <|
     (processEffectiveBalanceUpdates balancedOk).trans <| (processSlashingsReset clearedOk).trans <|
     (processRandaoMixesReset lookahead (bound (keptCleared.slot.trans justifiedSlot))
-      (by rw [epochOf (keptCleared.slot.trans justifiedSlot)]; exact Nat.le_refl _) mixedOk).trans <|
+      (by rw [epochOf (keptCleared.slot.trans justifiedSlot)]; exact Nat.le_refl _)
+      mixedOk).trans <|
     (processHistoricalRootsUpdate rootedOk).trans (processParticipationRecordUpdates rotated)
 
 /-- The caching of a slot keeps the registry and the mixes. -/

@@ -235,7 +235,8 @@ The block root is the root of the latest header after that caching.
 The state root is the root of the state that the caching started from. -/
 theorem Reaches.roots_written {start after : ForkedBeaconState preset}
     (chain : Reaches config checks start after) {slot : Slot}
-    (fromStart : start.state.slot.toNat ≤ slot.toNat) (written : slot.toNat < after.state.slot.toNat)
+    (fromStart : start.state.slot.toNat ≤ slot.toNat)
+    (written : slot.toNat < after.state.slot.toNat)
     (recent : after.state.slot.toNat ≤ slot.toNat + preset.SLOTS_PER_HISTORICAL_ROOT.toNat) :
     ∃ (fork : Fork) (state cached : BeaconState preset fork),
       CachesSlot config checks start after slot state cached ∧
@@ -291,7 +292,8 @@ theorem Reaches.roots_written {start after : ForkedBeaconState preset}
       obtain ⟨fork', state', cached', caches, blockPart, statePart⟩ :=
         more written recent
       rw [blockRoots, stateRoots]
-      exact ⟨fork', state', cached', caches.extend (.block engine signed validateResult notDue computed),
+      exact ⟨fork', state', cached',
+        caches.extend (.block engine signed validateResult notDue computed),
         blockPart, statePart⟩
 
 /-- An entry of the two buffers stays along a chain while it is still in the buffers.
@@ -437,7 +439,8 @@ Or the last block step wrote it: the header of that block, settled from the stat
 theorem Reaches.latestBlockHeader {start after : ForkedBeaconState preset}
     (chain : Reaches config checks start after) :
     HeaderSettled config checks start after start.state.latestBlockHeader ∨
-      ∃ (fork : Fork) (engine : ExecutionEngine preset fork) (signed : SignedBeaconBlock preset fork)
+      ∃ (fork : Fork) (engine : ExecutionEngine preset fork)
+        (signed : SignedBeaconBlock preset fork)
         (validateResult : Bool) (state post : BeaconState preset fork) (bodyRoot : Root),
         Reaches config checks start ⟨fork, state⟩ ∧ upgradeDue config ⟨fork, state⟩ = false ∧
         applySignedBlock config checks engine state signed validateResult = .ok post ∧

@@ -28,8 +28,9 @@ The statement keeps that case as an alternative, with the state that has the zer
 
 Comparing roots across two chains does need an assumption, or evidence.
 
-Two equal header roots give equal headers, or two different 64-byte inputs of SHA-256 with one
-digest.
+Two equal header roots give equal headers.
+
+Or they give two different 64-byte inputs of SHA-256 with one digest.
 
 `HashCollisionFound` records such a pair, found by an executable search over the hash inputs.
 -/
@@ -78,8 +79,7 @@ theorem beaconBlockHeader_commitmentSized (header : BeaconBlockHeader) :
   · exact .byteVector _ _
   · exact .byteVector _ _
 
-/-- Two headers with one root are equal, or the search over their hash inputs finds a
-collision. -/
+/-- Two headers with one root are equal, or a search over their hash inputs finds a collision. -/
 theorem beaconBlockHeader_root_binding {left right : BeaconBlockHeader} {root : Root}
     (leftRoot : hashTreeRoot left = .ok root) (rightRoot : hashTreeRoot right = .ok root) :
     left = right ∨ HashCollisionFound (sszMessages left ++ sszMessages right) := by
@@ -164,10 +164,13 @@ theorem ChainBlock.root_of_validated {fork : Fork} {engine : ExecutionEngine pre
 The block runs on `state`, which a chain from `start` reaches with no upgrade due.
 
 Either no block step came before it in the chain.
+
 Then its parent root is the root of the start's header, with its state root settled.
 
 Or the last block step before it ran on `state'` and left `post'`.
+
 Then its parent root is the root of that block's header, with the root of `post'` as state root.
+
 Or `post'` has the zero root. -/
 theorem Reaches.parentRoot {start : ForkedBeaconState preset} {fork : Fork}
     {engine : ExecutionEngine preset fork} {signed : SignedBeaconBlock preset fork}
@@ -214,8 +217,9 @@ theorem Reaches.parentRoot {start : ForkedBeaconState preset} {fork : Fork}
 
 /-- A state of a chain has the zero root.
 
-The caching of a slot reads the zero root as an unfilled header, so the header can take the
-root of a later state.
+The caching of a slot reads the zero root as an unfilled header.
+
+So the header can take the root of a later state.
 
 This records the cryptographic event instead of assuming it cannot happen. -/
 def ZeroRootFound (config : Config) (checks : SignatureChecks)
@@ -247,7 +251,8 @@ def ChainBlock (config : Config) (checks : SignatureChecks) (start after : Forke
 
 theorem ChainBlock.extend {start middle after : ForkedBeaconState preset} {parentRoot root : Root}
     (block : ChainBlock config checks start middle parentRoot root)
-    (step : Step config checks middle after) : ChainBlock config checks start after parentRoot root :=
+    (step : Step config checks middle after) :
+    ChainBlock config checks start after parentRoot root :=
   have ⟨fork, engine, signed, validateResult, state, post, bodyRoot, stateRoot, head, notDue,
     applied, tail, rest⟩ := block
   ⟨fork, engine, signed, validateResult, state, post, bodyRoot, stateRoot, head, notDue, applied,
@@ -280,8 +285,9 @@ def ChainBlockAt (config : Config) (checks : SignatureChecks)
 
 /-- A block step of a chain whose block is past a slot number.
 
-With `bound = e * SLOTS_PER_EPOCH` this is the relation `R_e` of the epoch-boundary pairs of
-[Gasper]: the child block is past the first slot of epoch `e`.
+With `bound = e * SLOTS_PER_EPOCH` it is the relation `R_e` of epoch-boundary pairs of [Gasper].
+
+The child block is then past the first slot of epoch `e`.
 
 [Gasper]: https://arxiv.org/abs/2003.03052 -/
 def ChainBlockAfter (config : Config) (checks : SignatureChecks)
@@ -345,10 +351,11 @@ theorem fillStateRoot_of_ne {header : BeaconBlockHeader} {stateRoot : Root}
 /-- How the latest header of a chain's state relates to the header cached at its first step.
 
 - No block ran since, and the cached header, whose state root is filled, stays.
-- Or a block ran since, past the cached slot, its header is settled, and its parent descends
-  from the cached root along blocks past that slot.
+- Or a block past the cached slot ran since, and its header is settled.
+  Its parent descends from the cached root along blocks past that slot.
 - Or a state of the chain has the zero root. -/
-def HeaderSince (config : Config) (checks : SignatureChecks) (start after : ForkedBeaconState preset)
+def HeaderSince (config : Config) (checks : SignatureChecks)
+    (start after : ForkedBeaconState preset)
     (cached : BeaconBlockHeader) (root : Root) : Prop :=
   (after.state.latestBlockHeader = cached ∧ cached.stateRoot ≠ Vector.replicate 32 0) ∨
     (∃ (fork : Fork) (engine : ExecutionEngine preset fork)
@@ -369,8 +376,9 @@ The chain starts at `state`, whose slot step caches `cached`.
 
 It reaches `after`, whose caching would give `cachedLater`.
 
-The root of `cachedLater`'s header descends from the root of `cached`'s header, along the
-parent links of the blocks of the chain.
+The root of `cachedLater`'s header descends from the root of `cached`'s header.
+
+It does so along the parent links of the blocks of the chain.
 
 Each of those blocks is past the slot of `state`, since the chain moved on from it.
 
@@ -486,7 +494,8 @@ theorem Reaches.cachedRoot_pastAncestor {fork : Fork} {state next cached : Beaco
             exact .inr (.inl ⟨fork', engine, signed, validateResult, state', post, bodyRoot,
               middleChain, notDue', computed', bodyRootOk, settled, newSlot,
               (ancestor.extendChain ((Reaches.refl _).step theStep)).tail link⟩)
-          · exact .inr (.inr ⟨_, head.step (.block engine' signed' validateResult' notDue'' applied),
+          · exact .inr (.inr ⟨_,
+            head.step (.block engine' signed' validateResult' notDue'' applied),
               tail.step theStep, zero⟩)
         · exact .inr (.inr (zero.extend theStep))
   obtain ⟨stateRoot, -, stateRootOk, laterHeader, -⟩ := processSlot_roots laterOk
@@ -575,7 +584,8 @@ theorem ChainAncestor.extendChain {start middle after : ForkedBeaconState preset
   | snoc _ step more => exact more.extend step
 
 theorem ZeroRootFound.extendChain {start middle after : ForkedBeaconState preset}
-    (found : ZeroRootFound config checks start middle) (chain : Reaches config checks middle after) :
+    (found : ZeroRootFound config checks start middle)
+    (chain : Reaches config checks middle after) :
     ZeroRootFound config checks start after :=
   have ⟨state, head, tail, zero⟩ := found
   ⟨state, head, tail.trans chain, zero⟩
@@ -584,8 +594,9 @@ theorem ZeroRootFound.extendChain {start middle after : ForkedBeaconState preset
 
 Both slots are from the start of the chain on, before the end, and still in the buffer.
 
-The root of the earlier slot is an ancestor of the root of the later slot, along the parent
-links of the blocks from the caching of the earlier slot on.
+The root of the earlier slot is an ancestor of the root of the later slot.
+
+It is one along the parent links of the blocks from the caching of the earlier slot on.
 
 Each of those blocks is past the earlier slot.
 
@@ -644,8 +655,9 @@ theorem Reaches.blockRoots_ancestor {start after : ForkedBeaconState preset}
 
 /-- Two roots read at two states of one chain, for slots in order: the earlier is an ancestor.
 
-The chain runs from `start` to `middle`, where one root is read, then on to `after`, where the
-other is read.
+The chain runs from `start` to `middle`, where one root is read.
+
+It then runs on to `after`, where the other is read.
 
 Each read is of an entry still in the buffer, and the first slot is from the start on.
 

@@ -10,8 +10,9 @@ A weighing call justifies a checkpoint of the previous or current epoch.
 
 Its supermajority link runs from a source checkpoint to that target.
 
-The source is the justified checkpoint of the target's epoch: the current justified checkpoint
-while that epoch runs, and the previous justified one in the epoch after it.
+The source is the justified checkpoint of the target's epoch.
+
+It is the current justified one while that epoch runs, and the previous one in the epoch after.
 
 An attestation is checked against the same rule when a block includes it.
 
@@ -99,8 +100,7 @@ theorem Reaches.justified_of_same_epoch {start after : ForkedBeaconState preset}
       have frame := frame_processBlock (applySignedBlock_ok computed).2.1
       exact ⟨frame.previousJustified, frame.currentJustified⟩
 
-/-- Across the end of an epoch that weighs, the current justified checkpoint becomes the previous
-one.
+/-- Across the end of an epoch that weighs, the current justified checkpoint becomes the previous.
 
 The epoch must be at least two, since the first two epochs weigh nothing. -/
 theorem Reaches.previousJustified_of_next_epoch {start after : ForkedBeaconState preset}
@@ -267,8 +267,9 @@ theorem processSlot_read
   rw [← readCircular_writeCircular_of_ne blockWrite other]
   exact read
 
-/-- The root a call reads for the previous or the current epoch is the state's entry for the
-epoch's first slot.
+/-- The root a call reads for the previous or the current epoch is the state's entry for it.
+
+That entry is the one for the epoch's first slot.
 
 The buffer of roots must span two epochs. -/
 theorem ReadsFrom.read
@@ -289,8 +290,9 @@ theorem ReadsFrom.read
 
 The attestation's site and the call read the justified checkpoint of the same epoch.
 
-For a target in epoch 1 the source may instead be the current justified checkpoint of a state of
-epoch 1 of the chain, since the end of epoch 1 weighs nothing. -/
+For a target in epoch 1 the source may instead be the current justified checkpoint of epoch 1.
+
+That is, of a state of epoch 1 of the chain, since the end of epoch 1 weighs nothing. -/
 theorem SignedVote.source_link {start : ForkedBeaconState preset} {fork : Fork}
     {state cached : BeaconState preset fork} {checkpoint : Checkpoint} {index : ValidatorIndex}
     {data : AttestationData}
@@ -439,8 +441,9 @@ Each counted voter signed attestation data whose target is the checkpoint.
 
 Its source is the call's source for that epoch.
 
-For a target in epoch 1 the source may instead be the current justified checkpoint of a state of
-epoch 1 of the chain, since the end of epoch 1 weighs nothing.
+For a target in epoch 1 the source may instead be the current justified checkpoint of epoch 1.
+
+That is, of a state of epoch 1 of the chain, since the end of epoch 1 weighs nothing.
 
 The flag may also come from the start of the chain, or from the upgrade to Altair. -/
 theorem CallRecord.voters_signed {start after : ForkedBeaconState preset} {fork : Fork}
@@ -551,8 +554,9 @@ theorem JustifiedBy.late {start after : ForkedBeaconState preset} {checkpoint : 
 
 Bit `i` stands for the epoch `i` epochs before the previous epoch.
 
-Either the start of the chain had some bit set, or a weighing call of the chain justified a
-checkpoint of that epoch. -/
+Either the start of the chain had some bit set.
+
+Or a weighing call of the chain justified a checkpoint of that epoch. -/
 theorem Reaches.justificationBit {start after : ForkedBeaconState preset}
     (chain : Reaches config checks start after) (index : Nat)
     (inside : index < JUSTIFICATION_BITS_LENGTH.toNat)
@@ -681,13 +685,14 @@ theorem Reaches.justificationBit {start after : ForkedBeaconState preset}
 
 The rules read the new justification bits, which the state after the slot step holds.
 
-- The old current justified checkpoint, when bits 0 to 2 are set and it is two epochs back,
-  or bits 0 and 1 are set and it is one epoch back.
-- Otherwise the old previous justified checkpoint, when bits 1 to 3 are set and it is three
-  epochs back, or bits 1 and 2 are set and it is two epochs back.
+- The old current justified checkpoint, with bits 0 to 2 set and two epochs back.
+- The same, with bits 0 and 1 set and one epoch back.
+- Otherwise the old previous justified checkpoint, with bits 1 to 3 set and three epochs back.
+- The same, with bits 1 and 2 set and two epochs back.
 
 Bit `i` stands for the epoch `i` epochs before the current epoch of the call. -/
-def FinalizedBy (config : Config) (checks : SignatureChecks) (start after : ForkedBeaconState preset)
+def FinalizedBy (config : Config) (checks : SignatureChecks)
+    (start after : ForkedBeaconState preset)
     (checkpoint : Checkpoint) : Prop :=
   ∃ (fork : Fork) (state cached weighed next : BeaconState preset fork),
     Reaches config checks start ⟨fork, state⟩ ∧ upgradeDue config ⟨fork, state⟩ = false ∧

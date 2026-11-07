@@ -16,8 +16,9 @@ It computes that committee anew, in its own state.
 
 This file shows that the committee is the one the inclusion of the attestation used.
 
-So each counted voter is a signer of an attestation that a block of the chain included, and whose
-indexed form was valid at its site.
+So each counted voter is a signer of an attestation that a block of the chain included.
+
+That attestation's indexed form was valid at its site.
 
 The inputs of the committee stay fixed between the two, by `ShuffleKept`.
 
@@ -83,8 +84,9 @@ theorem mem_getUnslashedAttestingIndices {attestations : Array (PendingAttestati
   obtain ⟨pending, pendingMember, pendingOk⟩ := mapM_ok_mem listsOk signers signersMember
   exact ⟨pending, pendingMember, signers, pendingOk, inSigners⟩
 
-/-- Before Altair the matching target attestations of an epoch are pending attestations of the
-epoch whose target root is the root the state reads for it. -/
+/-- Before Altair the matching target attestations of an epoch are pending attestations of it.
+
+Their target root is the root the state reads for the epoch. -/
 theorem mem_getMatchingTargetAttestations (before : fork < .altair) {epoch : Epoch}
     {attestations : Array (PendingAttestation preset)}
     (computed : getMatchingTargetAttestations state before epoch = .ok attestations)
@@ -196,7 +198,8 @@ theorem advanceSlot {next : BeaconState preset fork} (before : fork < .altair)
   have cachedEpoch : getCurrentEpoch cached = getCurrentEpoch state := by
     unfold getCurrentEpoch
     rw [processSlot_slot cachedOk]
-  refine (processSlot cachedOk).trans ((?_ : ShuffleKept epoch cached epoched).trans (of_eq rfl rfl))
+  refine (processSlot cachedOk).trans ((?_ : ShuffleKept epoch cached epoched).trans
+    (of_eq rfl rfl))
   unfold epochIfLast at epochedOk
   rw [nextIs] at epochedOk
   by_cases closes : ClosesEpoch preset state
@@ -299,8 +302,9 @@ theorem ReadsFrom.shuffleKept {cached : BeaconState preset fork} {epoch : Epoch}
 
 A block of the chain recorded the pending attestation, with `epoch` as its target.
 
-A later state of the chain, before Altair and at most one epoch past `epoch`, computes a committee
-for it and finds a signer from its bits.
+A later state of the chain, before Altair and at most one epoch past `epoch`, finds a committee.
+
+It finds a signer from the attestation's bits and that committee.
 
 That signer is active in `epoch`, and signed the attestation's data, checked at its site. -/
 theorem PendingRecordedBy.signed {start : ForkedBeaconState preset} {fork : Fork}
@@ -355,7 +359,8 @@ theorem PendingRecordedBy.signed {start : ForkedBeaconState preset} {fork : Fork
   have toLater : ShuffleKept epoch blockState state := toPost.trans toState
   rw [slotEpoch] at toFirst toSite toLater
   -- The signer is in the committee, so it is active in the target epoch.
-  have active := mem_getBeaconCommittee committeeOk (mem_of_committeeAttesters attestersOk inSigners)
+  have active :=
+    mem_getBeaconCommittee committeeOk (mem_of_committeeAttesters attestersOk inSigners)
   rw [dataEq, ← slotEpoch] at active
   -- The site found the same signers.
   rw [dataEq, toLater.getBeaconCommittee, ← (toFirst.trans toSite).getBeaconCommittee]
@@ -564,11 +569,13 @@ theorem genesis_epochPending {forked : ForkedBeaconState preset}
   rw [← same]
   cases current
   · simp only [epochPending, Bool.false_eq_true, ↓reduceIte]
-    rw [show ({ activated with genesisValidatorsRoot := root } : BeaconState preset _).previousEpochAttestations
+    rw [show ({ activated with genesisValidatorsRoot := root } :
+        BeaconState preset _).previousEpochAttestations
       = activated.previousEpochAttestations from rfl, kept.previousEpochAttestations]
     rfl
   · simp only [epochPending, ↓reduceIte]
-    rw [show ({ activated with genesisValidatorsRoot := root } : BeaconState preset _).currentEpochAttestations
+    rw [show ({ activated with genesisValidatorsRoot := root } :
+        BeaconState preset _).currentEpochAttestations
       = activated.currentEpochAttestations from rfl, kept.currentEpochAttestations]
     rfl
 

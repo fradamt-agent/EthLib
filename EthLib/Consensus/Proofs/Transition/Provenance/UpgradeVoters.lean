@@ -59,8 +59,7 @@ theorem hasFlag_foldl_addFlag :
       · exact .inr ⟨a, List.mem_cons_self, bit⟩
     · exact .inr ⟨b, List.mem_cons_of_mem _ member, bit⟩
 
-/-- A fold whose every step adds flags only at its own index adds them only at the indices of
-the list. -/
+/-- A fold whose every step adds flags only at its own index adds them at the list's indices. -/
 theorem FlagsAddedBy.foldlM {ε : Type} {list : Type} {data : list → Array ParticipationFlags}
     {step : list → ValidatorIndex → Except ε list} {earned : List UInt64}
     (added : ∀ l x l', step l x = .ok l' → FlagsAddedBy (data l) (data l') [x] earned) :
@@ -124,11 +123,11 @@ abbrev carriedToAltair (config : Config) (pre : BeaconState preset .phase0) :
     BeaconState preset .altair :=
   carryFields config .altair pre (by decide) (by decide)
 
-/-- A flag that the upgrade to Altair set came from one pending attestation of the previous
-epoch.
+/-- A flag that the upgrade to Altair set came from one pending attestation of the epoch before.
 
-The upgrade computed the attestation's earned flags and its signers in a state that holds the
-carried fields of the Phase 0 state, with some flags. -/
+The upgrade computed the attestation's earned flags and its signers in a state.
+
+That state holds the carried fields of the Phase 0 state, with some flags. -/
 theorem upgradeToAltair_flags {pre : BeaconState preset .phase0}
     {post : BeaconState preset .altair} (computed : upgradeToAltair config pre = .ok post)
     {index : Nat} {flags : ParticipationFlags} {flagIndex : UInt64}
@@ -163,11 +162,13 @@ theorem upgradeToAltair_flags {pre : BeaconState preset .phase0}
           ∃ (participation : EpochParticipation preset .altair) (earned : List UInt64)
             (attesters : List ValidatorIndex),
             getAttestationParticipationFlagIndices
-              { carriedToAltair config pre with previousEpochParticipation := fun _ => participation }
+              { carriedToAltair config pre with previousEpochParticipation :=
+                fun _ => participation }
               pending.data pending.inclusionDelay
               (carriedToAltair config pre).latestBlockHeader.slot = .ok earned ∧
             getPendingAttestingIndices
-              { carriedToAltair config pre with previousEpochParticipation := fun _ => participation }
+              { carriedToAltair config pre with previousEpochParticipation :=
+                fun _ => participation }
               pending = .ok attesters ∧
             (∃ attester ∈ attesters, attester.toNat = index) ∧
             ∃ added ∈ earned, added.toNat % 8 = flagIndex.toNat % 8 := by
@@ -222,11 +223,11 @@ theorem getBlockRoot_of_same {fork' : Fork} {other : BeaconState preset fork'}
     (epoch : Epoch) : getBlockRoot other epoch = getBlockRoot state epoch := by
   simp only [getBlockRoot, getBlockRootAtSlot, slot, blockRoots]
 
-/-- A root that an earlier state of a chain reads for an epoch is the root a later weighing call
-reads for it.
+/-- A root that an earlier state reads for an epoch is the root that a later call reads for it.
 
-The call reads the previous or the current epoch, so both reads take an entry still in the
-buffer, which spans two epochs. -/
+The call reads the previous or the current epoch.
+
+So both reads take an entry still in the buffer, which spans two epochs. -/
 theorem getBlockRoot_of_earlier {fork' : Fork} {earlier : BeaconState preset fork'}
     {cached : BeaconState preset fork} {epoch : Epoch} {root root' : Root}
     (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
@@ -264,8 +265,9 @@ A block of the chain recorded that attestation, and the voter is a signer of it.
 
 So the voter signed its data, checked at its site.
 
-Its target is the call's checkpoint, as the flag is a timely-target flag, and its source is the
-call's source.
+Its target is the call's checkpoint, as the flag is a timely-target flag.
+
+Its source is the call's source.
 
 The buffer of roots must span two epochs.
 
@@ -376,11 +378,13 @@ theorem WeighingCall.upgrade_voter_signed {start after : ForkedBeaconState prese
 
 /-- From genesis and from Altair, each counted voter of a weighing call signed the call's link.
 
-Its flag came from an attestation of an Altair block, or from the upgrade to Altair, which turned
-a Phase 0 attestation into it.
+Its flag came from an attestation of an Altair block, or from the upgrade to Altair.
 
-Either way, the voter signed attestation data with the call's checkpoint as target and the call's
-source as source, checked at a site. -/
+The upgrade turned a Phase 0 attestation into it.
+
+Either way, the voter signed attestation data with the call's checkpoint as target.
+
+Its source is the call's source, and the signature was checked at a site. -/
 theorem CallRecord.voters_signed_of_genesis {start after : ForkedBeaconState preset}
     {fork : Fork} {state cached weighed : BeaconState preset fork}
     {voters : List ValidatorIndex} {checkpoint : Checkpoint}

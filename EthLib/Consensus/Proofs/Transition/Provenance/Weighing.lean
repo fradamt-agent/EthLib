@@ -105,8 +105,9 @@ At an epoch boundary the call reads the caching of the state's slot.
 
 A store may also call the weighing directly on a state, which it then reads as it is.
 
-Either way the read state differs from the state at most in the two buffers of roots, the latest
-header and the availability of payloads. -/
+Either way the read state differs from the state at most in a few fields.
+
+They are the two buffers of roots, the latest header and the availability of payloads. -/
 def ReadsFrom (state cached : BeaconState preset fork) : Prop :=
   processSlot state = .ok cached ∨ cached = state
 
@@ -147,7 +148,8 @@ Its root is the root `cached` held for the epoch's first slot.
 The first two epochs weigh nothing, so the current epoch of `cached` is at least two.
 
 Naming the call lets several facts speak about the same `cached` and `voters`. -/
-def WeighingCall (config : Config) (checks : SignatureChecks) (start after : ForkedBeaconState preset)
+def WeighingCall (config : Config) (checks : SignatureChecks)
+    (start after : ForkedBeaconState preset)
     (fork : Fork) (state cached weighed next : BeaconState preset fork)
     (voters : List ValidatorIndex) (checkpoint : Checkpoint) : Prop :=
   Reaches config checks start ⟨fork, state⟩ ∧ upgradeDue config ⟨fork, state⟩ = false ∧
@@ -160,7 +162,8 @@ def WeighingCall (config : Config) (checks : SignatureChecks) (start after : For
     getBlockRoot cached checkpoint.epoch = .ok checkpoint.root
 
 /-- A weighing call of a chain justified a checkpoint. -/
-def JustifiedBy (config : Config) (checks : SignatureChecks) (start after : ForkedBeaconState preset)
+def JustifiedBy (config : Config) (checks : SignatureChecks)
+    (start after : ForkedBeaconState preset)
     (checkpoint : Checkpoint) : Prop :=
   ∃ (fork : Fork) (state cached weighed next : BeaconState preset fork)
     (voters : List ValidatorIndex),
@@ -321,8 +324,9 @@ theorem extendChain {last : ForkedBeaconState preset}
 
 end CallRecord
 
-/-- A weighing call at an epoch boundary is a call of the weighing, on the state before the slot
-step, which it reads after the caching. -/
+/-- A weighing call at an epoch boundary is a call of the weighing on the state before the step.
+
+It reads that state after the caching. -/
 theorem WeighingCall.record {start after : ForkedBeaconState preset} {fork : Fork}
     {state cached weighed next : BeaconState preset fork} {voters : List ValidatorIndex}
     {checkpoint : Checkpoint}
@@ -353,8 +357,9 @@ def AllCheckpoints (holds : Checkpoint → Prop) (state : BeaconState preset for
 
 /-- Where the checkpoints of a chain's end come from.
 
-Each of the finalized, previous justified and current justified checkpoints is one of the
-start's three checkpoints, or a weighing call of the chain justified it. -/
+Each of the finalized, previous justified and current justified checkpoints is one of the start's.
+
+Or a weighing call of the chain justified it. -/
 theorem Reaches.checkpoints {start after : ForkedBeaconState preset}
     (chain : Reaches config checks start after) :
     AllCheckpoints (JustifiedOrStart config checks start after) after.state := by

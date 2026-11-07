@@ -48,7 +48,8 @@ theorem kept_genesisDeposit {beforeHeze : fork < .hegota} {leaves : Array Deposi
   simp only [genesisDeposit, bind_ok_iff] at computed
   obtain ⟨depositRoot, _, deposited⟩ := computed
   exact (show Kept state
-    { state with eth1Data := fun _ => { state.eth1Data beforeHeze with depositRoot } } from rfl).trans
+    { state with eth1Data :=
+      fun _ => { state.eth1Data beforeHeze with depositRoot } } from rfl).trans
     (kept_processDeposit deposited)
 
 /-- A genesis state has no justification bit set. -/
@@ -97,8 +98,9 @@ The start had some bit set.
 
 Or the last weighing call justified the checkpoint of its current epoch.
 
-That call closed the epoch before the end's, and its source for the epoch is the end's previous
-justified checkpoint. -/
+That call closed the epoch before the end's.
+
+Its source for the epoch is the end's previous justified checkpoint. -/
 theorem Reaches.newestBit {start after : ForkedBeaconState preset}
     (chain : Reaches config checks start after)
     (set : after.state.justificationBits.bits[0] = true) :
@@ -208,11 +210,12 @@ theorem Reaches.newestBit {start after : ForkedBeaconState preset}
 
 - `cs 0 = c`, and `cs i` is in the `i`-th epoch after `c`'s, up to `k`.
 - The first `k` are justified, by the start or by a weighing call of the chain.
-- Each root descends from the one before, along blocks past the first slot of the earlier
-  checkpoint's epoch, or a state of the chain has the zero root.
+- Each root descends from the one before, along blocks past the earlier one's epoch start.
+  Or a state of the chain has the zero root.
 - The roots after `c` are not zero, or a header of the chain has the zero root.
 - A weighing call of the chain justified `cs k`, with `c` as its source. -/
-def KFinalizedBy (config : Config) (checks : SignatureChecks) (start after : ForkedBeaconState preset)
+def KFinalizedBy (config : Config) (checks : SignatureChecks)
+    (start after : ForkedBeaconState preset)
     (c : Checkpoint) : Prop :=
   ∃ k, 1 ≤ k ∧ k ≤ 2 ∧ ∃ cs : ℕ → Checkpoint, cs 0 = c ∧
     (∀ i ≤ k, (cs i).epoch.toNat = c.epoch.toNat + i) ∧
@@ -288,8 +291,9 @@ theorem kFinalizedBy_one {start middle after : ForkedBeaconState preset} {c : Ch
     · exact JustifiedBy.nonzero_at wide genesis tail link.justifiedBy
     · omega
 
-/-- `2`-finalization from a justified `c`, a justified checkpoint of the next epoch, and a link
-from `c` to the epoch after it. -/
+/-- `2`-finalization from a justified `c` and a justified checkpoint of the next epoch.
+
+A link goes from `c` to the epoch after that. -/
 theorem kFinalizedBy_two {start middle after : ForkedBeaconState preset} {c d : Checkpoint}
     (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (genesis : Genesis config checks start) (tail : Reaches config checks middle after)
@@ -346,11 +350,13 @@ The last weighing call that changed it finalized it by one of its four rules.
 - Old previous justified, three epochs back, bits 1 to 3: `k = 2`, linked to the previous epoch.
 - Old previous justified, two epochs back, bits 1 and 2: `k = 1`, linked to the previous epoch.
 
-The link to the previous epoch is this call's, or the call before, which justified that epoch
-while it was current.
+The link to the previous epoch is this call's, or the call before.
 
-The buffer of roots must span four epochs, so that the roots of the checkpoints are still in it
-at the call: `4 * SLOTS_PER_EPOCH ≤ N`. -/
+That call justified the epoch while it was current.
+
+The buffer of roots must span four epochs: `4 * SLOTS_PER_EPOCH ≤ N`.
+
+Then the roots of the checkpoints are still in it at the call. -/
 theorem Reaches.finalized_rule {start after : ForkedBeaconState preset}
     (wide : 4 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (genesis : Genesis config checks start) (chain : Reaches config checks start after) :

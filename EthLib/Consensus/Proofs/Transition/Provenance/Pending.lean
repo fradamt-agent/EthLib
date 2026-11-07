@@ -7,8 +7,9 @@ public import EthLib.Consensus.Proofs.Transition.Provenance.Flags
 
 Before Altair a state holds the attestations that blocks included, for two epochs.
 
-A pending attestation of the current epoch's list votes for the current epoch, and likewise for
-the previous one.
+A pending attestation of the current epoch's list votes for the current epoch.
+
+Likewise for the previous one.
 
 This file traces each pending attestation of a chain's end to the block that included it.
 
@@ -36,8 +37,7 @@ def epochPending (state : BeaconState preset fork) (before : fork < .altair) (cu
   if current then (state.currentEpochAttestations before).data
   else (state.previousEpochAttestations before).data
 
-/-- At a site, an attestation was recorded as a pending attestation, and its indexed form was
-valid.
+/-- At a site, an attestation was recorded as a pending attestation, with a valid indexed form.
 
 The pending attestation holds its bits and data, its inclusion delay and the proposer. -/
 def AttestationRecorded (config : Config) (checks : SignatureChecks)
@@ -51,8 +51,7 @@ def AttestationRecorded (config : Config) (checks : SignatureChecks)
     getIndexedAttestation site attestation = .ok indexed ∧
     isValidIndexedAttestation config checks site indexed = .ok true
 
-/-- The pending attestations after the attestations of a block come from before them, or from
-one of them.
+/-- Each pending attestation after the attestations of a block was there before, or is one of them.
 
 That attestation ran at a state of the block's slot, and wrote the list of its target's epoch. -/
 theorem foldlM_processAttestation_pending (before : fork < .altair) {parentSlot : Slot} :
@@ -170,7 +169,8 @@ Or a block of the chain included an attestation with that epoch as its target, a
 -/
 theorem Reaches.pending {start after : ForkedBeaconState preset}
     (chain : Reaches config checks start after) (before : after.fork < .altair) (current : Bool)
-    {pending : PendingAttestation preset} (member : pending ∈ epochPending after.state before current) :
+    {pending : PendingAttestation preset}
+    (member : pending ∈ epochPending after.state before current) :
     PendingOrigin config checks start after pending (flagsEpoch after.state current) := by
   obtain ⟨run⟩ := chain
   induction run generalizing current pending with
@@ -252,7 +252,8 @@ theorem Reaches.pending {start after : ForkedBeaconState preset}
         rw [flagsEpoch_of_slot postSlot]
         exact (more before current stateMember).extend theStep
       · -- An attestation of the block recorded it.
-        rw [flagsEpoch_of_slot postSlot, ← flagsEpoch_of_slot (firstReads.trans (Kept.sameReads siteSlot)).slot]
+        rw [flagsEpoch_of_slot postSlot,
+          ← flagsEpoch_of_slot (firstReads.trans (Kept.sameReads siteSlot)).slot]
         exact .inr ⟨fork, engine, signed, validateResult, state, post, first, site, recorded,
           pre, suf, attestation, middleChain, notDue, computed, .refl _, head, shuffle, split,
           prefixOk,

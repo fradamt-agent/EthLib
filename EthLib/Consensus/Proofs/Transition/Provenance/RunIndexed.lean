@@ -15,8 +15,9 @@ The proofs find each call by induction on one run, so the calls they name are on
 
 This file states them for a given run.
 
-Each call it names ran on a prefix of the run: a run from the start to the call's state whose
-states begin the run's states.
+Each call it names ran on a prefix of the run.
+
+A prefix is a run from the start to the call's state whose states begin the run's states.
 
 So two runs that share their first states share the calls on those states.
 -/
@@ -549,8 +550,9 @@ theorem Run.finalizedOn {start after : ForkedBeaconState preset}
 
 /-- `KFinalizedBy` along a given run.
 
-The justified checkpoints are the start's or justified by calls on prefixes of the run, and the
-link is a call on a prefix of the run. -/
+The justified checkpoints are the start's, or justified by calls on prefixes of the run.
+
+The link is a call on a prefix of the run. -/
 def KFinalizedByOn {start after : ForkedBeaconState preset} (run : Run config checks start after)
     (c : Checkpoint) : Prop :=
   ∃ k, 1 ≤ k ∧ k ≤ 2 ∧ ∃ cs : ℕ → Checkpoint, cs 0 = c ∧
@@ -575,8 +577,9 @@ theorem KFinalizedByOn.kFinalizedBy {start after : ForkedBeaconState preset}
   ⟨k, one, two, cs, first, epochs, fun i below => (justified i below).justifiedOrStart, ancestry,
     nonzero, fork, state, cached, weighed, next, voters, call, source⟩
 
-/-- `kFinalizedBy_one` along a run: `1`-finalization from a justified `c` and a link from it to
-the next epoch. -/
+/-- `kFinalizedBy_one` along a run.
+
+It is `1`-finalization from a justified `c` and a link from it to the next epoch. -/
 theorem kFinalizedByOn_one {start middle after : ForkedBeaconState preset} {c : Checkpoint}
     {run : Run config checks start after}
     (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
@@ -613,9 +616,11 @@ theorem kFinalizedByOn_one {start middle after : ForkedBeaconState preset} {c : 
     · exact JustifiedBy.nonzero_at wide genesis tail link.justifiedBy
     · omega
 
-/-- `kFinalizedBy_two` along a run: `2`-finalization from a justified `c`, a justified checkpoint
-of the next epoch, and a link
-from `c` to the epoch after it. -/
+/-- `kFinalizedBy_two` along a run.
+
+It is `2`-finalization from a justified `c` and a justified checkpoint of the next epoch.
+
+A link goes from `c` to the epoch after that. -/
 theorem kFinalizedByOn_two {start middle after : ForkedBeaconState preset} {c d : Checkpoint}
     {run : Run config checks start after}
     (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
@@ -837,8 +842,9 @@ theorem Run.finalized_ruleOn {start after : ForkedBeaconState preset}
 
 /-! ## The source of a call along a run -/
 
-/-- The source of a call on a prefix `pre` of a run is justified on `pre`, before the call, and
-earlier than its target.
+/-- The source of a call on a prefix `pre` of a run is justified on `pre`, before the call.
+
+It is earlier than its target.
 
 So the source's call ran on the run, at or before the call's state. -/
 theorem CallRecord.sourceOn {start after : ForkedBeaconState preset} {fork : Fork}

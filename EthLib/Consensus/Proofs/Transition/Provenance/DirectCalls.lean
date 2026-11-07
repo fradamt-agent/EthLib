@@ -15,8 +15,12 @@ Such a call reads the state as it is, with no caching of a slot before it.
 
 `CallRecord` covers it, as it covers a call at an epoch boundary.
 
-So the facts of a call hold for it: the source is justified and earlier, the source block is an
-ancestor of the target block, the target root is a block's, and the counted voters signed.
+So the facts of a call hold for it.
+
+- The source is justified, and earlier than the target.
+- The source block is an ancestor of the target block.
+- The target root is a block's root.
+- The counted voters signed.
 
 This file adds what the call writes.
 
@@ -60,8 +64,9 @@ theorem JustifiedByCall.extendChain {start after last : ForkedBeaconState preset
   have ⟨fork, state, cached, weighed, voters, call⟩ := justified
   ⟨fork, state, cached, weighed, voters, call.extendChain chain⟩
 
-/-- A checkpoint that a call justified is read again at the end of the chain, while still in
-the buffer. -/
+/-- A checkpoint that a call justified is read again at the end of the chain.
+
+That holds while its root is still in the buffer. -/
 theorem JustifiedByCall.read_at_end {start after : ForkedBeaconState preset}
     {checkpoint : Checkpoint}
     (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
@@ -81,8 +86,9 @@ theorem JustifiedByCall.read_at_end {start after : ForkedBeaconState preset}
   rw [read] at stable
   exact ⟨slot, slotEq, by omega, stable⟩
 
-/-- Two checkpoints that calls of one chain justified: the earlier block is an ancestor, along
-blocks past the first slot of its epoch, or a state of the chain has the zero root.
+/-- Two checkpoints that calls of one chain justified: the earlier block is an ancestor.
+
+It is one along blocks past the first slot of its epoch, or a state has the zero root.
 
 As `JustifiedBy.pastAncestor`, for any calls. -/
 theorem JustifiedByCall.pastAncestor {start after : ForkedBeaconState preset}
@@ -118,9 +124,11 @@ theorem JustifiedByCall.pastAncestor {start after : ForkedBeaconState preset}
     rw [Except.ok.inj read']
     exact .inl .refl
 
-/-- The root of a checkpoint that a call justified is the root of a block of the chain at or
-before the first slot of its epoch, or the start's header, or a state of the chain has the zero
-root.
+/-- The root of a checkpoint that a call justified is the root of a block of the chain.
+
+That block is at or before the first slot of the checkpoint's epoch.
+
+Or the root is the start's header's, or a state of the chain has the zero root.
 
 As `JustifiedBy.root_block`, for any call. -/
 theorem CallRecord.root_block {start after : ForkedBeaconState preset} {fork : Fork}
@@ -153,8 +161,9 @@ theorem CallRecord.root_block {start after : ForkedBeaconState preset} {fork : F
 
 /-! ## What a direct call writes -/
 
-/-- A direct call on a state of a chain keeps the current justified checkpoint, or justified the
-new one itself. -/
+/-- A direct call on a state of a chain keeps the current justified checkpoint.
+
+Or it justified the new one itself. -/
 theorem processJustificationAndFinalization_current {start : ForkedBeaconState preset}
     {fork : Fork} {state weighed : BeaconState preset fork}
     (head : Reaches config checks start ⟨fork, state⟩)
@@ -175,8 +184,9 @@ theorem processJustificationAndFinalization_current {start : ForkedBeaconState p
 
 /-- A checkpoint `c` is `k`-finalized along a chain, for `k` 1 or 2, with any calls as witnesses.
 
-As `KFinalizedBy`, with the checkpoints justified by the start or by any call, and the link a call
-of any kind. -/
+As `KFinalizedBy`, with the checkpoints justified by the start or by any call.
+
+The link is a call of any kind. -/
 def KFinalizedByCall (config : Config) (checks : SignatureChecks)
     (start after : ForkedBeaconState preset) (c : Checkpoint) : Prop :=
   ∃ k, 1 ≤ k ∧ k ≤ 2 ∧ ∃ cs : ℕ → Checkpoint, cs 0 = c ∧
@@ -237,8 +247,9 @@ theorem kFinalizedByCall_one {start after : ForkedBeaconState preset} {c : Check
     · exact link.target_nonzero wide fromStart
     · omega
 
-/-- `2`-finalization from a justified `c`, a justified checkpoint of the next epoch, and a link of
-any call from `c` to the epoch after it. -/
+/-- `2`-finalization from a justified `c` and a justified checkpoint of the next epoch.
+
+A link of any call goes from `c` to the epoch after that. -/
 theorem kFinalizedByCall_two {start after : ForkedBeaconState preset} {c d : Checkpoint}
     (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (genesis : Genesis config checks start)
@@ -289,15 +300,17 @@ theorem kFinalizedByCall_two {start after : ForkedBeaconState preset} {c d : Che
     · exact link.target_nonzero wide (fromStart _)
     · omega
 
-/-- From genesis, the finalized checkpoint that a direct call on a state of a chain writes is the
-state's, or genesis, or `k`-finalized by one of the four rules.
+/-- From genesis, the finalized checkpoint that a direct call writes is `k`-finalized.
+
+Or it is the state's, or genesis.
 
 The rules are those of a call at an epoch boundary, with the state itself as what the call reads.
 
 The link to the current epoch is this call's.
 
-The link to the previous epoch is this call's, or the last call of the chain's, which justified
-that epoch while it was current.
+The link to the previous epoch is this call's, or the last call of the chain's.
+
+That last call justified the epoch while it was current.
 
 The buffer of roots must span four epochs: `4 * SLOTS_PER_EPOCH ≤ N`. -/
 theorem processJustificationAndFinalization_finalized_rule {start : ForkedBeaconState preset}
@@ -319,7 +332,8 @@ theorem processJustificationAndFinalization_finalized_rule {start : ForkedBeacon
   rcases processJustificationAndFinalization_weighs weighedOk with ⟨_, rfl⟩ |
     ⟨later, _, _, _, _, _, _, _, _, _, _, weighs⟩
   · exact .inl rfl
-  obtain ⟨_, _, _, _, _, _, _, _, _, finalizedRule, -⟩ := weighJustificationAndFinalization_eq weighs
+  obtain ⟨_, _, _, _, _, _, _, _, _, finalizedRule, -⟩ :=
+    weighJustificationAndFinalization_eq weighs
   have laterNat := UInt64.lt_iff_toNat_lt.mp later
   change 0 + 1 < _ at laterNat
   have previousNat := getPreviousEpoch_toNat state

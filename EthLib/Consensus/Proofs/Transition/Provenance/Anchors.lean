@@ -13,8 +13,9 @@ That header is the header of the latest block at or before the slot.
 
 Or no block ran since the start, and it is the start's header.
 
-So the root of a justified checkpoint is the root of an actual block of the chain, at or before
-the first slot of its epoch.
+So the root of a justified checkpoint is the root of an actual block of the chain.
+
+That block is at or before the first slot of the checkpoint's epoch.
 
 A block whose root is zero leaves that zero root in the next caching, which is evidence.
 -/
@@ -34,13 +35,15 @@ From genesis this is the genesis block, which no block step of the chain applied
 def StartHeaderRoot (start : ForkedBeaconState preset) (root : Root) : Prop :=
   ∃ stateRoot, hashTreeRoot { start.state.latestBlockHeader with stateRoot } = .ok root
 
-/-- The header that a caching stores is the header of a block of the chain at or before the slot,
-or the start's header, or a state of the chain has the zero root. -/
+/-- The header that a caching stores is the header of a block at or before the slot.
+
+Or it is the start's header, or a state of the chain has the zero root. -/
 theorem Reaches.cachedHeader_block {start after : ForkedBeaconState preset} {fork : Fork}
     {state cached : BeaconState preset fork} (head : Reaches config checks start ⟨fork, state⟩)
     (cachedOk : processSlot state = .ok cached) (tail : Reaches config checks ⟨fork, state⟩ after)
     {root : Root} (rootOk : hashTreeRoot cached.latestBlockHeader = .ok root) :
-    (∃ (parentRoot : Root) (slot : Slot), ChainBlockAt config checks start after parentRoot root slot ∧
+    (∃ (parentRoot : Root) (slot : Slot),
+      ChainBlockAt config checks start after parentRoot root slot ∧
         slot.toNat ≤ state.slot.toNat) ∨
       StartHeaderRoot start root ∨ ZeroRootFound config checks start after := by
   obtain ⟨stateRoot, -, stateRootOk, header, -⟩ := processSlot_roots cachedOk
@@ -85,13 +88,15 @@ theorem Reaches.cachedHeader_block {start after : ForkedBeaconState preset} {for
         rootOk, rfl⟩, slotLe⟩
   · exact .inr (.inr ⟨_, blockChain, toState.trans tail, zero⟩)
 
-/-- The root of a checkpoint that a call justified is the root of a block of the chain at or
-before the first slot of its epoch.
+/-- The root of a checkpoint that a call justified is the root of a block of the chain.
+
+That block is at or before the first slot of the checkpoint's epoch.
 
 Or it is the start's header, or a state of the chain has the zero root.
 
-The first slot of the epoch must be from the start on, as from genesis, and the buffer of roots
-must span two epochs. -/
+The first slot of the epoch must be from the start on, as from genesis.
+
+The buffer of roots must span two epochs. -/
 theorem JustifiedBy.root_block {start after : ForkedBeaconState preset} {checkpoint : Checkpoint}
     (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (justified : JustifiedBy config checks start after checkpoint)
@@ -120,11 +125,13 @@ theorem JustifiedBy.root_block {start after : ForkedBeaconState preset} {checkpo
   · exact .inr (.inl genesisRoot)
   · exact .inr (.inr zero)
 
-/-- From genesis, the finalized and the current justified checkpoint of a chain's end have the
-root of a block of the chain at or before the first slot of their epoch.
+/-- From genesis, the finalized and current justified checkpoints of a chain have a block's root.
 
-Or the root is zero, of the genesis checkpoint, or the genesis block's, or a state of the chain
-has the zero root. -/
+That block is at or before the first slot of the checkpoint's epoch.
+
+Or the root is zero, of the genesis checkpoint, or it is the genesis block's root.
+
+Or a state of the chain has the zero root. -/
 theorem Reaches.checkpoint_root_block {start after : ForkedBeaconState preset}
     (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (genesis : Genesis config checks start) (chain : Reaches config checks start after)
