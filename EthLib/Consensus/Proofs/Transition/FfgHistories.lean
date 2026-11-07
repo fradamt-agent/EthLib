@@ -1,6 +1,7 @@
 module
 
 public import EthLib.Consensus.Proofs.Transition.FfgProvenance
+public import EthLib.Consensus.Proofs.Transition.Provenance.Finality
 
 /-!
 # Proofs: the FFG refinement of two histories from genesis
@@ -9,7 +10,8 @@ Two histories of the beacon chain start at one genesis state `g` and end at `a` 
 
 This file builds the `FfgRefinement` of the pair from the provenance proofs.
 
-- Blocks: `LinkedRoot` over the parent links of the actual blocks of both histories.
+- Blocks: epoch-boundary pairs, `EpochBlock`, over the parent links of the actual blocks of both
+  histories, with each child's slot.
 - Evidence: a state with the zero root, or a cached header with the zero root, on either history.
 - Signed votes: data that a validator signed in an attestation checked in a block of either
   history.
@@ -18,11 +20,15 @@ This file builds the `FfgRefinement` of the pair from the provenance proofs.
   a call justified.
 - Finalized: the finalized checkpoint of every state of either history.
 
-The provenance proofs give every field but two, which stay hypotheses.
+The provenance proofs give every field.
 
-- `upgradeVoters`: from Altair, a voter whose timely-target flag was set by the Altair upgrade,
-  which translated pending attestations, signed matching data.
-- `finalRule`: the finalized checkpoint of each state comes from one of the four finalization rules.
+One fact behind `voters_signed` stays a hypothesis, `upgradeVoters`.
+
+From Altair, a voter whose timely-target flag was set by the Altair upgrade, which translated
+pending attestations, signed matching data.
+
+The finalization rule needs the root of a checkpoint three epochs back to stay in the buffer:
+`4 * SLOTS_PER_EPOCH ≤ SLOTS_PER_HISTORICAL_ROOT`.
 
 `accountable_safety_histories` then states accountable safety for the two histories.
 
@@ -41,24 +47,25 @@ section Histories
 
 variable (config checks) (g a b : ForkedBeaconState preset)
 
-/-- A state from which one of the two histories continues to its end. -/
+/-- A state that genesis reaches, and from which one of the two histories continues to its end. -/
 def OnEither (x : ForkedBeaconState preset) : Prop :=
-  Reaches config checks x a ∨ Reaches config checks x b
+  Reaches config checks g x ∧ (Reaches config checks x a ∨ Reaches config checks x b)
 
 /-- The parent links of the actual blocks of both histories. -/
-def historyLinks (p r : Root) : Prop :=
-  ∃ x, OnEither config checks a b x ∧ ChainBlock config checks g x p r
+def historyLinks (p r : Root) (slot : ℕ) : Prop :=
+  ∃ x, OnEither config checks g a b x ∧
+    ∃ s : Slot, ChainBlockAt config checks g x p r s ∧ s.toNat = slot
 
 /-- A hash with zero output on either history: a state root or a cached header root. -/
 def historyEvidence : Prop :=
-  ∃ x, OnEither config checks a b x ∧
+  ∃ x, OnEither config checks g a b x ∧
     (ZeroRootFound config checks g x ∨ ZeroHeaderFound config checks g x)
 
-/-- The facts that the provenance proofs leave open, as hypotheses. -/
+/-- The fact that the provenance proofs leave open, as a hypothesis. -/
 structure HistoryObligations : Prop where
   /-- From Altair, a voter whose flag was there at the start or came from the Altair upgrade
   signed data with the call's source and target. -/
-  upgradeVoters : ∀ x, OnEither config checks a b x →
+  upgradeVoters : ∀ x, OnEither config checks g a b x →
     ∀ (fork : Base.Fork) (state cached weighed next : BeaconState preset fork)
       (voters : List ValidatorIndex) (c : Checkpoint),
       WeighingCall config checks g x fork state cached weighed next voters c →
@@ -68,48 +75,46 @@ structure HistoryObligations : Prop where
             c.epoch) →
         ∃ data, data.target = c ∧ SignedVote config checks g ⟨fork, state⟩ i data ∧
           data.source = recordSource cached c.epoch
-  /-- The finalized checkpoint of each state is genesis, or one of the four rules set it. -/
-  finalRule : ∀ x, OnEither config checks a b x →
-    x.state.finalizedCheckpoint = ⟨GENESIS_EPOCH, Vector.replicate 32 0⟩ ∨
-    ∃ k, 1 ≤ k ∧ ∃ cs : ℕ → Checkpoint, cs 0 = x.state.finalizedCheckpoint ∧
-      (∀ i ≤ k, (cs i).epoch.toNat = x.state.finalizedCheckpoint.epoch.toNat + i) ∧
-      (∀ i < k, JustifiedOrStart config checks g x (cs i)) ∧
-      (∀ i < k, ChainAncestor config checks g x (cs i).root (cs (i + 1)).root ∨
-        ZeroRootFound config checks g x) ∧
-      (∀ i ≤ k, 1 ≤ i → (cs i).root ≠ Vector.replicate 32 0 ∨ ZeroHeaderFound config checks g x) ∧
-      ∃ (fork : Base.Fork) (state cached weighed next : BeaconState preset fork)
-        (voters : List ValidatorIndex),
-        WeighingCall config checks g x fork state cached weighed next voters (cs k) ∧
-        recordSource cached (cs k).epoch = x.state.finalizedCheckpoint
 
 end Histories
 
 /-- The genesis checkpoint maps to the genesis block. -/
-theorem genesis_toFfg {links : Root → Root → Prop} :
-    Checkpoint.toFfg (LinkedRoot.ofRoot (links := links))
+theorem genesis_toFfg {links : Root → Root → ℕ → Prop} {spe : ℕ} :
+    Checkpoint.toModel (EpochBlock.ofCheckpoint (links := links) (slotsPerEpoch := spe))
         ⟨GENESIS_EPOCH, Vector.replicate 32 0⟩ = ⟨⟨none⟩, 0⟩ := by
-  simp [Checkpoint.toFfg, LinkedRoot.ofRoot, GENESIS_EPOCH]
+  simp [Checkpoint.toModel, EpochBlock.ofCheckpoint, GENESIS_EPOCH]
+
+/-- Ancestry along blocks of one history past the first slot of an epoch is ancestry in the pair
+order of both histories. -/
+theorem pastAncestor_history {g a b x : ForkedBeaconState preset}
+    (hx : OnEither config checks g a b x) {e : ℕ} {r r' : Root}
+    (path : PastAncestor config checks g x (e * preset.SLOTS_PER_EPOCH.toNat) r r') :
+    Relation.ReflTransGen
+      (EpochBlock.after (historyLinks config checks g a b) preset.SLOTS_PER_EPOCH.toNat e) r r' :=
+  Relation.ReflTransGen.mono (fun _ _ ⟨s, at_, lt⟩ => ⟨s.toNat, ⟨x, hx, s, at_, rfl⟩, lt⟩) _ _
+    path
 
 /-- The FFG refinement of two histories from genesis. -/
 def historyRefinement {g a b : ForkedBeaconState preset} (genesis : Genesis config checks g)
-    (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (wide4 : 4 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (within : ∀ (fork : Base.Fork) (state : BeaconState preset fork),
       Reaches config checks g ⟨fork, state⟩ → state.RegistryWithinLimit)
     (open_ : HistoryObligations config checks g a b) :
-    FfgRefinement (LinkedRoot (historyLinks config checks g a b)) where
-  block := LinkedRoot.ofRoot
+    FfgRefinement
+      (EpochBlock (historyLinks config checks g a b) preset.SLOTS_PER_EPOCH.toNat) where
+  block := EpochBlock.ofCheckpoint
   genesis := ⟨none⟩
   evidence := historyEvidence config checks g a b
-  signed := {p | ∃ y x, OnEither config checks a b x ∧ Reaches config checks y x ∧
+  signed := {p | ∃ y x, OnEither config checks g a b x ∧ Reaches config checks y x ∧
     SignedVote config checks g y p.1 p.2}
-  records := {r | ∃ x, OnEither config checks a b x ∧
+  records := {r | ∃ x, OnEither config checks g a b x ∧
     ∃ (fork : Base.Fork) (state cached weighed next : BeaconState preset fork)
       (voters : List ValidatorIndex) (c : Checkpoint),
       WeighingCall config checks g x fork state cached weighed next voters c ∧
       r = ⟨recordSource cached c.epoch, c, Weighing.ofState cached voters.toFinset⟩}
-  justified := {c | ∃ x, OnEither config checks a b x ∧ JustifiedOrStart config checks g x c}
-  finalized := {c | ∃ x, OnEither config checks a b x ∧ c = x.state.finalizedCheckpoint}
+  justified := {c | ∃ x, OnEither config checks g a b x ∧ JustifiedOrStart config checks g x c}
+  finalized := {c | ∃ x, OnEither config checks g a b x ∧ c = x.state.finalizedCheckpoint}
   justified_recorded := by
     rintro c ⟨x, hx, j⟩
     obtain ⟨-, previous, current, finalized⟩ := genesis_state genesis
@@ -129,19 +134,22 @@ def historyRefinement {g a b : ForkedBeaconState preset} (genesis : Genesis conf
     have fromStart : g.state.slot.toNat ≤ c.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat := by
       rw [(genesis_state genesis).1]
       exact Nat.zero_le _
-    exact source_le_target_model (chain := ChainBlock config checks g x)
-      (fun _ _ h => ⟨x, hx, h⟩) (call.source_ancestor wide genesis)
-      (fun z => ⟨x, hx, .inl z⟩)
-      ((call.target_nonzero wide fromStart).imp_right fun z => ⟨x, hx, .inr z⟩)
+    rcases call.source_pastAncestor (by omega) genesis with zero | path | found
+    · exact .inl (EpochBlock.ofCheckpoint_le (.inl zero))
+    · rcases call.target_nonzero (by omega) fromStart with nonzero | header
+      · exact .inl (EpochBlock.ofCheckpoint_le (.inr ⟨
+          (call.source ⟨g, genesis, .refl g⟩).2.le, pastAncestor_history hx path, nonzero⟩))
+      · exact .inr ⟨x, hx, .inr header⟩
+    · exact .inr ⟨x, hx, .inl found⟩
   voters_signed := by
     rintro r ⟨x, hx, fork, state, cached, weighed, next, voters, c, call, rfl⟩ i hi
     simp only [Weighing.ofState, List.mem_toFinset] at hi
     have member : ∀ data, SignedVote config checks g ⟨fork, state⟩ i data →
-        (i, data) ∈ {p : ValidatorIndex × AttestationData | ∃ y x, OnEither config checks a b x ∧
+        (i, data) ∈ {p : ValidatorIndex × AttestationData | ∃ y x, OnEither config checks g a b x ∧
           Reaches config checks y x ∧ SignedVote config checks g y p.1 p.2} :=
       fun data signed => ⟨⟨fork, state⟩, x, hx, call.toAfter, signed⟩
     by_cases altair : .altair ≤ fork
-    · rcases call.voters_signed_of_reachable wide ⟨g, genesis, .refl g⟩ altair i hi with
+    · rcases call.voters_signed_of_reachable (by omega) ⟨g, genesis, .refl g⟩ altair i hi with
         start | upgraded | ⟨data, target, signed, source⟩
       · obtain ⟨data, target, signed, source⟩ :=
           open_.upgradeVoters x hx fork state cached weighed next voters c call altair i hi
@@ -173,23 +181,26 @@ def historyRefinement {g a b : ForkedBeaconState preset} (genesis : Genesis conf
       activeAt_lt ((mem_active_iff cachedWithin).mp (active i mem))
   finalized_rule := by
     rintro c ⟨x, hx, rfl⟩
-    rcases open_.finalRule x hx with genesisCheckpoint | ⟨k, hk, cs, h0, epochs, justified,
-      ancestors, nonzero, fork, state, cached, weighed, next, voters, call, source⟩
+    rcases Reaches.finalized_rule wide4 genesis hx.1 with genesisCheckpoint |
+      ⟨k, hk, -, cs, h0, epochs, justified, ancestors, nonzero, fork, state, cached, weighed, next,
+        voters, call, source⟩
     · exact .inl (by rw [genesisCheckpoint]; exact genesis_toFfg)
     refine .inr ⟨k, hk, cs, h0, epochs, fun i hi => ⟨x, hx, justified i hi⟩, fun i hi => ?_,
       _, ⟨x, hx, fork, state, cached, weighed, next, voters, cs k, call, rfl⟩, source, rfl⟩
     rcases ancestors i hi with path | zero
     · rcases nonzero (i + 1) hi (Nat.le_add_left 1 i) with ne | header
-      · exact .inl (LinkedRoot.ofRoot_le (.inr ⟨Relation.ReflTransGen.mono
-          (fun _ _ h => ⟨x, hx, h⟩) _ _ path, ne⟩))
+      · have ei := epochs i hi.le
+        have ej := epochs (i + 1) hi
+        exact .inl (EpochBlock.ofCheckpoint_le (.inr ⟨by omega, pastAncestor_history hx path, ne⟩))
       · exact .inr ⟨x, hx, .inr header⟩
     · exact .inr ⟨x, hx, .inl zero⟩
 
 open scoped Classical in
 /-- Accountable safety for two histories of the beacon chain from one genesis.
 
-Take a state on each history, or two states of one, whose finalized checkpoints conflict:
-neither root leads to the other through the parent links of both histories.
+Take a state on each history, or two states of one, whose finalized checkpoints conflict as
+epoch-boundary pairs: neither is the epoch-boundary block, at its epoch, of the other's chain,
+through the parent links of both histories.
 
 Take a reference weighing `ω₀`, and a bound `D` on the drift from it of every weighing call of
 either history with a target between the two finalized epochs.
@@ -199,22 +210,23 @@ attestation data, both checked in blocks of the histories, that the beacon chain
 
 Otherwise a state or a cached block header of the histories has the zero root.
 
-The open obligations are the finalization rule and the voters of the Altair upgrade. -/
+The open obligation is the voters of the Altair upgrade. -/
 theorem accountable_safety_histories {g a b : ForkedBeaconState preset}
     (genesis : Genesis config checks g)
-    (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (wide4 : 4 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (within : ∀ (fork : Base.Fork) (state : BeaconState preset fork),
       Reaches config checks g ⟨fork, state⟩ → state.RegistryWithinLimit)
     (open_ : HistoryObligations config checks g a b)
-    {x₁ x₂ : ForkedBeaconState preset} (on₁ : OnEither config checks a b x₁)
-    (on₂ : OnEither config checks a b x₂)
+    {x₁ x₂ : ForkedBeaconState preset} (on₁ : OnEither config checks g a b x₁)
+    (on₂ : OnEither config checks g a b x₂)
     (conflicting : Conflicting
-      (LinkedRoot.ofRoot (links := historyLinks config checks g a b)
-        x₁.state.finalizedCheckpoint.root)
-      (LinkedRoot.ofRoot x₂.state.finalizedCheckpoint.root))
+      (EpochBlock.ofCheckpoint (links := historyLinks config checks g a b)
+        (slotsPerEpoch := preset.SLOTS_PER_EPOCH.toNat)
+        x₁.state.finalizedCheckpoint)
+      (EpochBlock.ofCheckpoint x₂.state.finalizedCheckpoint))
     (ω₀ : Weighing ValidatorIndex) {D : ℕ}
-    (hD : ∀ r ∈ (historyRefinement genesis wide lookahead within open_).records,
+    (hD : ∀ r ∈ (historyRefinement genesis wide4 lookahead within open_).records,
       min x₁.state.finalizedCheckpoint.epoch.toNat x₂.state.finalizedCheckpoint.epoch.toNat ≤
         r.target.epoch.toNat →
       r.target.epoch.toNat ≤
@@ -222,11 +234,11 @@ theorem accountable_safety_histories {g a b : ForkedBeaconState preset}
       Weighing.drift ω₀ r.weighing ≤ D) :
     stake ω₀.stake ω₀.active ≤
       3 * stake ω₀.stake {i ∈ ω₀.active | ∃ data1 data2,
-        (i, data1) ∈ (historyRefinement genesis wide lookahead within open_).signed ∧
-        (i, data2) ∈ (historyRefinement genesis wide lookahead within open_).signed ∧
+        (i, data1) ∈ (historyRefinement genesis wide4 lookahead within open_).signed ∧
+        (i, data2) ∈ (historyRefinement genesis wide4 lookahead within open_).signed ∧
         isSlashableAttestationData data1 data2 = true} + 2 * D ∨
       historyEvidence config checks g a b :=
-  (historyRefinement genesis wide lookahead within open_).accountable_safety
+  (historyRefinement genesis wide4 lookahead within open_).accountable_safety
     ⟨x₁, on₁, rfl⟩ ⟨x₂, on₂, rfl⟩ conflicting ω₀ hD
 
 open scoped Classical in
@@ -239,35 +251,40 @@ open scoped Classical in
 A fork-choice store holds such a pair: its finalized and its justified checkpoint each come from
 a state that its chain reached, possibly on different branches.
 
-If the epoch of `F` is at most that of `J` and their blocks conflict, the conclusion of
-`accountable_safety_histories` holds. -/
+If the epoch of `F` is at most that of `J` and they conflict as epoch-boundary pairs, the
+conclusion of
+`accountable_safety_histories` holds.
+
+A store compares its checkpoints as such pairs, so its failed descent check is meant to give this
+conflict, or hash evidence; that link is not proved here. -/
 theorem accountable_safety_histories_justified {g a b : ForkedBeaconState preset}
     (genesis : Genesis config checks g)
-    (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (wide4 : 4 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (within : ∀ (fork : Base.Fork) (state : BeaconState preset fork),
       Reaches config checks g ⟨fork, state⟩ → state.RegistryWithinLimit)
     (open_ : HistoryObligations config checks g a b)
-    {xF xJ : ForkedBeaconState preset} (onF : OnEither config checks a b xF)
-    (onJ : OnEither config checks a b xJ) (fromG : Reaches config checks g xJ)
+    {xF xJ : ForkedBeaconState preset} (onF : OnEither config checks g a b xF)
+    (onJ : OnEither config checks g a b xJ)
     (hle : xF.state.finalizedCheckpoint.epoch.toNat ≤
       xJ.state.currentJustifiedCheckpoint.epoch.toNat)
     (conflicting : Conflicting
-      (LinkedRoot.ofRoot (links := historyLinks config checks g a b)
-        xF.state.finalizedCheckpoint.root)
-      (LinkedRoot.ofRoot xJ.state.currentJustifiedCheckpoint.root))
+      (EpochBlock.ofCheckpoint (links := historyLinks config checks g a b)
+        (slotsPerEpoch := preset.SLOTS_PER_EPOCH.toNat)
+        xF.state.finalizedCheckpoint)
+      (EpochBlock.ofCheckpoint xJ.state.currentJustifiedCheckpoint))
     (ω₀ : Weighing ValidatorIndex) {D : ℕ}
-    (hD : ∀ r ∈ (historyRefinement genesis wide lookahead within open_).records,
+    (hD : ∀ r ∈ (historyRefinement genesis wide4 lookahead within open_).records,
       xF.state.finalizedCheckpoint.epoch.toNat ≤ r.target.epoch.toNat →
       r.target.epoch.toNat ≤ xJ.state.currentJustifiedCheckpoint.epoch.toNat →
       Weighing.drift ω₀ r.weighing ≤ D) :
     stake ω₀.stake ω₀.active ≤
       3 * stake ω₀.stake {i ∈ ω₀.active | ∃ data1 data2,
-        (i, data1) ∈ (historyRefinement genesis wide lookahead within open_).signed ∧
-        (i, data2) ∈ (historyRefinement genesis wide lookahead within open_).signed ∧
+        (i, data1) ∈ (historyRefinement genesis wide4 lookahead within open_).signed ∧
+        (i, data2) ∈ (historyRefinement genesis wide4 lookahead within open_).signed ∧
         isSlashableAttestationData data1 data2 = true} + 2 * D ∨
       historyEvidence config checks g a b :=
-  (historyRefinement genesis wide lookahead within open_).accountable_safety_justified
-    ⟨xF, onF, rfl⟩ ⟨xJ, onJ, fromG.checkpoints.2.2⟩ hle conflicting ω₀ hD
+  (historyRefinement genesis wide4 lookahead within open_).accountable_safety_justified
+    ⟨xF, onF, rfl⟩ ⟨xJ, onJ, onJ.1.checkpoints.2.2⟩ hle conflicting ω₀ hD
 
 end EthLib.Consensus
