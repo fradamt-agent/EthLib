@@ -1,6 +1,6 @@
 module
 
-public import EthLib.Consensus.Proofs.Transition.Provenance.Kept
+public import EthLib.Consensus.Proofs.Transition.Provenance.Committees
 
 /-!
 # Proofs: the steps that add no vote
@@ -689,7 +689,7 @@ theorem processOperations_votes {body : BeaconBlockBody preset fork} {parentSlot
     ∃ before attested, VotesKept state before ∧ Kept state before ∧
       body.attestations.data.toList.foldlM (processAttestation config checks · parentSlot ·)
         before = .ok attested ∧
-      VotesKept attested after := by
+      VotesKept attested after ∧ ShuffleKeptNear state before := by
   unfold processOperations at computed
   split at computed
   · unfold processOperationsGloas at computed
@@ -706,7 +706,8 @@ theorem processOperations_votes {body : BeaconBlockBody preset fork} {parentSlot
       (VotesKept.foldlM (fun _ _ _ ok => votesKept_processBlsToExecutionChange ok) changesOk).trans <|
       VotesKept.foldlM (fun _ _ _ ok => by
         rw [processPayloadAttestation_eq ok]
-        exact VotesKept.refl _) paid⟩
+        exact VotesKept.refl _) paid,
+      fun before => absurd ‹_› (not_le_of_before before (by decide))⟩
   simp only [bind_ok_iff, ensure_ok_iff, ← Array.foldlM_toList] at computed
   obtain ⟨_, _, _, _, _, proposersOk, _, attestersOk, _, attestedOk, _, depositedOk, exited,
     exitsOk, changed, changesOk, requestsOk⟩ := computed
@@ -730,7 +731,15 @@ theorem processOperations_votes {body : BeaconBlockBody preset fork} {parentSlot
     attestedOk,
     (VotesKept.foldlM (fun _ _ _ ok => votesKept_processDeposit ok) depositedOk).trans <|
     (VotesKept.foldlM (fun _ _ _ ok => votesKept_processVoluntaryExit ok) exitsOk).trans <|
-    changes.trans requests⟩
+    changes.trans requests,
+    fun before _ _ _ bound _ =>
+      have keptSlashed := Kept.foldlM (fun _ _ _ ok => kept_processProposerSlashing ok) proposersOk
+      (ShuffleKept.foldlM (fun _ _ _ ok => kept_processProposerSlashing ok)
+        (fun _ _ _ bound ok => ShuffleKept.processProposerSlashing before bound ok) bound
+        proposersOk).trans
+      (ShuffleKept.foldlM (fun _ _ _ ok => kept_processAttesterSlashing ok)
+        (fun _ _ _ bound ok => ShuffleKept.processAttesterSlashing before bound ok)
+        (by unfold getCurrentEpoch at bound ⊢; rw [keptSlashed.slot]; exact bound) attestersOk)⟩
 
 /-- A block adds votes only in its attestations.
 
@@ -740,7 +749,7 @@ theorem processBlock_votes {block : BeaconBlock preset fork}
     ∃ before attested, VotesKept state before ∧ SameReads state before ∧
       block.body.attestations.data.toList.foldlM
         (processAttestation config checks · state.latestBlockHeader.slot ·) before = .ok attested ∧
-      VotesKept attested after := by
+      VotesKept attested after ∧ ShuffleKeptNear state before := by
   unfold processBlock at computed
   split at computed
   · unfold processBlockAltair at computed
@@ -768,7 +777,7 @@ theorem processBlock_votes {block : BeaconBlock preset fork}
       · exact votesKept_processEth1Data votedOk
       · cases votedOk
         exact VotesKept.refl _
-    obtain ⟨before, attested, head, headKept, folded, tail⟩ := processOperations_votes operatedOk
+    obtain ⟨before, attested, head, headKept, folded, tail, -⟩ := processOperations_votes operatedOk
     -- Every step before the attestations keeps what they read.
     have reads : SameReads state voted := by
       have paidKept : Kept state paid := by
@@ -790,17 +799,34 @@ theorem processBlock_votes {block : BeaconBlock preset fork}
         (executedKept.trans <| (kept_processRandao revealedOk).trans votedKept).sameReads
     exact ⟨before, attested, paidVotes.trans <| headedVotes.trans <| executedVotes.trans <|
       (votesKept_processRandao revealedOk).trans <| votedVotes.trans head,
-      reads.trans headKept.sameReads, folded, tail.trans (votesKept_processSyncAggregate synced)⟩
+      reads.trans headKept.sameReads, folded, tail.trans (votesKept_processSyncAggregate synced),
+      fun before => absurd ‹_› (not_le_of_before before (Nat.le_refl _))⟩
   simp only [bind_ok_iff] at computed
   obtain ⟨headed, headerOk, revealed, randaoOk, voted, eth1Ok, operationsOk⟩ := computed
   have headedVotes : VotesKept state headed := by
     obtain ⟨_, _, rfl⟩ := processBlockHeader_eq headerOk
     exact .of_votes rfl
-  obtain ⟨before, attested, head, headKept, folded, tail⟩ := processOperations_votes operationsOk
+  obtain ⟨before, attested, head, headKept, folded, tail, prefixShuffle⟩ :=
+    processOperations_votes operationsOk
   have reads : SameReads state voted := (sameReads_processBlockHeader headerOk).trans
     ((kept_processRandao randaoOk).trans (kept_processEth1Data eth1Ok)).sameReads
+  -- Before the attestations only the RANDAO reveal writes a mix, at the current epoch.
+  have shuffle : ShuffleKeptNear state before := fun phase0 lookahead epoch finite bound near => by
+    have headedEpoch : getCurrentEpoch headed = getCurrentEpoch state := by
+      obtain ⟨_, _, rfl⟩ := processBlockHeader_eq headerOk
+      rfl
+    have votedEpoch : getCurrentEpoch voted = getCurrentEpoch state := by
+      have keptVoted := (kept_processRandao randaoOk).trans (kept_processEth1Data eth1Ok)
+      unfold getCurrentEpoch at headedEpoch ⊢
+      rw [keptVoted.slot, headedEpoch]
+    exact (ShuffleKept.processBlockHeader headerOk).trans <|
+      (ShuffleKept.processRandao lookahead (headedEpoch ▸ bound) (headedEpoch ▸ near)
+        randaoOk).trans <|
+      (ShuffleKept.processEth1Data eth1Ok).trans
+        (prefixShuffle phase0 lookahead epoch finite (votedEpoch ▸ bound) (votedEpoch ▸ near))
   exact ⟨before, attested, headedVotes.trans <| (votesKept_processRandao randaoOk).trans <|
-    (votesKept_processEth1Data eth1Ok).trans head, reads.trans headKept.sameReads, folded, tail⟩
+    (votesKept_processEth1Data eth1Ok).trans head, reads.trans headKept.sameReads, folded, tail,
+    shuffle⟩
 
 /-! ## The steps of an epoch -/
 

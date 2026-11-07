@@ -263,6 +263,50 @@ theorem JustifiedBy.source {start after : ForkedBeaconState preset} {checkpoint 
     · exact previousJustified.extendChain toAfter
   · exact recordSource_epoch_lt stateReachable cachedOk later recent
 
+/-- The source that a vote of epoch 1 read is the call's source, on a chain from genesis.
+
+In epoch 1 both justified checkpoints are those of genesis, and they stay to epoch 2. -/
+theorem recordSource_of_epochOne {start : ForkedBeaconState preset} {fork : Fork}
+    {state cached : BeaconState preset fork} {checkpoint voteSource : Checkpoint}
+    (reachable : Reachable config checks start) (cachedOk : processSlot state = .ok cached)
+    (later : GENESIS_EPOCH + 1 < getCurrentEpoch cached)
+    (recent : checkpoint.epoch = getPreviousEpoch cached ∨
+      checkpoint.epoch = getCurrentEpoch cached)
+    (exception : checkpoint.epoch.toNat = 1 ∧
+      ∃ (fork' : Fork) (epochOne : BeaconState preset fork'),
+        Reaches config checks start ⟨fork', epochOne⟩ ∧
+        Reaches config checks ⟨fork', epochOne⟩ ⟨fork, state⟩ ∧
+        (getCurrentEpoch epochOne).toNat = 1 ∧ voteSource = epochOne.currentJustifiedCheckpoint) :
+    voteSource = recordSource cached checkpoint.epoch := by
+  obtain ⟨first, fork', epochOne, headOne, chain, epoch, source⟩ := exception
+  -- In epoch 1 both justified checkpoints are the same, and they stay to epoch 2.
+  have settled : PreviousSettled epochOne :=
+    Reachable.previousSettled (forked := ⟨fork', epochOne⟩) (reachable.reaches headOne)
+  obtain ⟨sameOne, -⟩ := settled.1 (by omega)
+  have cachedSame : cached.previousJustifiedCheckpoint = state.previousJustifiedCheckpoint ∧
+      getCurrentEpoch cached = getCurrentEpoch state := by
+    obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+    exact ⟨rfl, rfl⟩
+  have laterNat := UInt64.lt_iff_toNat_lt.mp later
+  change 0 + 1 < _ at laterNat
+  have previousNat := getPreviousEpoch_toNat cached
+  -- The call is at epoch 2, and its target is the previous epoch.
+  have notCurrent : checkpoint.epoch ≠ getCurrentEpoch cached := by
+    intro same
+    rw [same] at first
+    omega
+  have callEpoch : (getCurrentEpoch state).toNat ≤ 2 := by
+    rw [← cachedSame.2]
+    rcases recent with same | same
+    · rw [same] at first
+      omega
+    · exact absurd same notCurrent
+  obtain ⟨previous, -⟩ := chain.justified_of_early callEpoch
+  unfold recordSource
+  rw [ite_eq_right_of_eq_false _ _ (eq_false notCurrent), cachedSame.1, source]
+  simp only at previous
+  rw [previous, sameOne]
+
 /-- From genesis, a counted voter of a weighing call signed the call's link, with no exception.
 
 The voter's data has the checkpoint as target and the call's source as source.
@@ -295,34 +339,8 @@ theorem JustifiedBy.voters_signed_of_reachable {start after : ForkedBeaconState 
   · exact .inl atStart
   · exact .inr (.inl upgraded)
   refine .inr (.inr ⟨data, target, signed, ?_⟩)
-  rcases source with same | ⟨first, fork', epochOne, headOne, chain, epoch, source⟩
+  rcases source with same | exception
   · exact same
-  -- In epoch 1 both justified checkpoints are the same, and they stay to epoch 2.
-  have settled : PreviousSettled epochOne :=
-    Reachable.previousSettled (forked := ⟨fork', epochOne⟩) (reachable.reaches headOne)
-  obtain ⟨sameOne, -⟩ := settled.1 (by omega)
-  have cachedSame : cached.previousJustifiedCheckpoint = state.previousJustifiedCheckpoint ∧
-      getCurrentEpoch cached = getCurrentEpoch state := by
-    obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
-    exact ⟨rfl, rfl⟩
-  have laterNat := UInt64.lt_iff_toNat_lt.mp later
-  change 0 + 1 < _ at laterNat
-  have previousNat := getPreviousEpoch_toNat cached
-  -- The call is at epoch 2, and its target is the previous epoch.
-  have notCurrent : checkpoint.epoch ≠ getCurrentEpoch cached := by
-    intro same
-    rw [same] at first
-    omega
-  have callEpoch : (getCurrentEpoch state).toNat ≤ 2 := by
-    rw [← cachedSame.2]
-    rcases recent with same | same
-    · rw [same] at first
-      omega
-    · exact absurd same notCurrent
-  obtain ⟨previous, -⟩ := chain.justified_of_early callEpoch
-  unfold recordSource
-  rw [ite_eq_right_of_eq_false _ _ (eq_false notCurrent), cachedSame.1, source]
-  simp only at previous
-  rw [previous, sameOne]
+  · exact recordSource_of_epochOne reachable cachedOk later recent exception
 
 end EthLib.Consensus

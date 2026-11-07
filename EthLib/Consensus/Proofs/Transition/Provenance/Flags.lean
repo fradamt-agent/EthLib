@@ -346,7 +346,7 @@ theorem Reaches.flags {start after : ForkedBeaconState preset}
         .block engine signed validateResult notDue computed
       obtain ⟨-, processed, -⟩ := applySignedBlock_ok computed
       have postSlot := processBlock_slot processed
-      obtain ⟨first, attested, head, firstReads, folded, tail⟩ := processBlock_votes processed
+      obtain ⟨first, attested, head, firstReads, folded, tail, -⟩ := processBlock_votes processed
       have attestedFlag : ∃ old, (epochFlags attested altair current)[index]? = some old ∧
           hasFlag old flagIndex = true := by
         cases current

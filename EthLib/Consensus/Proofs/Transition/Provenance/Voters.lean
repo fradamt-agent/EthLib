@@ -101,6 +101,49 @@ def SignedTarget (config : Config) (checks : SignatureChecks) (start after : For
       else site.previousJustifiedCheckpoint) ∧
     getBlockRoot site data.target.epoch = .ok data.target.root
 
+/-- A validator signed attestation data, checked at an actual site of a chain.
+
+This is `SignedTarget` without its last fact, the read of the target root at the site.
+
+Before Altair the inclusion does not read the target root: the weighing call compares it.
+
+A block step of the chain included an attestation with that data.
+
+The attestation ran at `site`, a state of the block's slot, after the attestations before it.
+
+Its indexed form names the validator among its attesters, and is valid at the site.
+
+Its source is the justified checkpoint of its target's epoch at the site. -/
+def SignedVote (config : Config) (checks : SignatureChecks) (start after : ForkedBeaconState preset)
+    (index : ValidatorIndex) (data : AttestationData) : Prop :=
+  ∃ (fork : Fork) (engine : ExecutionEngine preset fork) (signed : SignedBeaconBlock preset fork)
+    (validateResult : Bool) (state post first site recorded : BeaconState preset fork)
+    (pre suf : List (Attestation preset fork)) (attestation : Attestation preset fork)
+    (indexed : IndexedAttestation preset fork),
+    Reaches config checks start ⟨fork, state⟩ ∧ upgradeDue config ⟨fork, state⟩ = false ∧
+    applySignedBlock config checks engine state signed validateResult = .ok post ∧
+    Reaches config checks ⟨fork, post⟩ after ∧
+    VotesKept state first ∧
+    signed.message.body.attestations.data.toList = pre ++ attestation :: suf ∧
+    pre.foldlM (processAttestation config checks · state.latestBlockHeader.slot ·) first =
+      .ok site ∧
+    processAttestation config checks site state.latestBlockHeader.slot attestation = .ok recorded ∧
+    SameReads state site ∧ attestation.data = data ∧
+    getIndexedAttestation site attestation = .ok indexed ∧ index ∈ indexed.attestingIndices.data ∧
+    indexed.data = data ∧ isValidIndexedAttestation config checks site indexed = .ok true ∧
+    data.source = (if data.target.epoch = getCurrentEpoch site then site.currentJustifiedCheckpoint
+      else site.previousJustifiedCheckpoint)
+
+theorem SignedTarget.vote {start after : ForkedBeaconState preset} {index : ValidatorIndex}
+    {data : AttestationData} (signed : SignedTarget config checks start after index data) :
+    SignedVote config checks start after index data :=
+  have ⟨fork, engine, block, validateResult, state, post, first, site, recorded, pre, suf,
+    attestation, indexed, head, notDue, applied, tail, kept, split, prefixOk, siteOk, reads,
+    sameData, indexedOk, attesting, indexedData, valid, source, _⟩ := signed
+  ⟨fork, engine, block, validateResult, state, post, first, site, recorded, pre, suf, attestation,
+    indexed, head, notDue, applied, tail, kept, split, prefixOk, siteOk, reads, sameData, indexedOk,
+    attesting, indexedData, valid, source⟩
+
 /-- From Altair, a counted voter of a weighing call signed data with the call's target epoch.
 
 Take a weighing call of a chain, at a fork from Altair on, that reads `cached`.

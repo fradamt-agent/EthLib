@@ -125,6 +125,8 @@ def PendingAtStart (start : ForkedBeaconState preset) (pending : PendingAttestat
 
 The attestation ran at `site`, a state of the block's slot, after the attestations before it.
 
+The steps of the block before the attestations kept the inputs of the shuffles near its epoch.
+
 Its target is `epoch`, and its indexed form was valid there. -/
 def PendingRecordedBy (config : Config) (checks : SignatureChecks)
     (start after : ForkedBeaconState preset) (pending : PendingAttestation preset) (epoch : Epoch) :
@@ -135,7 +137,7 @@ def PendingRecordedBy (config : Config) (checks : SignatureChecks)
     Reaches config checks start ⟨fork, state⟩ ∧ upgradeDue config ⟨fork, state⟩ = false ∧
     applySignedBlock config checks engine state signed validateResult = .ok post ∧
     Reaches config checks ⟨fork, post⟩ after ∧
-    VotesKept state first ∧
+    VotesKept state first ∧ ShuffleKeptNear state first ∧
     signed.message.body.attestations.data.toList = pre ++ attestation :: suf ∧
     pre.foldlM (processAttestation config checks · state.latestBlockHeader.slot ·) first =
       .ok site ∧
@@ -230,7 +232,8 @@ theorem Reaches.pending {start after : ForkedBeaconState preset}
         .block engine signed validateResult notDue computed
       obtain ⟨-, processed, -⟩ := applySignedBlock_ok computed
       have postSlot := processBlock_slot processed
-      obtain ⟨first, attested, head, firstReads, folded, tail⟩ := processBlock_votes processed
+      obtain ⟨first, attested, head, firstReads, folded, tail, shuffle⟩ :=
+        processBlock_votes processed
       simp only at member postSlot before ⊢
       have attestedMember : pending ∈ epochPending attested before current := by
         cases current
@@ -251,7 +254,8 @@ theorem Reaches.pending {start after : ForkedBeaconState preset}
       · -- An attestation of the block recorded it.
         rw [flagsEpoch_of_slot postSlot, ← flagsEpoch_of_slot (firstReads.trans (Kept.sameReads siteSlot)).slot]
         exact .inr ⟨fork, engine, signed, validateResult, state, post, first, site, recorded,
-          pre, suf, attestation, middleChain, notDue, computed, .refl _, head, split, prefixOk,
+          pre, suf, attestation, middleChain, notDue, computed, .refl _, head, shuffle, split,
+          prefixOk,
           siteOk, firstReads.trans (Kept.sameReads siteSlot), epoch, written⟩
 
 end EthLib.Consensus

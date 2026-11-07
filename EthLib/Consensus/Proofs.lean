@@ -102,11 +102,13 @@ public import EthLib.Consensus.Proofs.Transition.ParentPayload
 public import EthLib.Consensus.Proofs.Transition.Payload
 public import EthLib.Consensus.Proofs.Transition.Provenance.Ancestry
 public import EthLib.Consensus.Proofs.Transition.Provenance.Attestations
+public import EthLib.Consensus.Proofs.Transition.Provenance.Committees
 public import EthLib.Consensus.Proofs.Transition.Provenance.Flags
 public import EthLib.Consensus.Proofs.Transition.Provenance.Justification
 public import EthLib.Consensus.Proofs.Transition.Provenance.Kept
 public import EthLib.Consensus.Proofs.Transition.Provenance.Links
 public import EthLib.Consensus.Proofs.Transition.Provenance.Pending
+public import EthLib.Consensus.Proofs.Transition.Provenance.PendingVoters
 public import EthLib.Consensus.Proofs.Transition.Provenance.Roots
 public import EthLib.Consensus.Proofs.Transition.Provenance.Settled
 public import EthLib.Consensus.Proofs.Transition.Provenance.Sources
