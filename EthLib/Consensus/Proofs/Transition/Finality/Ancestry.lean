@@ -474,4 +474,113 @@ theorem FinalityIncluded.append {cfg : Config} {checks : SignatureChecks}
     attestation, header, randao, eth1, proposers, attesters, attPrefix, attSuffix, ?_, facts⟩
   simp only [split, List.append_assoc, List.cons_append]
 
+/-- Threshold signers at a suffix cache remain included on the complete suffix. -/
+theorem finality_threshold_signer_on_suffix
+    {cfg : Config} {checks : SignatureChecks} {eng : ExecutionEngine p .phase0}
+    {g c before atStep cached : FinalityState p}
+    {common bs earlier rest : List (FinalityBlock p)} {count : Nat} {epoch : Epoch}
+    {indices : List ValidatorIndex} {i : ValidatorIndex}
+    (positive : 0 < p.MIN_SEED_LOOKAHEAD.toNat)
+    (history : p.MIN_SEED_LOOKAHEAD.toNat + 3 < p.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (initialized : finalityInitialized cfg checks g)
+    (shared : finalityRuns cfg checks eng g common c)
+    (split : bs = earlier ++ rest) (prefixOk : finalityRuns cfg checks eng c earlier before)
+    (advanced : advanceSlots cfg count before = .ok atStep)
+    (cache : processSlot atStep = .ok cached)
+    (threshold : FinalityThreshold cached epoch indices)
+    (member : i ∈ indices) (laterTarget : getCurrentEpoch c < epoch) :
+    ∃ data, FinalityIncluded cfg checks eng c bs i data ∧
+      data.target.epoch = epoch ∧
+      data.source = (if epoch = getCurrentEpoch cached then cached.currentJustifiedCheckpoint
+        else cached.previousJustifiedCheckpoint) ∧
+      getBlockRoot cached epoch = .ok data.target.root := by
+  obtain ⟨attestations, matching, indicesOk, _⟩ := threshold
+  obtain ⟨data, included, facts⟩ := finality_matching_signer_included positive history
+    initialized shared prefixOk advanced cache matching indicesOk member laterTarget
+  exact ⟨data, split ▸ included.append rest, facts⟩
+
+/-- The first crossing query above C consists only of checked suffix attestations. -/
+theorem finality_crossing_signers
+    {cfg : Config} {checks : SignatureChecks} {eng : ExecutionEngine p .phase0}
+    {g c after : FinalityState p} {common bs : List (FinalityBlock p)} {boundary : Nat}
+    (positive : 0 < p.MIN_SEED_LOOKAHEAD.toNat)
+    (history : p.MIN_SEED_LOOKAHEAD.toNat + 3 < p.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (initialized : finalityInitialized cfg checks g)
+    (shared : finalityRuns cfg checks eng g common c)
+    (ran : finalityRuns cfg checks eng c bs after)
+    (commonEpoch : (getCurrentEpoch c).toNat ≤ boundary)
+    (below : c.currentJustifiedCheckpoint.epoch.toNat ≤ boundary)
+    (above : boundary < after.currentJustifiedCheckpoint.epoch.toNat) :
+    ∃ cached checkpoint indices,
+      cached ∈ finalityObservations cfg checks eng c bs ∧
+      FinalityThreshold cached checkpoint.epoch indices ∧
+      boundary < checkpoint.epoch.toNat ∧
+      ∀ i ∈ indices, ∃ data, FinalityIncluded cfg checks eng c bs i data ∧
+        data.target = checkpoint ∧ data.source.epoch.toNat ≤ boundary := by
+  obtain ⟨h, timestamp, deposits, genesis⟩ := initialized.1
+  have inv := foldlM_ok_invariant Invariant
+    (fun _ _ _ prior ok => (stateTransition_invariant (by decide) prior ok).1)
+    (initializeBeaconStateFromEth1_invariant genesis).2 shared
+  obtain ⟨earlier, block, later, atBlock, offset, atStep, cached, justified, indices,
+    split, prefixOk, _, advanced, cache, _, observed, previousBelow, currentBelow,
+    targetAbove, threshold, rootOk⟩ := finality_justified_crossing inv ran below above
+  refine ⟨cached, justified.currentJustifiedCheckpoint, indices, observed, threshold,
+    targetAbove, ?_⟩
+  intro i member
+  have laterTarget : getCurrentEpoch c < justified.currentJustifiedCheckpoint.epoch := by
+    rw [UInt64.lt_iff_toNat_lt]
+    omega
+  obtain ⟨data, included, epochEq, sourceEq, targetRoot⟩ :=
+    finality_threshold_signer_on_suffix positive history initialized shared split prefixOk
+      advanced cache threshold member laterTarget
+  have roots : data.target.root = justified.currentJustifiedCheckpoint.root :=
+    Except.ok.inj (targetRoot.symm.trans rootOk)
+  have targetEq : data.target = justified.currentJustifiedCheckpoint := by
+    cases left : data.target
+    cases right : justified.currentJustifiedCheckpoint
+    simp only [left, right] at epochEq roots
+    cases epochEq
+    cases roots
+    rfl
+  refine ⟨data, included, targetEq, ?_⟩
+  rw [sourceEq]
+  split
+  · exact currentBelow
+  · exact previousBelow
+
+/-- Strictly nested targets and sources give slashable suffix evidence at every common signer. -/
+theorem finality_included_surround
+    {cfg : Config} {checks : SignatureChecks} {eng : ExecutionEngine p .phase0}
+    {c : FinalityState p} {a b : List (FinalityBlock p)} {i : ValidatorIndex}
+    {outer inner : AttestationData}
+    (outerIncluded : FinalityIncluded cfg checks eng c a i outer ∨
+      FinalityIncluded cfg checks eng c b i outer)
+    (innerIncluded : FinalityIncluded cfg checks eng c a i inner ∨
+      FinalityIncluded cfg checks eng c b i inner)
+    (sources : outer.source.epoch.toNat < inner.source.epoch.toNat)
+    (targets : inner.target.epoch.toNat < outer.target.epoch.toNat) :
+    FinalitySlashable cfg checks eng c a b i := by
+  refine ⟨outer, inner, outerIncluded, innerIncluded, ?_⟩
+  simp only [isSlashableAttestationData, Bool.or_eq_true, Bool.and_eq_true, decide_eq_true_eq]
+  exact .inr ⟨UInt64.lt_iff_toNat_lt.mpr sources, UInt64.lt_iff_toNat_lt.mpr targets⟩
+
+/-- Different target roots at the same epoch give an executable double-vote witness. -/
+theorem finality_included_double_vote
+    {cfg : Config} {checks : SignatureChecks} {eng : ExecutionEngine p .phase0}
+    {c : FinalityState p} {a b : List (FinalityBlock p)} {i : ValidatorIndex}
+    {left right : AttestationData}
+    (leftIncluded : FinalityIncluded cfg checks eng c a i left ∨
+      FinalityIncluded cfg checks eng c b i left)
+    (rightIncluded : FinalityIncluded cfg checks eng c a i right ∨
+      FinalityIncluded cfg checks eng c b i right)
+    (epochs : left.target.epoch = right.target.epoch)
+    (roots : left.target.root ≠ right.target.root) : FinalitySlashable cfg checks eng c a b i := by
+  have different : left ≠ right := by
+    intro same
+    exact roots (congrArg (fun d : AttestationData => d.target.root) same)
+  refine ⟨left, right, leftIncluded, rightIncluded, ?_⟩
+  simp only [isSlashableAttestationData, Bool.or_eq_true, Bool.and_eq_true, bne_iff_ne,
+    beq_iff_eq]
+  exact .inl ⟨different, epochs⟩
+
 end EthLib.Consensus
