@@ -930,4 +930,170 @@ theorem finality_runs_activation_history {cfg : Config} {checks : SignatureCheck
       middleSize limit first
     exact ih middleInv history.1 history.2 tail
 
+/-- Genesis activation cannot create a nonzero finite activation cohort. -/
+theorem finality_activateAtGenesis_activationCohort {s t : FinalityState p} {i : Nat}
+    {epoch : Epoch} (nonzero : epoch ≠ 0) (_finite : epoch ≠ FAR_FUTURE_EPOCH)
+    (ran : activateAtGenesis s i = .ok t)
+    (empty : (s.validators.data.toList.filter (·.activationEpoch == epoch)).length = 0) :
+    (t.validators.data.toList.filter (·.activationEpoch == epoch)).length = 0 := by
+  simp only [activateAtGenesis, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+    Except.ok.injEq] at ran
+  obtain ⟨v, read, balance, _, rfl⟩ := ran
+  by_cases inside : i < s.validators.data.size
+  · have exactIndex := toNat_toUInt64_of_lt (s.validators.bound (by decide)) inside
+    have found : s.validators.data[i]? = some v := by
+      unfold getValidator at read
+      rw [exactIndex] at read
+      split at read
+      · cases read; assumption
+      · cases read
+    split
+    · simp only [BeaconState.setValidator, Array.toList_set!]
+      rw [← List.countP_eq_length_filter, List.countP_set (by simpa using inside)]
+      have zeroCount : s.validators.data.toList.countP (·.activationEpoch == epoch) = 0 := by
+        simpa only [List.countP_eq_length_filter] using empty
+      simp only [zeroCount, GENESIS_EPOCH, beq_iff_eq, Ne.symm nonzero, ↓reduceIte,
+        Nat.zero_sub, Nat.add_zero]
+    · let effective := min (balance - balance % p.EFFECTIVE_BALANCE_INCREMENT)
+        p.MAX_EFFECTIVE_BALANCE
+      rw [finality_activationCohort_of_epochs
+        (finality_activationEpochs_setValidator found
+          { v with effectiveBalance := effective } rfl) epoch]
+      exact empty
+  · simp only [BeaconState.setValidator, Array.toList_set!]
+    rw [List.set_eq_of_length_le (by simpa using Nat.le_of_not_gt inside)]
+    exact empty
+
+/-- Genesis has no nonzero finite activation cohorts.
+
+The full initial active set belongs to epoch zero, which is excluded. -/
+theorem finality_initialized_activationCohort {cfg : Config} {checks : SignatureChecks}
+    {g : FinalityState p} (initialized : finalityInitialized cfg checks g)
+    {epoch : Epoch} (nonzero : epoch ≠ 0) (finite : epoch ≠ FAR_FUTURE_EPOCH) :
+    (g.validators.data.toList.filter (·.activationEpoch == epoch)).length = 0 := by
+  obtain ⟨⟨hash, time, deposits, ran⟩, _⟩ := initialized
+  simp only [initializeBeaconStateFromEth1, show ¬Fork.altair ≤ Fork.phase0 by decide,
+    ↓reduceDIte, bind_ok_iff, ensure_ok_iff, liftSsz_ok, pure, Except.pure,
+    Except.ok.injEq] at ran
+  obtain ⟨_, _, _, _, _, _, deposited, depositedOk, activated, activatedOk, _, _, rfl⟩ := ran
+  have initial : ∀ (a b : FinalityState p) entry,
+      genesisDeposit cfg checks (by decide) (deposits.map (·.data)) a entry = .ok b →
+      (b.validators.data.toList.filter (·.activationEpoch == epoch)).length =
+        (a.validators.data.toList.filter (·.activationEpoch == epoch)).length := by
+    intro a b entry ok
+    simp only [genesisDeposit, bind_ok_iff] at ok
+    obtain ⟨_, _, applied⟩ := ok
+    exact finality_processDeposit_activationCohort applied finite
+  have depositedZero := foldlM_ok_invariant
+    (fun u : FinalityState p =>
+      (u.validators.data.toList.filter (·.activationEpoch == epoch)).length = 0)
+    (fun _ _ _ previous ok => (initial _ _ _ ok).trans previous)
+    (by simp [emptyGenesisState]) depositedOk
+  change (activated.validators.data.toList.filter (·.activationEpoch == epoch)).length = 0
+  exact foldlM_ok_invariant
+    (fun u : FinalityState p =>
+      (u.validators.data.toList.filter (·.activationEpoch == epoch)).length = 0)
+    (fun _ _ _ previous ok =>
+      finality_activateAtGenesis_activationCohort nonzero finite ok previous)
+    depositedZero activatedOk
+
+/-- All finite genesis activation epochs are zero. -/
+theorem finality_initialized_activation_frontier {cfg : Config} {checks : SignatureChecks}
+    {g : FinalityState p} (initialized : finalityInitialized cfg checks g) :
+    FinalityActivationFrontier g ((getCurrentEpoch g).toNat + p.MAX_SEED_LOOKAHEAD.toNat) := by
+  intro v member finite
+  by_cases zero : v.activationEpoch = 0
+  · simp [zero]
+  · have empty := finality_initialized_activationCohort initialized zero finite
+    have present : v ∈ g.validators.data.toList.filter
+        (·.activationEpoch == v.activationEpoch) := by
+      simp only [List.mem_filter, beq_self_eq_true, and_true]
+      simpa using member
+    have positive := List.length_pos_of_mem present
+    omega
+
+/-- Reachability from genesis bounds every nonzero finite activation cohort. -/
+theorem finality_reachable_activation_history {cfg : Config} {checks : SignatureChecks}
+    {eng : ExecutionEngine p .phase0} {g t : FinalityState p}
+    {bs : List (FinalityBlock p)} {population cap : Nat}
+    (initialized : finalityInitialized cfg checks g)
+    (positive : 0 < p.SLOTS_PER_EPOCH.toNat)
+    (ran : finalityRuns cfg checks eng g bs t)
+    (size : t.validators.data.size ≤ population)
+    (limit : ∀ u : FinalityState p, u.validators.data.size ≤ population →
+      (getValidatorChurnLimit cfg u).toNat ≤ cap) :
+    FinalityActivationFrontier t
+      ((getCurrentEpoch t).toNat + p.MAX_SEED_LOOKAHEAD.toNat) ∧
+    ∀ epoch, epoch ≠ 0 → epoch ≠ FAR_FUTURE_EPOCH →
+      (t.validators.data.toList.filter (·.activationEpoch == epoch)).length ≤ cap := by
+  obtain ⟨_, _, _, genesis⟩ := initialized.1
+  exact finality_runs_activation_history (initializeBeaconStateFromEth1_invariant genesis).2
+    positive (finality_initialized_activation_frontier initialized)
+    (fun epoch nonzero finite => by
+      rw [finality_initialized_activationCohort initialized nonzero finite]
+      omega) size limit ran
+
+/-- Every collected weighing state inherits the bounded activation history. -/
+theorem finality_observations_activation_history {cfg : Config} {checks : SignatureChecks}
+    {eng : ExecutionEngine p .phase0} {c t : FinalityState p} {bs : List (FinalityBlock p)}
+    {population cap : Nat} (inv : Invariant c)
+    (positive : 0 < p.SLOTS_PER_EPOCH.toNat)
+    (frontier : FinalityActivationFrontier c
+      ((getCurrentEpoch c).toNat + p.MAX_SEED_LOOKAHEAD.toNat))
+    (bounded : ∀ epoch, epoch ≠ 0 → epoch ≠ FAR_FUTURE_EPOCH →
+      (c.validators.data.toList.filter (·.activationEpoch == epoch)).length ≤ cap)
+    (size : t.validators.data.size ≤ population)
+    (limit : ∀ u : FinalityState p, u.validators.data.size ≤ population →
+      (getValidatorChurnLimit cfg u).toNat ≤ cap)
+    (member : t ∈ finalityObservations cfg checks eng c bs) :
+    ∀ epoch, epoch ≠ 0 → epoch ≠ FAR_FUTURE_EPOCH →
+      (t.validators.data.toList.filter (·.activationEpoch == epoch)).length ≤ cap := by
+  simp only [finalityObservations, List.mem_cons, List.mem_flatMap] at member
+  rcases member with rfl | ⟨⟨b, i⟩, _, member⟩
+  · exact bounded
+  cases prefixOk : (bs.take i).foldlM (fun s b => stateTransition cfg checks eng s b true) c with
+  | error e => simp [prefixOk] at member
+  | ok before =>
+    simp only [prefixOk, List.mem_append, List.mem_cons, List.mem_flatMap] at member
+    have holds := finality_runs_invariant inv prefixOk
+    rcases member with output | rfl | ⟨count, _, member⟩
+    · cases block : stateTransition cfg checks eng before b true with
+      | error e => simp [block, Except.toOption] at output
+      | ok after =>
+        simp only [block, Except.toOption, Option.toList, List.mem_singleton] at output
+        subst t
+        have beforeSize := Nat.le_trans (finality_stateTransition_registry holds block).1 size
+        have previous := finality_runs_activation_history inv positive frontier bounded
+          beforeSize limit prefixOk
+        exact (finality_stateTransition_activation_history holds positive previous.1 previous.2
+          size limit block).2
+    · exact (finality_runs_activation_history inv positive frontier bounded size limit prefixOk).2
+    · cases slots : advanceSlots cfg count before with
+      | error e => simp [slots] at member
+      | ok atStep =>
+        simp only [slots, List.mem_cons] at member
+        have sameSize := finality_advanceSlots_size slots
+        rcases member with rfl | member
+        · have beforeSize : before.validators.data.size ≤ population := by
+            rwa [sameSize] at size
+          have previous := finality_runs_activation_history inv positive frontier bounded
+            beforeSize limit prefixOk
+          exact (finality_advanceSlots_activation_history holds positive previous.1 previous.2
+            (fun u same => limit u (same ▸ beforeSize)) slots).2
+        · cases cache : processSlot atStep with
+          | error e => simp [cache, Except.toOption] at member
+          | ok cached =>
+            simp only [cache, Except.toOption, Option.toList, List.mem_singleton] at member
+            subst t
+            have sameRegistry : cached.validators = atStep.validators := by
+              obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cache
+              rfl
+            have beforeSize : before.validators.data.size ≤ population := by
+              simpa only [sameRegistry, sameSize] using size
+            have previous := finality_runs_activation_history inv positive frontier bounded
+              beforeSize limit prefixOk
+            have advanced := (finality_advanceSlots_activation_history holds positive
+              previous.1 previous.2 (fun u same => limit u (same ▸ beforeSize)) slots).2
+            simpa only [sameRegistry] using advanced
+
 end EthLib.Consensus
