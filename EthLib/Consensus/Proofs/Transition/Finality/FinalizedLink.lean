@@ -809,4 +809,128 @@ theorem finality_cache_next_parent_or_zero
     rw [header] at parent
     exact .inl (Except.ok.inj (rooted.symm.trans parent))
 
+/-- A cache before the first block reaches every block root in the remaining history.
+
+The alternative retains a zero state-root witness in the same observation pool. -/
+theorem finality_cached_ancestor_of_remaining_history
+    {cfg : Config} {checks : SignatureChecks} {eng : ExecutionEngine p .phase0}
+    {before after atStep cached : FinalityState p}
+    {first b : FinalityBlock p} {rest : List (FinalityBlock p)}
+    {offset : Nat} {root blockRoot : Root}
+    (run : finalityRuns cfg checks eng before (first :: rest) after)
+    (inside : offset < first.message.slot.toNat - before.slot.toNat)
+    (advanced : advanceSlots cfg offset before = .ok atStep)
+    (cachedOk : processSlot atStep = .ok cached)
+    (rooted : hashTreeRoot cached.latestBlockHeader = .ok root)
+    (member : b ∈ first :: rest)
+    (blockRooted : hashTreeRoot b.message = .ok blockRoot) :
+    FinalityAncestor (first :: rest) root blockRoot ∨
+      FinalityZeroRootFound (finalityObservations cfg checks eng before (first :: rest))
+        (first :: rest) := by
+  obtain ⟨middle, firstOk, _⟩ := bind_ok_iff.mp run
+  have observed : atStep ∈ finalityObservations cfg checks eng before (first :: rest) := by
+    apply finality_observations_slot_input (i := 0) (b := first) (n := offset)
+    · rfl
+    · rfl
+    · exact inside
+    · exact advanced
+  rcases finality_cache_next_parent_or_zero firstOk inside advanced cachedOk rooted
+      observed with parent | zero
+  · rw [parent]
+    exact finality_chain_parent_ancestor run member blockRooted
+  · exact .inr zero
+
+/-- A historical root read retains the next block and the cache offset's strict bound. -/
+theorem finality_read_root_bounded_site
+    {cfg : Config} {checks : SignatureChecks} {eng : ExecutionEngine p .phase0}
+    {s after : FinalityState p} {bs : List (FinalityBlock p)} {slot : Slot} {root : Root}
+    (run : finalityRuns cfg checks eng s bs after)
+    (reached : s.slot.toNat ≤ slot.toNat)
+    (read : getBlockRootAtSlot after slot = .ok root) :
+    ∃ earlier block later before atStep cached,
+      bs = earlier ++ block :: later ∧
+      finalityRuns cfg checks eng s earlier before ∧
+      slot.toNat - before.slot.toNat < block.message.slot.toNat - before.slot.toNat ∧
+      advanceSlots cfg (slot.toNat - before.slot.toNat) before = .ok atStep ∧
+      atStep.slot = slot ∧ processSlot atStep = .ok cached ∧
+      hashTreeRoot cached.latestBlockHeader = .ok root := by
+  obtain ⟨past, recent, bufferRead⟩ := getBlockRootAtSlot_ok read
+  induction bs generalizing s with
+  | nil => cases run; omega
+  | cons block rest ih =>
+    obtain ⟨middle, first, tail⟩ := bind_ok_iff.mp run
+    by_cases passed : slot.toNat < middle.slot.toNat
+    · have middleRecent := Nat.le_trans (stateTransition_chain_slot_le (by decide) tail) recent
+      have inherited := stateTransition_chain_readBlockRoot_recent (by decide) tail passed recent
+      rw [inherited] at bufferRead
+      obtain ⟨advanced, slotsOk, _, _, blockOk, _⟩ := stateTransition_ok first
+      have frame := frame_processBlock (by decide) blockOk
+      rw [(processBlock_block_history (by decide) blockOk).1] at bufferRead
+      simp only [processSlots, bind_ok_iff, ensure_ok_iff] at slotsOk
+      obtain ⟨_, _, advancedOk⟩ := slotsOk
+      rw [frame.slot] at passed middleRecent
+      obtain ⟨atStep, cached, prefixOk, atSlot, cachedOk, rooted⟩ :=
+        advanceSlots_readBlockRoot_at_slot (by decide) advancedOk reached passed
+          middleRecent bufferRead
+      have endSlot := advanceSlots_slot _ advancedOk
+      refine ⟨[], block, rest, s, atStep, cached, rfl, rfl, ?_,
+        prefixOk, atSlot, cachedOk, rooted⟩
+      omega
+    · obtain ⟨earlier, next, later, before, atStep, cached, split, prefixOk,
+        inside, advanced, atSlot, cachedOk, rooted⟩ := ih tail (by omega)
+      refine ⟨block :: earlier, next, later, before, atStep, cached,
+        by simp only [List.cons_append, split], ?_, inside, advanced, atSlot,
+        cachedOk, rooted⟩
+      exact bind_ok_iff.mpr ⟨middle, first, prefixOk⟩
+
+/-- A historical root reaches each block at or after the block enclosing its cache site. -/
+theorem finality_read_root_ancestor_of_site
+    {cfg : Config} {checks : SignatureChecks} {eng : ExecutionEngine p .phase0}
+    {s after before atStep cached : FinalityState p}
+    {bs earlier later : List (FinalityBlock p)} {block b : FinalityBlock p}
+    {offset : Nat} {root blockRoot : Root}
+    (run : finalityRuns cfg checks eng s bs after)
+    (split : bs = earlier ++ block :: later)
+    (prefixRun : finalityRuns cfg checks eng s earlier before)
+    (inside : offset < block.message.slot.toNat - before.slot.toNat)
+    (advanced : advanceSlots cfg offset before = .ok atStep)
+    (cachedOk : processSlot atStep = .ok cached)
+    (rooted : hashTreeRoot cached.latestBlockHeader = .ok root)
+    (member : b ∈ block :: later)
+    (blockRooted : hashTreeRoot b.message = .ok blockRoot) :
+    FinalityAncestor bs root blockRoot ∨
+      FinalityZeroRootFound (finalityObservations cfg checks eng s bs) bs := by
+  have remaining : finalityRuns cfg checks eng before (block :: later) after := by
+    unfold finalityRuns at run prefixRun ⊢
+    rw [split, List.foldlM_append, prefixRun] at run
+    exact run
+  have blocksIn : ∀ b ∈ block :: later, b ∈ bs := by
+    intro b member
+    rw [split]
+    exact List.mem_append_right _ member
+  rcases finality_cached_ancestor_of_remaining_history remaining inside advanced cachedOk
+      rooted member blockRooted with ancestor | zero
+  · exact .inl (ancestor.mono blocksIn)
+  · apply Or.inr
+    apply zero.mono ?_ blocksIn
+    intro state observed
+    -- The appended execution retains the suffix's actual cache sites.
+    rw [split]
+    simp only [finalityObservations, List.mem_cons, List.mem_flatMap] at observed
+    rcases observed with rfl | ⟨⟨next, i⟩, listed, observed⟩
+    · exact finality_observations_prefix (block :: later)
+        (finality_observations_endpoint prefixRun)
+    · simp only [finalityObservations, List.mem_cons, List.mem_flatMap]
+      right
+      refine ⟨(next, earlier.length + i), ?_, ?_⟩
+      · apply List.mk_mem_zipIdx_iff_getElem?.mpr
+        have indexed := List.mk_mem_zipIdx_iff_getElem?.mp listed
+        rw [List.getElem?_append_right (by omega), Nat.add_sub_cancel_left]
+        exact indexed
+      · have takeEq : (earlier ++ block :: later).take (earlier.length + i) =
+            earlier ++ (block :: later).take i := by
+          rw [List.take_append, List.take_of_length_le (by omega), Nat.add_sub_cancel_left]
+        unfold finalityRuns at prefixRun
+        simpa only [takeEq, List.foldlM_append, prefixRun, bind, Except.bind] using observed
+
 end EthLib.Consensus
