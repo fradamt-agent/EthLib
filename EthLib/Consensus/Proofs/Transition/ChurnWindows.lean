@@ -452,4 +452,109 @@ theorem Reaches.churn_le_of_epochs_le {start after : ForkedBeaconState preset} {
       (Nat.mul_le_mul_right _ span),
     Nat.le_trans (chain.joiningCount_le reachable early finite) (Nat.mul_le_mul_right _ span)⟩
 
+/-! ## The churn limit of the first state does not bound a window
+
+The analysis of the period bounds each epoch by the churn limit of the first state.
+
+Each cohort is instead filled up to the churn limit of the state that fills it.
+
+That limit grows with the number of active validators, so it can exceed that of the first state.
+
+The theorems below give the exact amounts, and the minimal configuration shows the limit moving.
+
+They do not build a chain that reaches such a state.
+-/
+
+/-- Before Electra, the registry updates fill the cohort of the next activation epoch.
+
+They add the first validators of the queue, as many as the limit of the state they run on allows.
+
+That state is the one after the pass of eligibility and ejections. -/
+theorem activationCohort_processRegistryUpdates {state after : BeaconState preset fork}
+    (early : fork < .pectra) (computed : processRegistryUpdates config state = .ok after) :
+    ∃ updated, (List.range state.validators.data.size).foldlM (updateRegistryEntry config) state =
+        .ok updated ∧
+      ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH → epoch.toNat = nextActivationEpoch state →
+        activationCohort after epoch = activationCohort state epoch +
+          ((activationQueue updated).take
+            (if Fork.dencun ≤ fork then getValidatorActivationChurnLimit config updated
+              else getValidatorChurnLimit config updated).toNat).length := by
+  unfold processRegistryUpdates at computed
+  split at computed
+  · rename_i electra
+    exact absurd electra (Nat.not_le_of_lt early)
+  simp only [bind_ok_iff] at computed
+  obtain ⟨updated, updatedOk, activated⟩ := computed
+  have updatedKept := CohortStep.foldlM (config := config)
+    (fun _ _ _ ok => cohortStep_updateRegistryEntry early ok) updatedOk
+  have small : updated.validators.data.size < 2 ^ 64 :=
+    Nat.lt_of_le_of_lt (updated.validators.bound (Nat.lt_trans early (by decide)))
+      (UInt64.toNat_lt _)
+  obtain ⟨_, _, _, activations⟩ := foldActivateValidator_cohorts
+    (List.Nodup.sublist (List.take_sublist _ _) (activationQueue_nodup small))
+    (fun index member => by
+      obtain ⟨position, validator, equal, found, eligible⟩ :=
+        mem_activationQueue (List.mem_of_mem_take member)
+      refine ⟨validator, ?_, activationEpoch_of_isEligibleForActivation eligible⟩
+      have inside := (Array.getElem?_eq_some_iff.mp found).1
+      have size : UInt64.size = 2 ^ 64 := rfl
+      have exact : index.toNat = position := by
+        rw [← equal, Nat.toUInt64_eq, UInt64.toNat_ofNat_of_lt' (by omega)]
+      simp [getValidator, exact, found]) activated
+  have next : nextActivationEpoch updated = nextActivationEpoch state := by
+    simp [nextActivationEpoch, getCurrentEpoch, updatedKept.slot]
+  refine ⟨updated, updatedOk, fun epoch finite atNext => ?_⟩
+  simp only [activations epoch finite, next, atNext, ↓reduceIte,
+    updatedKept.activations epoch finite]
+
+/-- Before Electra, an exit goes to the latest exit epoch while its cohort has room.
+
+The room is below the churn limit of the state that adds the exit.
+
+So each exit cohort fills up to the churn limit of the states that add to it. -/
+theorem exitQueueEpoch_of_room {state : BeaconState preset fork} {earliest : Epoch}
+    (earliestOk : computeActivationExitEpoch preset (getCurrentEpoch state) = .ok earliest)
+    (room : (state.validators.data.toList.filter (·.exitEpoch ==
+        (state.validators.data.toList.filter (·.exitEpoch != FAR_FUTURE_EPOCH)).foldl
+          (fun latest validator => max latest validator.exitEpoch) earliest)).length <
+      (getValidatorChurnLimit config state).toNat) :
+    exitQueueEpoch config state =
+      .ok ((state.validators.data.toList.filter (·.exitEpoch != FAR_FUTURE_EPOCH)).foldl
+        (fun latest validator => max latest validator.exitEpoch) earliest) := by
+  simp only [exitQueueEpoch, liftArith, earliestOk, Except.mapError, bind, Except.bind, pure,
+    Except.pure]
+  simp only [Nat.not_le_of_lt room, ↓reduceIte]
+
+/-- Before Deneb, a pass with a long enough queue fills an empty cohort to exactly its churn limit.
+
+In a reachable state the cohort of the next activation epoch is empty. -/
+theorem activationCohort_processRegistryUpdates_eq_limit {state after : BeaconState preset fork}
+    (early : fork < .dencun) (computed : processRegistryUpdates config state = .ok after)
+    {epoch : Epoch} (finite : epoch ≠ FAR_FUTURE_EPOCH)
+    (atNext : epoch.toNat = nextActivationEpoch state)
+    (empty : activationCohort state epoch = 0) :
+    ∃ updated, (List.range state.validators.data.size).foldlM (updateRegistryEntry config) state =
+        .ok updated ∧
+      ((getValidatorChurnLimit config updated).toNat ≤ (activationQueue updated).length →
+        activationCohort after epoch = (getValidatorChurnLimit config updated).toNat) := by
+  obtain ⟨updated, updatedOk, cohort⟩ :=
+    activationCohort_processRegistryUpdates (Nat.lt_trans early (by decide)) computed
+  refine ⟨updated, updatedOk, fun long => ?_⟩
+  have notDeneb : ¬Fork.dencun ≤ fork := Nat.not_le_of_lt early
+  rw [cohort epoch finite atNext, empty, Nat.zero_add]
+  simp only [notDeneb, ↓reduceIte, List.length_take]
+  exact Nat.min_eq_left long
+
+/-- In the minimal configuration, the churn limit is 2 with 64 active validators and 3 with 96.
+
+So 32 more active validators raise the limit by one. -/
+theorem getValidatorChurnLimit_minimal {state after : BeaconState preset fork}
+    (first : (getActiveValidatorIndices state (getCurrentEpoch state)).length = 64)
+    (second : (getActiveValidatorIndices after (getCurrentEpoch after)).length = 96) :
+    getValidatorChurnLimit Config.minimal state = 2 ∧
+      getValidatorChurnLimit Config.minimal after = 3 := by
+  unfold getValidatorChurnLimit
+  rw [first, second]
+  decide
+
 end EthLib.Consensus
