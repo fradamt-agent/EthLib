@@ -158,7 +158,7 @@ theorem TargetVoters.origin {start : ForkedBeaconState preset} {checkpoint : Che
     {fork : Fork} {state cached : BeaconState preset fork}
     {voters : List ValidatorIndex} (altair : .altair ≤ fork)
     (head : Reaches config checks start ⟨fork, state⟩)
-    (cachedOk : processSlot state = .ok cached)
+    (reads : ReadsFrom state cached)
     (recent : checkpoint.epoch = getPreviousEpoch cached ∨
       checkpoint.epoch = getCurrentEpoch cached)
     (counted : TargetVoters cached checkpoint.epoch voters)
@@ -173,10 +173,10 @@ theorem TargetVoters.origin {start : ForkedBeaconState preset} {checkpoint : Che
   -- The caching keeps the flags and the slot, so the voter had the flag before it.
   have epochSame : getCurrentEpoch cached = getCurrentEpoch state := by
     unfold getCurrentEpoch
-    rw [processSlot_slot cachedOk]
+    rw [reads.slot]
   have flagsSame : cached.currentEpochParticipation altair = state.currentEpochParticipation altair ∧
       cached.previousEpochParticipation altair = state.previousEpochParticipation altair := by
-    obtain ⟨_, _, _, _, same⟩ := processSlot_ok cachedOk
+    obtain ⟨_, _, _, _, same⟩ := reads.eq
     subst same
     exact ⟨rfl, rfl⟩
   rw [epochSame, flagsSame.1, flagsSame.2] at found
@@ -243,6 +243,6 @@ theorem JustifiedBy.voters {start after : ForkedBeaconState preset} {checkpoint 
     recent, counted, passes, rootOk⟩ := justified
   exact ⟨fork, state, cached, voters, head, (Reaches.refl _).step (.slot notDue nextOk) |>.trans tail,
     cachedOk, recent, counted, passes, rootOk,
-    fun altair _ member => TargetVoters.origin altair head cachedOk recent counted member⟩
+    fun altair _ member => TargetVoters.origin altair head (.inl cachedOk) recent counted member⟩
 
 end EthLib.Consensus

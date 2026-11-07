@@ -231,51 +231,15 @@ theorem getBlockRoot_of_earlier {fork' : Fork} {earlier : BeaconState preset for
     {cached : BeaconState preset fork} {epoch : Epoch} {root root' : Root}
     (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (chain : Reaches config checks ⟨fork', earlier⟩ ⟨fork, state⟩)
-    (read : getBlockRoot earlier epoch = .ok root) (cachedOk : processSlot state = .ok cached)
+    (read : getBlockRoot earlier epoch = .ok root) (readsFrom : ReadsFrom state cached)
     (later : GENESIS_EPOCH + 1 < getCurrentEpoch cached)
     (recent : epoch = getPreviousEpoch cached ∨ epoch = getCurrentEpoch cached)
     (rootOk : getBlockRoot cached epoch = .ok root') : root = root' := by
-  have cachedSame : cached.slot = state.slot := processSlot_slot cachedOk
   obtain ⟨slot, slotEq, below, _, read⟩ := getBlockRoot_ok read
-  obtain ⟨slot', slotEq', below', near', read'⟩ := getBlockRoot_ok rootOk
+  obtain ⟨slot', slotEq', _, near', stateRead⟩ := readsFrom.read wide later recent rootOk
   have sameSlot : slot' = slot := UInt64.toNat_inj.mp (slotEq'.trans slotEq.symm)
   subst sameSlot
-  -- The caching wrote another entry, since the epoch's first slot is at most two epochs back.
-  obtain ⟨_, blockRoot, _, _, _, _, blockWrite, _⟩ := processSlot_roots cachedOk
-  have stateRead : readCircular state.blockRoots.elements slot' = .ok root' := by
-    have epochs : (getCurrentEpoch cached).toNat ≤ epoch.toNat + 1 := by
-      have := getPreviousEpoch_toNat cached
-      rcases recent with same | same <;> rw [same] <;> omega
-    have := getCurrentEpoch_toNat cached
-    rw [cachedSame] at this near'
-    have spe : 0 < preset.SLOTS_PER_EPOCH.toNat := by
-      -- With no slot in an epoch, every epoch is the genesis epoch, which weighs nothing.
-      rcases Nat.eq_zero_or_pos preset.SLOTS_PER_EPOCH.toNat with zero | positive
-      · rw [zero, Nat.div_zero] at this
-        have weighs := UInt64.lt_iff_toNat_lt.mp later
-        rw [this] at weighs
-        simp [GENESIS_EPOCH] at weighs
-      · exact positive
-    have other : state.slot % preset.SLOTS_PER_HISTORICAL_ROOT ≠
-        slot' % preset.SLOTS_PER_HISTORICAL_ROOT := by
-      rw [cachedSame] at below'
-      refine mod_ne_of_lt below' ?_
-      -- The state is in the epoch or the one after, so at most two epochs on.
-      have inEpoch : state.slot.toNat < preset.SLOTS_PER_EPOCH.toNat *
-          (state.slot.toNat / preset.SLOTS_PER_EPOCH.toNat + 1) := Nat.lt_mul_div_succ _ spe
-      have bound : preset.SLOTS_PER_EPOCH.toNat *
-            (state.slot.toNat / preset.SLOTS_PER_EPOCH.toNat + 1) ≤
-          preset.SLOTS_PER_EPOCH.toNat * (epoch.toNat + 2) :=
-        Nat.mul_le_mul_left _ (by omega)
-      have expand : preset.SLOTS_PER_EPOCH.toNat * (epoch.toNat + 2) =
-          epoch.toNat * preset.SLOTS_PER_EPOCH.toNat + 2 * preset.SLOTS_PER_EPOCH.toNat := by
-        rw [Nat.mul_add, Nat.mul_comm]
-        omega
-      omega
-    rw [← readCircular_writeCircular_of_ne blockWrite other]
-    exact read'
-  have stable := (chain.roots_stable (slot := slot') below (by
-    simp only; rw [← cachedSame]; exact near')).1
+  have stable := (chain.roots_stable (slot := slot') below near').1
   simp only at stable
   rw [stateRead, read] at stable
   exact (Except.ok.inj stable).symm
@@ -306,13 +270,13 @@ call's source.
 The buffer of roots must span two epochs.
 
 The buffer of mixes must be longer than `MIN_SEED_LOOKAHEAD + 2`, as before Altair. -/
-theorem WeighingCall.upgrade_voter_signed {start after : ForkedBeaconState preset} {fork : Fork}
-    {state cached weighed next : BeaconState preset fork} {voters : List ValidatorIndex}
+theorem CallRecord.upgrade_voter_signed {start after : ForkedBeaconState preset} {fork : Fork}
+    {state cached weighed : BeaconState preset fork} {voters : List ValidatorIndex}
     {checkpoint : Checkpoint}
     (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (genesis : Genesis config checks start)
-    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint)
+    (call : CallRecord config checks start after fork state cached weighed voters checkpoint)
     {index : ValidatorIndex}
     (upgraded : FlagFromAltairUpgrade config checks start ⟨fork, state⟩ index.toNat
       TIMELY_TARGET_FLAG_INDEX checkpoint.epoch) :
@@ -379,7 +343,7 @@ theorem WeighingCall.upgrade_voter_signed {start after : ForkedBeaconState prese
   rw [getBlockRoot_of_same (state := pre) (other := { carriedToAltair config pre with
     previousEpochParticipation := fun _ => participation }) carriedSlot carriedRoots, epoch]
     at siteRoot
-  have sameRoot := getBlockRoot_of_earlier wide toState siteRoot call.cachedOk call.later call.recent
+  have sameRoot := getBlockRoot_of_earlier wide toState siteRoot call.reads call.later call.recent
     call.rootOk
   have target : pending.data.target = checkpoint := by
     cases checkpoint
@@ -389,10 +353,26 @@ theorem WeighingCall.upgrade_voter_signed {start after : ForkedBeaconState prese
     rw [epoch, sameRoot]
   have voteLater := vote.extendChain toState
   refine ⟨pending.data, target, voteLater, ?_⟩
-  rcases voteLater.source_link epoch call.cachedOk call.later call.recent with same | exception
+  rcases voteLater.source_link epoch call.reads call.later call.recent with same | exception
   · exact same
-  · exact recordSource_of_epochOne ⟨start, genesis, .refl _⟩ call.cachedOk call.later call.recent
+  · exact recordSource_of_epochOne ⟨start, genesis, .refl _⟩ call.reads call.later call.recent
       exception
+
+/-- `CallRecord.upgrade_voter_signed` for a weighing call at an epoch boundary. -/
+theorem WeighingCall.upgrade_voter_signed {start after : ForkedBeaconState preset} {fork : Fork}
+    {state cached weighed next : BeaconState preset fork} {voters : List ValidatorIndex}
+    {checkpoint : Checkpoint}
+    (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (genesis : Genesis config checks start)
+    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint)
+    {index : ValidatorIndex}
+    (upgraded : FlagFromAltairUpgrade config checks start ⟨fork, state⟩ index.toNat
+      TIMELY_TARGET_FLAG_INDEX checkpoint.epoch) :
+    ∃ data, data.target = checkpoint ∧
+      SignedVote config checks start ⟨fork, state⟩ index data ∧
+      data.source = recordSource cached checkpoint.epoch :=
+  call.record.upgrade_voter_signed wide lookahead genesis upgraded
 
 /-- From genesis and from Altair, each counted voter of a weighing call signed the call's link.
 
@@ -401,13 +381,13 @@ a Phase 0 attestation into it.
 
 Either way, the voter signed attestation data with the call's checkpoint as target and the call's
 source as source, checked at a site. -/
-theorem WeighingCall.voters_signed_of_genesis {start after : ForkedBeaconState preset}
-    {fork : Fork} {state cached weighed next : BeaconState preset fork}
+theorem CallRecord.voters_signed_of_genesis {start after : ForkedBeaconState preset}
+    {fork : Fork} {state cached weighed : BeaconState preset fork}
     {voters : List ValidatorIndex} {checkpoint : Checkpoint}
     (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (genesis : Genesis config checks start)
-    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    (call : CallRecord config checks start after fork state cached weighed voters checkpoint) :
     .altair ≤ fork → ∀ index ∈ voters,
       ∃ data, data.target = checkpoint ∧
         SignedVote config checks start ⟨fork, state⟩ index data ∧
@@ -419,5 +399,19 @@ theorem WeighingCall.voters_signed_of_genesis {start after : ForkedBeaconState p
   · exact call.upgrade_voter_signed wide lookahead genesis upgraded
   · exact ⟨data, target, signed.vote, source⟩
 
+
+/-- `CallRecord.voters_signed_of_genesis` for a weighing call at an epoch boundary. -/
+theorem WeighingCall.voters_signed_of_genesis {start after : ForkedBeaconState preset}
+    {fork : Fork} {state cached weighed next : BeaconState preset fork}
+    {voters : List ValidatorIndex} {checkpoint : Checkpoint}
+    (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (genesis : Genesis config checks start)
+    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    .altair ≤ fork → ∀ index ∈ voters,
+      ∃ data, data.target = checkpoint ∧
+        SignedVote config checks start ⟨fork, state⟩ index data ∧
+        data.source = recordSource cached checkpoint.epoch :=
+  call.record.voters_signed_of_genesis wide lookahead genesis
 
 end EthLib.Consensus

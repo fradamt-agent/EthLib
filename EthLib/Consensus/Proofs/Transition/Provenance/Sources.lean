@@ -217,6 +217,74 @@ def recordSource (state : BeaconState preset fork) (epoch : Epoch) : Checkpoint 
   if epoch = getCurrentEpoch state then state.currentJustifiedCheckpoint
   else state.previousJustifiedCheckpoint
 
+/-- A root that a weighing call reads is the root its state held before the caching.
+
+The call reads the first slot of the previous or the current epoch.
+
+The buffer of roots must span two epochs, so the caching wrote another entry. -/
+theorem processSlot_read
+    (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    {cached : BeaconState preset fork} (cachedOk : processSlot state = .ok cached)
+    (later : GENESIS_EPOCH + 1 < getCurrentEpoch cached) {epoch : Epoch} {root : Root}
+    (recent : epoch = getPreviousEpoch cached ∨ epoch = getCurrentEpoch cached)
+    (rootOk : getBlockRoot cached epoch = .ok root) :
+    ∃ slot : Slot, slot.toNat = epoch.toNat * preset.SLOTS_PER_EPOCH.toNat ∧
+      slot.toNat < state.slot.toNat ∧
+      state.slot.toNat ≤ slot.toNat + preset.SLOTS_PER_HISTORICAL_ROOT.toNat ∧
+      readCircular state.blockRoots.elements slot = .ok root := by
+  obtain ⟨slot, slotEq, below, near, read⟩ := getBlockRoot_ok rootOk
+  have sameSlot : cached.slot = state.slot := processSlot_slot cachedOk
+  obtain ⟨_, blockRoot, _, _, _, _, blockWrite, _⟩ := processSlot_roots cachedOk
+  have epochs : (getCurrentEpoch cached).toNat ≤ epoch.toNat + 1 := by
+    have := getPreviousEpoch_toNat cached
+    rcases recent with same | same <;> rw [same] <;> omega
+  have epochNat := getCurrentEpoch_toNat cached
+  rw [sameSlot] at epochNat near below
+  have spe : 0 < preset.SLOTS_PER_EPOCH.toNat := by
+    -- With no slot in an epoch, every epoch is the genesis epoch, which weighs nothing.
+    rcases Nat.eq_zero_or_pos preset.SLOTS_PER_EPOCH.toNat with zero | positive
+    · rw [zero, Nat.div_zero] at epochNat
+      have weighs := UInt64.lt_iff_toNat_lt.mp later
+      rw [epochNat] at weighs
+      simp [GENESIS_EPOCH] at weighs
+    · exact positive
+  -- The state is in the epoch or the one after, so at most two epochs past the slot.
+  have other : state.slot % preset.SLOTS_PER_HISTORICAL_ROOT ≠
+      slot % preset.SLOTS_PER_HISTORICAL_ROOT := by
+    refine mod_ne_of_lt below ?_
+    have inEpoch : state.slot.toNat < preset.SLOTS_PER_EPOCH.toNat *
+        (state.slot.toNat / preset.SLOTS_PER_EPOCH.toNat + 1) := Nat.lt_mul_div_succ _ spe
+    have bound : preset.SLOTS_PER_EPOCH.toNat *
+          (state.slot.toNat / preset.SLOTS_PER_EPOCH.toNat + 1) ≤
+        preset.SLOTS_PER_EPOCH.toNat * (epoch.toNat + 2) :=
+      Nat.mul_le_mul_left _ (by omega)
+    have expand : preset.SLOTS_PER_EPOCH.toNat * (epoch.toNat + 2) =
+        epoch.toNat * preset.SLOTS_PER_EPOCH.toNat + 2 * preset.SLOTS_PER_EPOCH.toNat := by
+      rw [Nat.mul_add, Nat.mul_comm]
+      omega
+    omega
+  refine ⟨slot, slotEq, below, near, ?_⟩
+  rw [← readCircular_writeCircular_of_ne blockWrite other]
+  exact read
+
+/-- The root a call reads for the previous or the current epoch is the state's entry for the
+epoch's first slot.
+
+The buffer of roots must span two epochs. -/
+theorem ReadsFrom.read
+    (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    {cached : BeaconState preset fork} (readsFrom : ReadsFrom state cached)
+    (later : GENESIS_EPOCH + 1 < getCurrentEpoch cached) {epoch : Epoch} {root : Root}
+    (recent : epoch = getPreviousEpoch cached ∨ epoch = getCurrentEpoch cached)
+    (rootOk : getBlockRoot cached epoch = .ok root) :
+    ∃ slot : Slot, slot.toNat = epoch.toNat * preset.SLOTS_PER_EPOCH.toNat ∧
+      slot.toNat < state.slot.toNat ∧
+      state.slot.toNat ≤ slot.toNat + preset.SLOTS_PER_HISTORICAL_ROOT.toNat ∧
+      readCircular state.blockRoots.elements slot = .ok root := by
+  rcases readsFrom with cachedOk | rfl
+  · exact processSlot_read wide cachedOk later recent rootOk
+  · exact getBlockRoot_ok rootOk
+
 /-- The source of a signed vote read at a weighing call is the call's source.
 
 The attestation's site and the call read the justified checkpoint of the same epoch.
@@ -227,7 +295,7 @@ theorem SignedVote.source_link {start : ForkedBeaconState preset} {fork : Fork}
     {state cached : BeaconState preset fork} {checkpoint : Checkpoint} {index : ValidatorIndex}
     {data : AttestationData}
     (signed : SignedVote config checks start ⟨fork, state⟩ index data)
-    (epoch : data.target.epoch = checkpoint.epoch) (cachedOk : processSlot state = .ok cached)
+    (epoch : data.target.epoch = checkpoint.epoch) (readsFrom : ReadsFrom state cached)
     (later : GENESIS_EPOCH + 1 < getCurrentEpoch cached)
     (recent : checkpoint.epoch = getPreviousEpoch cached ∨
       checkpoint.epoch = getCurrentEpoch cached) :
@@ -247,7 +315,7 @@ theorem SignedVote.source_link {start : ForkedBeaconState preset} {fork : Fork}
   have cachedSame : cached.slot = state.slot ∧
       cached.currentJustifiedCheckpoint = state.currentJustifiedCheckpoint ∧
       cached.previousJustifiedCheckpoint = state.previousJustifiedCheckpoint := by
-    obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+    obtain ⟨_, _, _, _, rfl⟩ := readsFrom.eq
     exact ⟨rfl, rfl, rfl⟩
   have cachedEpoch : getCurrentEpoch cached = getCurrentEpoch state := by
     simp only [getCurrentEpoch, cachedSame.1]
@@ -323,7 +391,7 @@ theorem SignedTarget.link {start : ForkedBeaconState preset} {fork : Fork}
     {data : AttestationData}
     (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (signed : SignedTarget config checks start ⟨fork, state⟩ index data)
-    (epoch : data.target.epoch = checkpoint.epoch) (cachedOk : processSlot state = .ok cached)
+    (epoch : data.target.epoch = checkpoint.epoch) (readsFrom : ReadsFrom state cached)
     (later : GENESIS_EPOCH + 1 < getCurrentEpoch cached)
     (recent : checkpoint.epoch = getPreviousEpoch cached ∨
       checkpoint.epoch = getCurrentEpoch cached)
@@ -335,60 +403,23 @@ theorem SignedTarget.link {start : ForkedBeaconState preset} {fork : Fork}
           Reaches config checks ⟨fork', epochOne⟩ ⟨fork, state⟩ ∧
           (getCurrentEpoch epochOne).toNat = 1 ∧
           data.source = epochOne.currentJustifiedCheckpoint)) := by
-  refine ⟨?_, SignedVote.source_link signed.vote epoch cachedOk later recent⟩
+  refine ⟨?_, SignedVote.source_link signed.vote epoch readsFrom later recent⟩
   obtain ⟨forkB, engine, block, validateResult, stateB, postB, first, site, recorded, pre, suf,
     attestation, indexed, headB, notDueB, applied, tailB, kept, split, prefixOk, siteOk, reads,
     sameData, indexedOk, attesting, indexedData, valid, source, targetRoot⟩ := signed
   -- The chain runs from the block's state to the call's state.
   have chainB : Reaches config checks ⟨forkB, stateB⟩ ⟨fork, state⟩ :=
     ((Reaches.refl _).step (.block engine block validateResult notDueB applied)).trans tailB
-  -- The caching keeps the slot.
-  have cachedSame : cached.slot = state.slot := processSlot_slot cachedOk
-  -- The target root: both reads take the same entry of the buffer.
+  -- The call's read is the state's entry for the epoch's first slot.
+  obtain ⟨slot', slotEq', below', near', stateRead⟩ := readsFrom.read wide later recent rootOk
+  -- The site's read takes the same entry.
   have siteRead := targetRoot
   rw [getBlockRoot_congr reads.slot reads.blockRoots] at siteRead
   obtain ⟨slot, slotEq, below, near, read⟩ := getBlockRoot_ok siteRead
-  obtain ⟨slot', slotEq', below', near', read'⟩ := getBlockRoot_ok rootOk
   rw [epoch] at slotEq
   have sameSlot : slot' = slot := UInt64.toNat_inj.mp (slotEq'.trans slotEq.symm)
   subst sameSlot
-  -- The caching wrote another entry, since the epoch's first slot is at most two epochs back.
-  obtain ⟨_, blockRoot, _, _, _, _, blockWrite, _⟩ := processSlot_roots cachedOk
-  have stateRead : readCircular state.blockRoots.elements slot' = .ok checkpoint.root := by
-    have epochs : (getCurrentEpoch cached).toNat ≤ checkpoint.epoch.toNat + 1 := by
-      have := getPreviousEpoch_toNat cached
-      rcases recent with same | same <;> rw [same] <;> omega
-    have := getCurrentEpoch_toNat cached
-    rw [cachedSame] at this near'
-    have spe : 0 < preset.SLOTS_PER_EPOCH.toNat := by
-      -- With no slot in an epoch, every epoch is the genesis epoch, which weighs nothing.
-      rcases Nat.eq_zero_or_pos preset.SLOTS_PER_EPOCH.toNat with zero | positive
-      · rw [zero, Nat.div_zero] at this
-        have weighs := UInt64.lt_iff_toNat_lt.mp later
-        rw [this] at weighs
-        simp [GENESIS_EPOCH] at weighs
-      · exact positive
-    have other : state.slot % preset.SLOTS_PER_HISTORICAL_ROOT ≠
-        slot' % preset.SLOTS_PER_HISTORICAL_ROOT := by
-      rw [cachedSame] at below'
-      refine mod_ne_of_lt below' ?_
-      -- The state is in the target's epoch or the one after, so at most two epochs on.
-      have inEpoch : state.slot.toNat < preset.SLOTS_PER_EPOCH.toNat *
-          (state.slot.toNat / preset.SLOTS_PER_EPOCH.toNat + 1) := Nat.lt_mul_div_succ _ spe
-      have bound : preset.SLOTS_PER_EPOCH.toNat *
-            (state.slot.toNat / preset.SLOTS_PER_EPOCH.toNat + 1) ≤
-          preset.SLOTS_PER_EPOCH.toNat * (checkpoint.epoch.toNat + 2) :=
-        Nat.mul_le_mul_left _ (by omega)
-      have expand : preset.SLOTS_PER_EPOCH.toNat * (checkpoint.epoch.toNat + 2) =
-          checkpoint.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat +
-            2 * preset.SLOTS_PER_EPOCH.toNat := by
-        rw [Nat.mul_add, Nat.mul_comm]
-        omega
-      omega
-    rw [← readCircular_writeCircular_of_ne blockWrite other]
-    exact read'
-  have stable := (chainB.roots_stable (slot := slot') below (by
-    simp only; rw [← cachedSame]; exact near')).1
+  have stable := (chainB.roots_stable (slot := slot') below near').1
   simp only at stable
   rw [stateRead, read] at stable
   have sameRoot := Except.ok.inj stable
@@ -412,6 +443,32 @@ For a target in epoch 1 the source may instead be the current justified checkpoi
 epoch 1 of the chain, since the end of epoch 1 weighs nothing.
 
 The flag may also come from the start of the chain, or from the upgrade to Altair. -/
+theorem CallRecord.voters_signed {start after : ForkedBeaconState preset} {fork : Fork}
+    {state cached weighed : BeaconState preset fork} {voters : List ValidatorIndex}
+    {checkpoint : Checkpoint}
+    (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (call : CallRecord config checks start after fork state cached weighed voters checkpoint) :
+    .altair ≤ fork → ∀ index ∈ voters,
+      FlagAtStart start index.toNat TIMELY_TARGET_FLAG_INDEX ∨
+      FlagFromAltairUpgrade config checks start ⟨fork, state⟩ index.toNat
+        TIMELY_TARGET_FLAG_INDEX checkpoint.epoch ∨
+      ∃ data, data.target = checkpoint ∧
+        SignedTarget config checks start ⟨fork, state⟩ index data ∧
+        (data.source = recordSource cached checkpoint.epoch ∨
+          (checkpoint.epoch.toNat = 1 ∧ ∃ (fork' : Fork) (epochOne : BeaconState preset fork'),
+            Reaches config checks start ⟨fork', epochOne⟩ ∧
+            Reaches config checks ⟨fork', epochOne⟩ ⟨fork, state⟩ ∧
+            (getCurrentEpoch epochOne).toNat = 1 ∧
+            data.source = epochOne.currentJustifiedCheckpoint)) := by
+  intro altair index member
+  rcases TargetVoters.origin altair call.head call.reads call.recent call.counted member with
+    atStart | upgraded | ⟨data, epoch, signed⟩
+  · exact .inl atStart
+  · exact .inr (.inl upgraded)
+  have link := SignedTarget.link wide signed epoch call.reads call.later call.recent call.rootOk
+  exact .inr (.inr ⟨data, link.1, signed, link.2⟩)
+
+/-- `CallRecord.voters_signed` for a weighing call at an epoch boundary. -/
 theorem WeighingCall.voters_signed {start after : ForkedBeaconState preset} {fork : Fork}
     {state cached weighed next : BeaconState preset fork} {voters : List ValidatorIndex}
     {checkpoint : Checkpoint}
@@ -428,14 +485,8 @@ theorem WeighingCall.voters_signed {start after : ForkedBeaconState preset} {for
             Reaches config checks start ⟨fork', epochOne⟩ ∧
             Reaches config checks ⟨fork', epochOne⟩ ⟨fork, state⟩ ∧
             (getCurrentEpoch epochOne).toNat = 1 ∧
-            data.source = epochOne.currentJustifiedCheckpoint)) := by
-  intro altair index member
-  rcases TargetVoters.origin altair call.head call.cachedOk call.recent call.counted member with
-    atStart | upgraded | ⟨data, epoch, signed⟩
-  · exact .inl atStart
-  · exact .inr (.inl upgraded)
-  have link := SignedTarget.link wide signed epoch call.cachedOk call.later call.recent call.rootOk
-  exact .inr (.inr ⟨data, link.1, signed, link.2⟩)
+            data.source = epochOne.currentJustifiedCheckpoint)) :=
+  call.record.voters_signed wide
 
 /-- `WeighingCall.voters_signed` for a call that `JustifiedBy` names. -/
 theorem JustifiedBy.voters_signed {start after : ForkedBeaconState preset}

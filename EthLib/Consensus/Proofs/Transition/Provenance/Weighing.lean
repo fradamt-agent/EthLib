@@ -99,6 +99,35 @@ theorem advanceSlot_history (computed : advanceSlot config checks state = .ok af
 
 /-! ## Weighing calls and justified checkpoints -/
 
+/-- The state a weighing call reads, from a state of a chain.
+
+At an epoch boundary the call reads the caching of the state's slot.
+
+A store may also call the weighing directly on a state, which it then reads as it is.
+
+Either way the read state differs from the state at most in the two buffers of roots, the latest
+header and the availability of payloads. -/
+def ReadsFrom (state cached : BeaconState preset fork) : Prop :=
+  processSlot state = .ok cached ∨ cached = state
+
+theorem ReadsFrom.eq {state cached : BeaconState preset fork} (reads : ReadsFrom state cached) :
+    ∃ (stateRoots blockRoots : RootedVector Root preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+      (header : BeaconBlockHeader)
+      (availability : Since .glamsterdam fork (ExecutionPayloadAvailability preset)),
+      cached = { state with
+        stateRoots := stateRoots
+        blockRoots := blockRoots
+        latestBlockHeader := header
+        executionPayloadAvailability := availability } := by
+  rcases reads with cachedOk | rfl
+  · exact processSlot_ok cachedOk
+  · exact ⟨_, _, _, _, rfl⟩
+
+theorem ReadsFrom.slot {state cached : BeaconState preset fork} (reads : ReadsFrom state cached) :
+    cached.slot = state.slot := by
+  obtain ⟨_, _, _, _, rfl⟩ := reads.eq
+  rfl
+
 /-- One weighing call of a chain, which justified a checkpoint.
 
 The call ran in a slot step of the chain that closed an epoch.
@@ -203,6 +232,94 @@ theorem JustifiedBy.extend {start middle after : ForkedBeaconState preset} {chec
     (step : Step config checks middle after) : JustifiedBy config checks start after checkpoint :=
   have ⟨fork, state, cached, weighed, next, voters, head, notDue, nextOk, tail, rest⟩ := justified
   ⟨fork, state, cached, weighed, next, voters, head, notDue, nextOk, tail.step step, rest⟩
+
+/-- A call of the weighing on a state of a chain, which justified a checkpoint.
+
+It reads `cached`, from `state`, as `ReadsFrom` says, and its result is `weighed`.
+
+The chain goes on from `state` to `after`.
+
+A `WeighingCall` at an epoch boundary is one, and so is a call that a store makes on a state.
+
+The facts that a weighing call gives hold for each such call. -/
+def CallRecord (config : Config) (checks : SignatureChecks) (start after : ForkedBeaconState preset)
+    (fork : Fork) (state cached weighed : BeaconState preset fork)
+    (voters : List ValidatorIndex) (checkpoint : Checkpoint) : Prop :=
+  Reaches config checks start ⟨fork, state⟩ ∧ Reaches config checks ⟨fork, state⟩ after ∧
+    ReadsFrom state cached ∧ processJustificationAndFinalization cached = .ok weighed ∧
+    GENESIS_EPOCH + 1 < getCurrentEpoch cached ∧
+    (checkpoint.epoch = getPreviousEpoch cached ∨ checkpoint.epoch = getCurrentEpoch cached) ∧
+    TargetVoters cached checkpoint.epoch voters ∧ PassesThreshold cached voters ∧
+    getBlockRoot cached checkpoint.epoch = .ok checkpoint.root
+
+namespace CallRecord
+
+variable {start after : ForkedBeaconState preset} {fork : Fork}
+  {state cached weighed : BeaconState preset fork} {voters : List ValidatorIndex}
+  {checkpoint : Checkpoint}
+
+theorem head (call : CallRecord config checks start after fork state cached weighed voters checkpoint) :
+    Reaches config checks start ⟨fork, state⟩ :=
+  call.1
+
+theorem toAfter
+    (call : CallRecord config checks start after fork state cached weighed voters checkpoint) :
+    Reaches config checks ⟨fork, state⟩ after :=
+  call.2.1
+
+theorem reads
+    (call : CallRecord config checks start after fork state cached weighed voters checkpoint) :
+    ReadsFrom state cached :=
+  call.2.2.1
+
+theorem weighedOk
+    (call : CallRecord config checks start after fork state cached weighed voters checkpoint) :
+    processJustificationAndFinalization cached = .ok weighed :=
+  call.2.2.2.1
+
+theorem later
+    (call : CallRecord config checks start after fork state cached weighed voters checkpoint) :
+    GENESIS_EPOCH + 1 < getCurrentEpoch cached :=
+  call.2.2.2.2.1
+
+theorem recent
+    (call : CallRecord config checks start after fork state cached weighed voters checkpoint) :
+    checkpoint.epoch = getPreviousEpoch cached ∨ checkpoint.epoch = getCurrentEpoch cached :=
+  call.2.2.2.2.2.1
+
+theorem counted
+    (call : CallRecord config checks start after fork state cached weighed voters checkpoint) :
+    TargetVoters cached checkpoint.epoch voters :=
+  call.2.2.2.2.2.2.1
+
+theorem passes
+    (call : CallRecord config checks start after fork state cached weighed voters checkpoint) :
+    PassesThreshold cached voters :=
+  call.2.2.2.2.2.2.2.1
+
+theorem rootOk
+    (call : CallRecord config checks start after fork state cached weighed voters checkpoint) :
+    getBlockRoot cached checkpoint.epoch = .ok checkpoint.root :=
+  call.2.2.2.2.2.2.2.2
+
+theorem extendChain {last : ForkedBeaconState preset}
+    (call : CallRecord config checks start after fork state cached weighed voters checkpoint)
+    (chain : Reaches config checks after last) :
+    CallRecord config checks start last fork state cached weighed voters checkpoint :=
+  have ⟨head, tail, rest⟩ := call
+  ⟨head, tail.trans chain, rest⟩
+
+end CallRecord
+
+/-- A weighing call at an epoch boundary is a call of the weighing, on the state before the slot
+step, which it reads after the caching. -/
+theorem WeighingCall.record {start after : ForkedBeaconState preset} {fork : Fork}
+    {state cached weighed next : BeaconState preset fork} {voters : List ValidatorIndex}
+    {checkpoint : Checkpoint}
+    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    CallRecord config checks start after fork state cached weighed voters checkpoint :=
+  have ⟨head, _, _, _, _, cachedOk, weighedOk, rest⟩ := call
+  ⟨head, call.toAfter, .inl cachedOk, weighedOk, rest⟩
 
 /-- A checkpoint is one of the start's three, or a weighing call of the chain justified it. -/
 def JustifiedOrStart (config : Config) (checks : SignatureChecks)
