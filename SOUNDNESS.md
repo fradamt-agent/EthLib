@@ -1405,6 +1405,18 @@ They also show that a finalized slot at or below the optimistic slot stays there
 So every store that these four steps reach from a bootstrap keeps that order.
 No theorem links an honest signer to the canonical chain; that is a property of the validators, not of the protocol text.
 
+The client also accepts what an honest full node builds, which `Consensus/Proofs/LightClient/Honest.lean` states.
+Each theorem assumes that a block is of the fork of its slot, which `Config.SlotOfFork` states for Capella, Deneb, Electra and Gloas.
+`blockToLightClientHeader_valid` shows that the header of such a block passes the header check.
+`createLightClientBootstrap_accepted` shows that a store starts from the bootstrap of a block and its post state, trusting the root of the block.
+`createLightClientUpdate_accepted` shows that a store accepts an update built from a signing block, the attested block, its post state and an optional finalized block.
+It assumes the checks of the store that the protocol makes.
+The committee of the signing period must be known, the store must finalize an earlier slot, and a known next committee must match.
+It assumes that the signature check accepts the signers, as the signature theorems do.
+It also assumes that a branch the update carries is not all zero, which needs a SHA-256 output of zero above the leaves.
+`blockToLightClientHeader_invalid_of_early` shows that the hypothesis on the fork of the slot is needed.
+A Gloas block at a slot before Capella gives an invalid header whenever its bid names a nonzero parent block hash.
+
 ### Casper FFG
 
 Casper FFG finalizes checkpoints, each a block with an epoch, from the votes of validators.
