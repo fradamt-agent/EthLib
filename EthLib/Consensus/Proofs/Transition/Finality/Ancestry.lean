@@ -207,6 +207,14 @@ theorem finality_zero_root_found {ss : List (FinalityState p)} {bs : List (Final
   · apply ByteArray.ext
     exact rooted
 
+/-- Outside the explicit zero-root alternative, every observed successful state hash is nonzero. -/
+theorem finality_observed_root_ne_zero {ss : List (FinalityState p)}
+    {bs : List (FinalityBlock p)} {s : FinalityState p} {root : Root}
+    (clean : ¬FinalityZeroRootFound ss bs) (observed : s ∈ ss)
+    (rooted : hashTreeRoot s = .ok root) : root ≠ Vector.replicate 32 0 := by
+  intro zero
+  exact clean (finality_zero_root_found observed (zero ▸ rooted))
+
 /-- A successful cache can leave its header unfilled only when its input hashes to zero.
 
 Every other successful fill makes the header stable until the next block. -/
