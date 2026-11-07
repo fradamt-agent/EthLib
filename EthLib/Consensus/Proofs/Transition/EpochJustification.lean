@@ -312,6 +312,97 @@ theorem sumMarked_eq_sum (validators : Array Validator) (marked : Array Bool) :
       cases mark <;> simp [ih, Nat.add_assoc]
   simpa using fold (validators.zip marked).toList 0
 
+/-- Intersecting participation with the denominator loses only marks outside that denominator.
+
+The last sum is the concrete correction needed for previous-epoch voters that have exited. -/
+theorem sumMarked_le_active_add_gap (validators : Array Validator)
+    (participants active : Array Bool)
+    (participantsSize : participants.size = validators.size)
+    (activeSize : active.size = validators.size) :
+    sumMarked validators participants ≤
+      sumMarked validators (participants.zipWith (· && ·) active) +
+        sumMarked validators
+          (participants.zipWith (fun mark active => mark && !active) active) := by
+  simp only [sumMarked_eq_sum, Array.toList_zip, Array.toList_zipWith]
+  have compare : ∀ (entries : List Validator) (marks denominator : List Bool),
+      marks.length = entries.length → denominator.length = entries.length →
+      ((entries.zip marks).map fun (validator, mark) =>
+        if mark then validator.effectiveBalance.toNat else 0).sum ≤
+      ((entries.zip (marks.zipWith (· && ·) denominator)).map fun (validator, mark) =>
+        if mark then validator.effectiveBalance.toNat else 0).sum +
+      ((entries.zip (marks.zipWith (fun mark active => mark && !active) denominator)).map
+          fun (validator, mark) =>
+        if mark then validator.effectiveBalance.toNat else 0).sum := by
+    intro entries
+    induction entries with
+    | nil => intro marks denominator hm hd; simp at hm hd; subst hm; subst hd; simp
+    | cons validator entries ih =>
+      intro marks denominator hm hd
+      cases marks with
+      | nil => simp at hm
+      | cons mark marks =>
+        cases denominator with
+        | nil => simp at hd
+        | cons active denominator =>
+          have rest := ih marks denominator (by simpa using hm) (by simpa using hd)
+          cases mark <;> cases active <;>
+            simp only [List.zip_cons_cons, List.zipWith_cons_cons, List.map_cons, List.sum_cons,
+              Bool.false_and, Bool.true_and, Bool.not_false, Bool.not_true, Bool.false_eq_true,
+              ↓reduceIte] at * <;> omega
+  exact compare validators.toList participants.toList active.toList
+    (by simpa using participantsSize) (by simpa using activeSize)
+
+/-- Marking validator indices keeps one mark for every registry entry. -/
+theorem size_markIndices (size : Nat) (indices : List ValidatorIndex) :
+    (markIndices size indices).size = size := by
+  have kept : ∀ (indices : List ValidatorIndex) (initial : Array Bool),
+      (indices.foldl (fun marked index => marked.set! index.toNat true) initial).size =
+        initial.size := by
+    intro indices
+    induction indices with
+    | nil => intro initial; rfl
+    | cons index rest ih =>
+      intro initial
+      rw [List.foldl_cons, ih]
+      simp
+  simpa only [markIndices, Array.size_replicate] using kept indices (Array.replicate size false)
+
+/-- Intersecting index lists intersects their registry marks, without counting duplicates. -/
+theorem markIndices_filter_mem (size : Nat) (first second : List ValidatorIndex) :
+    markIndices size (first.filter (fun index => decide (index ∈ second))) =
+      (markIndices size first).zipWith (· && ·) (markIndices size second) := by
+  apply Array.ext_getElem?
+  intro index
+  rw [getElem?_markIndices, Array.getElem?_zipWith,
+    getElem?_markIndices, getElem?_markIndices]
+  by_cases inside : index < size
+  · simp only [inside, ↓reduceIte, Option.some.injEq]
+    rw [Bool.eq_iff_iff, Bool.and_eq_true, List.any_eq_true, List.any_eq_true,
+      List.any_eq_true]
+    constructor
+    · rintro ⟨validatorIndex, member, equal⟩
+      obtain ⟨firstMember, secondMember⟩ := List.mem_filter.mp member
+      exact ⟨⟨validatorIndex, firstMember, equal⟩,
+        ⟨validatorIndex, of_decide_eq_true secondMember, equal⟩⟩
+    · rintro ⟨⟨left, leftMember, leftEqual⟩, ⟨right, rightMember, rightEqual⟩⟩
+      have same : left = right := UInt64.toNat_inj.mp (by
+        have leftValue := of_decide_eq_true leftEqual
+        have rightValue := of_decide_eq_true rightEqual
+        exact leftValue.trans rightValue.symm)
+      subst right
+      exact ⟨left, List.mem_filter.mpr ⟨leftMember, by simpa using rightMember⟩, leftEqual⟩
+  · simp [inside]
+
+/-- Effective weight counted for a target but absent from the current active denominator.
+
+For a previous target, these participants can have exited between the two epochs. -/
+def participatingOutsideActiveBalance (state : BeaconState preset fork)
+    (indices : List ValidatorIndex) : Nat :=
+  sumMarked state.validators.data
+    ((markIndices state.validators.data.size indices).zipWith (fun mark active => mark && !active)
+      (markIndices state.validators.data.size
+        (getActiveValidatorIndices state (getCurrentEpoch state))))
+
 /-- Two marked sets can together count at most the registry plus their intersection.
 
 This is the balance intersection calculation used with the two-thirds threshold of Casper FFG §2.
@@ -403,6 +494,32 @@ theorem getTotalBalance_threshold_raw {active signers : List ValidatorIndex} {to
         3 * totalBalanceFloor state signers := by
   rw [getTotalBalance_eq_sum_add_floor totalOk,
     getTotalBalance_eq_sum_add_floor targetOk] at threshold
+  omega
+
+/-- A computed target threshold keeps its force after removing participants outside the denominator.
+
+Each removed unit and each unit of the target floor is charged with coefficient three. -/
+theorem getTotalBalance_threshold_current_active
+    {indices : List ValidatorIndex} {total target : Gwei}
+    (totalOk : getTotalActiveBalance state = .ok total)
+    (targetOk : getTotalBalance state indices = .ok target)
+    (threshold : 2 * total.toNat ≤ 3 * target.toNat) :
+    2 * sumMarked state.validators.data
+        (markIndices state.validators.data.size
+          (getActiveValidatorIndices state (getCurrentEpoch state))) ≤
+      3 * sumMarked state.validators.data
+        ((markIndices state.validators.data.size indices).zipWith (· && ·)
+          (markIndices state.validators.data.size
+            (getActiveValidatorIndices state (getCurrentEpoch state)))) +
+      3 * participatingOutsideActiveBalance state indices +
+        3 * totalBalanceFloor state indices := by
+  have raw := getTotalBalance_threshold_raw totalOk targetOk threshold
+  have removed := sumMarked_le_active_add_gap state.validators.data
+    (markIndices state.validators.data.size indices)
+    (markIndices state.validators.data.size
+      (getActiveValidatorIndices state (getCurrentEpoch state)))
+    (size_markIndices _ _) (size_markIndices _ _)
+  unfold participatingOutsideActiveBalance
   omega
 
 /-- The finalized, previous justified and current justified epochs are in increasing order. -/
@@ -1147,6 +1264,31 @@ theorem weighJustificationAndFinalization_finalized_rules {total previous curren
         exact .inr ⟨bits.1, bits.2, gap⟩
     · exact (changed (by simp_all)).elim
 
+/-- Every changed finalization has a true bit for the epoch immediately after its checkpoint.
+
+The longer finalization rules require this intermediate justified epoch too.
+
+The equation identifies the bit's target epoch without introducing a finalization model. -/
+theorem weighJustificationAndFinalization_finalized_successor_bit {total previous current : Gwei}
+    (computed : weighJustificationAndFinalization state total previous current = .ok after)
+    (changed : after.finalizedCheckpoint ≠ state.finalizedCheckpoint) :
+    ∃ index : Fin 4, after.justificationBits.bits[index] = true ∧
+      after.finalizedCheckpoint.epoch.toNat + 1 + index.val = (getCurrentEpoch state).toNat := by
+  rcases weighJustificationAndFinalization_finalized_rules computed changed with
+      ⟨assigned, two | one⟩ | ⟨assigned, three | two⟩
+  · refine ⟨1, two.2.1, ?_⟩
+    rw [assigned]
+    omega
+  · refine ⟨0, one.1, ?_⟩
+    rw [assigned]
+    omega
+  · refine ⟨2, three.2.1, ?_⟩
+    rw [assigned]
+    omega
+  · refine ⟨1, two.1, ?_⟩
+    rw [assigned]
+    omega
+
 /-- Weighing the votes keeps the checkpoints in order.
 
 The current justified epoch must be at most the previous epoch.
@@ -1198,6 +1340,45 @@ theorem processJustificationAndFinalization_ok
   · simp only [bind_ok_iff] at computed
     obtain ⟨_, _, _, _, total, _, previous, _, current, _, weighed⟩ := computed
     exact .inr ⟨total, previous, current, weighed⟩
+
+/-- Stored checkpoints retain any property of the old checkpoints and newly assigned justification.
+
+This applies to provenance in an actual transition history, including the previous source. -/
+theorem processJustificationAndFinalization_checkpoint_property
+    (property : Checkpoint → Prop)
+    (current : property state.currentJustifiedCheckpoint)
+    (previous : property state.previousJustifiedCheckpoint)
+    (finalized : property state.finalizedCheckpoint)
+    (computed : processJustificationAndFinalization state = .ok after)
+    (assigned : after.currentJustifiedCheckpoint ≠ state.currentJustifiedCheckpoint →
+      property after.currentJustifiedCheckpoint) :
+    property after.currentJustifiedCheckpoint ∧ property after.previousJustifiedCheckpoint ∧
+      property after.finalizedCheckpoint := by
+  rcases processJustificationAndFinalization_ok computed with same | ⟨_, _, _, weighed⟩
+  · subst after
+    exact ⟨current, previous, finalized⟩
+  · obtain ⟨previousEq, _, finalCases, _⟩ :=
+      weighJustificationAndFinalization_checkpoints weighed
+    refine ⟨?_, previousEq ▸ current, ?_⟩
+    · by_cases same : after.currentJustifiedCheckpoint = state.currentJustifiedCheckpoint
+      · exact same ▸ current
+      · exact assigned same
+    · rcases finalCases with same | same | same
+      · exact same ▸ finalized
+      · exact same ▸ previous
+      · exact same ▸ current
+
+/-- A changed finalization requires the immediately following epoch's justification bit.
+
+The witness refers to the actual result of the spec's justification computation. -/
+theorem processJustificationAndFinalization_finalized_successor_bit
+    (computed : processJustificationAndFinalization state = .ok after)
+    (changed : after.finalizedCheckpoint ≠ state.finalizedCheckpoint) :
+    ∃ index : Fin 4, after.justificationBits.bits[index] = true ∧
+      after.finalizedCheckpoint.epoch.toNat + 1 + index.val = (getCurrentEpoch state).toNat := by
+  rcases processJustificationAndFinalization_ok computed with same | ⟨_, _, _, weighed⟩
+  · exact (changed (same ▸ rfl)).elim
+  · exact weighJustificationAndFinalization_finalized_successor_bit weighed changed
 
 /-- A justification step leaves the current pending sources ready for rotation.
 

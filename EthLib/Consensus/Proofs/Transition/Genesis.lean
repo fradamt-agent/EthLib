@@ -2,6 +2,7 @@ module
 
 public import EthLib.Consensus.Proofs.Transition.Invariants
 public import EthLib.Consensus.Transition.Genesis
+public import EthLib.Consensus.Proofs.LightClient.Authenticate
 
 /-!
 # Proofs: the genesis of the beacon chain
@@ -146,6 +147,30 @@ theorem initializeBeaconStateFromEth1_bits {eth1BlockHash : Hash32}
   change activated.justificationBits.bits[index] = false
   rw [frame.justificationBits]
   simp [emptyGenesisState]
+
+/-- All three stored checkpoints have the genesis epoch after initialization. -/
+theorem initializeBeaconStateFromEth1_checkpoint_epochs {eth1BlockHash : Hash32}
+    {eth1Timestamp : UInt64} {deposits : Array Deposit}
+    (before : fork < .altair)
+    (computed : initializeBeaconStateFromEth1 config checks eth1BlockHash eth1Timestamp deposits =
+      .ok after) :
+    after.currentJustifiedCheckpoint.epoch = GENESIS_EPOCH ∧
+      after.previousJustifiedCheckpoint.epoch = GENESIS_EPOCH ∧
+      after.finalizedCheckpoint.epoch = GENESIS_EPOCH := by
+  unfold initializeBeaconStateFromEth1 at computed
+  split at computed
+  · cases computed
+  simp only [bind_ok_iff, ensure_ok_iff, liftSsz_ok, pure, Except.pure,
+    Except.ok.injEq] at computed
+  obtain ⟨_, _, _, _, _, _, deposited, depositedOk, activated, activatedOk, root, _, rfl⟩ :=
+    computed
+  have frame := (Frame.foldlM (fun _ _ _ ok => frame_genesisDeposit before ok) depositedOk).trans
+    (Frame.foldlM (fun _ _ _ ok => frame_activateAtGenesis ok) activatedOk)
+  change activated.currentJustifiedCheckpoint.epoch = GENESIS_EPOCH ∧
+    activated.previousJustifiedCheckpoint.epoch = GENESIS_EPOCH ∧
+    activated.finalizedCheckpoint.epoch = GENESIS_EPOCH
+  rw [frame.currentJustified, frame.previousJustified, frame.finalized]
+  exact ⟨rfl, rfl, rfl⟩
 
 /-- Genesis initialization satisfies the source condition without any pending attestations. -/
 theorem initializeBeaconStateFromEth1_pending_sources {eth1BlockHash : Hash32}
@@ -725,6 +750,40 @@ theorem previousJustification_authenticated_at_cached_slot
   · rw [data]
     exact rootEq
 
+/-- Every listed validator of a checked indexed attestation signed its actual signing root.
+
+This uses the same aggregate-soundness assumption as the light-client proofs.
+
+The key is read in the state where the indexed attestation was checked. -/
+theorem isValidIndexedAttestation_signed
+    {recorded : BeaconState preset fork} {indexed : IndexedAttestation preset fork}
+    {signed : ByteArray → ByteArray → Prop}
+    (sound : checks.AggregateSound signed)
+    (valid : isValidIndexedAttestation config checks recorded indexed = .ok true) :
+    ∃ domain signingRoot,
+      getDomain config recorded DOMAIN_BEACON_ATTESTER (some indexed.data.target.epoch) =
+        .ok domain ∧
+      computeSigningRoot indexed.data domain = .ok signingRoot ∧
+      ∀ index ∈ indexed.attestingIndices.data,
+        ∃ validator, getValidator recorded index = .ok validator ∧
+          signed (packBytes validator.pubkey) (packBytes signingRoot) := by
+  obtain ⟨keys, domain, signingRoot, keysOk, domainOk, rootOk, accepted⟩ :=
+    isValidIndexedAttestation_signature valid
+  refine ⟨domain, signingRoot, domainOk, rootOk, ?_⟩
+  intro index member
+  have occurs : index ∈ indexed.attestingIndices.data.toList.toArray := by simpa using member
+  have position := Array.mem_iff_getElem.mp occurs
+  obtain ⟨offset, inside, atIndex⟩ := position
+  obtain ⟨sizes, mapped⟩ := array_mapM_ok_getElem keysOk
+  have checked := mapped offset inside
+  rw [atIndex] at checked
+  simp only [bind_ok_iff, liftAccessor_ok, pure, Except.pure, Except.ok.injEq] at checked
+  obtain ⟨validator, found, packed⟩ := checked
+  refine ⟨validator, found, ?_⟩
+  apply sound keys (packBytes signingRoot) (packBytes indexed.signature) accepted
+  rw [packed]
+  exact getElem!_mem_of_lt (by simpa only [sizes] using inside)
+
 /-- A changed justified checkpoint counts authenticated included attestations for that checkpoint.
 
 The source is selected from the cached state's own justified checkpoints.
@@ -971,6 +1030,88 @@ theorem currentJustifications_double_vote
       _ = rightRoot := rightTarget.trans root2Eq
   · exact leftEpoch.trans (sameEpoch.trans rightEpoch.symm)
 
+/-- Two changed justifications expose slashable data when their stored sources surround.
+
+Each threshold counts the signers included on its own actual chain.
+
+The epoch inequalities are the surround condition of Casper FFG §2 on the spec's checkpoints. -/
+theorem changedJustifications_surround
+    {engine : ExecutionEngine preset .phase0}
+    {genesis left right leftStep rightStep leftCached rightCached leftJustified rightJustified :
+      BeaconState preset .phase0}
+    {eth1BlockHash : Hash32} {eth1Timestamp : UInt64} {deposits : Array Deposit}
+    {leftBlocks rightBlocks : List (SignedBeaconBlock preset .phase0)}
+    {leftCount rightCount : Nat}
+    (positive : 0 < preset.MIN_SEED_LOOKAHEAD.toNat)
+    (history : preset.MIN_SEED_LOOKAHEAD.toNat + 3 <
+      preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (initialized : initializeBeaconStateFromEth1 config checks eth1BlockHash eth1Timestamp
+      deposits = .ok genesis)
+    (leftRun : leftBlocks.foldlM
+      (fun state block => stateTransition config checks engine state block true) genesis =
+        .ok left)
+    (rightRun : rightBlocks.foldlM
+      (fun state block => stateTransition config checks engine state block true) genesis =
+        .ok right)
+    (leftAdvanced : advanceSlots config leftCount left = .ok leftStep)
+    (rightAdvanced : advanceSlots config rightCount right = .ok rightStep)
+    (leftCache : processSlot leftStep = .ok leftCached)
+    (rightCache : processSlot rightStep = .ok rightCached)
+    (leftWeighed : processJustificationAndFinalization leftCached = .ok leftJustified)
+    (rightWeighed : processJustificationAndFinalization rightCached = .ok rightJustified)
+    (leftChanged : leftJustified.currentJustifiedCheckpoint ≠ leftCached.currentJustifiedCheckpoint)
+    (rightChanged :
+      rightJustified.currentJustifiedCheckpoint ≠ rightCached.currentJustifiedCheckpoint)
+    (sourceOrder :
+      (if leftJustified.currentJustifiedCheckpoint.epoch = getCurrentEpoch leftCached
+        then leftCached.currentJustifiedCheckpoint
+        else leftCached.previousJustifiedCheckpoint).epoch <
+      (if rightJustified.currentJustifiedCheckpoint.epoch = getCurrentEpoch rightCached
+        then rightCached.currentJustifiedCheckpoint
+        else rightCached.previousJustifiedCheckpoint).epoch)
+    (targetOrder : rightJustified.currentJustifiedCheckpoint.epoch <
+      leftJustified.currentJustifiedCheckpoint.epoch) :
+    ∃ leftIndices rightIndices,
+      2 * sumMarked leftCached.validators.data
+          (markIndices leftCached.validators.data.size
+            (getActiveValidatorIndices leftCached (getCurrentEpoch leftCached))) ≤
+        3 * sumMarked leftCached.validators.data
+            (markIndices leftCached.validators.data.size leftIndices) +
+          3 * totalBalanceFloor leftCached leftIndices ∧
+      2 * sumMarked rightCached.validators.data
+          (markIndices rightCached.validators.data.size
+            (getActiveValidatorIndices rightCached (getCurrentEpoch rightCached))) ≤
+        3 * sumMarked rightCached.validators.data
+            (markIndices rightCached.validators.data.size rightIndices) +
+          3 * totalBalanceFloor rightCached rightIndices ∧
+      ∀ index ∈ leftIndices, index ∈ rightIndices →
+        ∃ (leftRecorded rightRecorded : BeaconState preset .phase0)
+          (leftIndexed rightIndexed : IndexedAttestation preset .phase0),
+          index ∈ leftIndexed.attestingIndices.data ∧
+          index ∈ rightIndexed.attestingIndices.data ∧
+          isValidIndexedAttestation config checks leftRecorded leftIndexed = .ok true ∧
+          isValidIndexedAttestation config checks rightRecorded rightIndexed = .ok true ∧
+          isSlashableAttestationData leftIndexed.data rightIndexed.data = true := by
+  obtain ⟨leftEpoch, _, leftIndices, _, leftEpochEq, _, _, _, leftThreshold, leftWitness⟩ :=
+    changedJustification_authenticated_at_cached_slot positive history initialized leftRun
+      leftAdvanced leftCache leftWeighed leftChanged
+  obtain ⟨rightEpoch, _, rightIndices, _, rightEpochEq, _, _, _, rightThreshold, rightWitness⟩ :=
+    changedJustification_authenticated_at_cached_slot positive history initialized rightRun
+      rightAdvanced rightCache rightWeighed rightChanged
+  refine ⟨leftIndices, rightIndices, leftThreshold, rightThreshold, ?_⟩
+  intro index leftMember rightMember
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, leftRecorded, _, leftIndexed,
+    _, _, leftSigner, leftSource, leftTarget, leftValid⟩ := leftWitness index leftMember
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, rightRecorded, _, rightIndexed,
+    _, _, rightSigner, rightSource, rightTarget, rightValid⟩ := rightWitness index rightMember
+  refine ⟨leftRecorded, rightRecorded, leftIndexed, rightIndexed,
+    leftSigner, rightSigner, leftValid, rightValid, ?_⟩
+  apply isSlashableAttestationData_of_surround
+  · rw [leftSource, rightSource, ← leftEpochEq, ← rightEpochEq]
+    exact sourceOrder
+  · rw [leftTarget, rightTarget]
+    exact targetOrder
+
 /-- A true bit on an initialized chain has an actual threshold computation behind it.
 
 Genesis has no true bits, so an inherited bit cannot be the end of the search.
@@ -1017,6 +1158,93 @@ theorem justificationBit_origin_of_initialized_chain
     rw [cleared] at earlierBit
     cases earlierBit
   · exact originated
+
+/-- A non-genesis stored checkpoint on an initialized chain was assigned by actual justification.
+
+The conclusion covers both justified sources and the finalized checkpoint. -/
+theorem checkpoint_origin_of_initialized_chain
+    {engine : ExecutionEngine preset .phase0}
+    {genesis after : BeaconState preset .phase0}
+    {eth1BlockHash : Hash32} {eth1Timestamp : UInt64} {deposits : Array Deposit}
+    {blocks : List (SignedBeaconBlock preset .phase0)} {checkpoint : Checkpoint}
+    (initialized : initializeBeaconStateFromEth1 config checks eth1BlockHash eth1Timestamp
+      deposits = .ok genesis)
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block true) genesis =
+        .ok after)
+    (stored : checkpoint = after.currentJustifiedCheckpoint ∨
+      checkpoint = after.previousJustifiedCheckpoint ∨ checkpoint = after.finalizedCheckpoint)
+    (nonGenesis : checkpoint.epoch ≠ GENESIS_EPOCH) :
+    ∃ earlier block later atBlock offset atStep next cached epoched justified,
+      blocks = earlier ++ block :: later ∧
+      earlier.foldlM
+        (fun state block => stateTransition config checks engine state block true)
+          genesis = .ok atBlock ∧
+      offset < block.message.slot.toNat - atBlock.slot.toNat ∧
+      advanceSlots config offset atBlock = .ok atStep ∧
+      advanceSlot config atStep = .ok next ∧
+      processSlot atStep = .ok cached ∧ processEpoch config cached = .ok epoched ∧
+      processJustificationAndFinalization cached = .ok justified ∧
+      checkpoint = justified.currentJustifiedCheckpoint ∧
+      justified.currentJustifiedCheckpoint ≠ cached.currentJustifiedCheckpoint := by
+  rcases stateTransition_chain_checkpoint_origin (by decide) computed stored with old | assigned
+  · obtain ⟨current, previous, finalized⟩ :=
+      initializeBeaconStateFromEth1_checkpoint_epochs (by decide) initialized
+    rcases old with same | same | same
+    · exact (nonGenesis ((congrArg (·.epoch) same).trans current)).elim
+    · exact (nonGenesis ((congrArg (·.epoch) same).trans previous)).elim
+    · exact (nonGenesis ((congrArg (·.epoch) same).trans finalized)).elim
+  · exact assigned
+
+/-- A stored non-genesis checkpoint has an actual two-thirds computation for its exact root.
+
+The registry and weights belong to that computation, not the chain's terminal state.
+
+This covers finalized checkpoints as well as the two justified checkpoints. -/
+theorem checkpoint_threshold_of_initialized_chain
+    {engine : ExecutionEngine preset .phase0}
+    {genesis after : BeaconState preset .phase0}
+    {eth1BlockHash : Hash32} {eth1Timestamp : UInt64} {deposits : Array Deposit}
+    {blocks : List (SignedBeaconBlock preset .phase0)} {checkpoint : Checkpoint}
+    (initialized : initializeBeaconStateFromEth1 config checks eth1BlockHash eth1Timestamp
+      deposits = .ok genesis)
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block true) genesis =
+        .ok after)
+    (stored : checkpoint = after.currentJustifiedCheckpoint ∨
+      checkpoint = after.previousJustifiedCheckpoint ∨ checkpoint = after.finalizedCheckpoint)
+    (nonGenesis : checkpoint.epoch ≠ GENESIS_EPOCH) :
+    ∃ earlier block later atBlock offset atStep next cached epoched justified attestations indices,
+      blocks = earlier ++ block :: later ∧
+      earlier.foldlM
+        (fun state block => stateTransition config checks engine state block true)
+          genesis = .ok atBlock ∧
+      offset < block.message.slot.toNat - atBlock.slot.toNat ∧
+      advanceSlots config offset atBlock = .ok atStep ∧
+      advanceSlot config atStep = .ok next ∧
+      processSlot atStep = .ok cached ∧ processEpoch config cached = .ok epoched ∧
+      processJustificationAndFinalization cached = .ok justified ∧
+      checkpoint = justified.currentJustifiedCheckpoint ∧
+      getBlockRoot cached checkpoint.epoch = .ok checkpoint.root ∧
+      getMatchingTargetAttestations cached (by decide) checkpoint.epoch = .ok attestations ∧
+      getUnslashedAttestingIndices cached attestations = .ok indices ∧
+      2 * sumMarked cached.validators.data
+          (markIndices cached.validators.data.size
+            (getActiveValidatorIndices cached (getCurrentEpoch cached))) ≤
+        3 * sumMarked cached.validators.data (markIndices cached.validators.data.size indices) +
+          3 * totalBalanceFloor cached indices := by
+  obtain ⟨earlier, block, later, atBlock, offset, atStep, next, cached, epoched, justified,
+    split, prefixOk, inside, advanced, stepOk, cachedOk, epochOk, weighed, assigned, changed⟩ :=
+    checkpoint_origin_of_initialized_chain initialized computed stored nonGenesis
+  obtain ⟨epoch, attestations, indices, _, matching, indicesOk, epochEq, threshold, _⟩ :=
+    processJustificationAndFinalization_pending_signers (by decide) weighed changed
+  have rootOk := processJustificationAndFinalization_justified_root weighed changed
+  have targetEpoch : checkpoint.epoch = epoch := (congrArg (·.epoch) assigned).trans epochEq
+  refine ⟨earlier, block, later, atBlock, offset, atStep, next, cached, epoched, justified,
+    attestations, indices, split, prefixOk, inside, advanced, stepOk, cachedOk, epochOk,
+    weighed, assigned, ?_, ?_, indicesOk, threshold⟩
+  · simpa only [← assigned] using rootOk
+  · simpa only [targetEpoch] using matching
 
 /-- Every Phase 0 state reached from initialized genesis keeps the effective-balance cap.
 
