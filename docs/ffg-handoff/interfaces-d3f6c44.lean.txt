@@ -1,0 +1,259 @@
+import EthLib.Consensus.Proofs.Transition.Genesis
+import Mathlib.Logic.Relation
+
+open EthLib EthLib.Base EthLib.Consensus
+open EthLib.Serialization.Ssz EthLib.Serialization.Ssz.SszType
+
+namespace EthLib.Consensus.Phase0SafetyPlan
+
+abbrev State (p : Preset) := BeaconState p .phase0
+abbrev Block (p : Preset) := SignedBeaconBlock p .phase0
+
+variable {p : Preset}
+
+def Runs (cfg : Config) (checks : SignatureChecks) (eng : ExecutionEngine p .phase0)
+    (s : State p) (bs : List (Block p)) (t : State p) : Prop :=
+  bs.foldlM (fun s b => stateTransition cfg checks eng s b true) s = .ok t
+
+def Initialized (cfg : Config) (checks : SignatureChecks) (g : State p) : Prop :=
+  (∃ h t ds, initializeBeaconStateFromEth1 cfg checks h t ds = .ok g) ∧
+    isValidGenesisState cfg g = true
+
+/-- Actual block-input states and every slot input and cached state before those blocks.
+
+This includes intermediate effective-balance minima, not just terminal states. -/
+def observations (cfg : Config) (checks : SignatureChecks) (eng : ExecutionEngine p .phase0)
+    (s : State p) (bs : List (Block p)) : List (State p) :=
+  s :: bs.zipIdx.flatMap fun (b, i) =>
+    match (bs.take i).foldlM (fun s b => stateTransition cfg checks eng s b true) s with
+    | .error _ => []
+    | .ok before =>
+      (stateTransition cfg checks eng before b true).toOption.toList ++
+      before :: (List.range (b.message.slot.toNat - before.slot.toNat)).flatMap fun n =>
+        match advanceSlots cfg n before with
+        | .error _ => []
+        | .ok atStep => atStep :: (processSlot atStep).toOption.toList
+
+def active (s : State p) (i : Nat) : Bool :=
+  match s.validators.data[i]? with
+  | none => false
+  | some v => isActiveValidator v (getCurrentEpoch s)
+
+def effective (s : State p) (i : Nat) : Nat :=
+  match s.validators.data[i]? with
+  | none => 0
+  | some v => v.effectiveBalance.toNat
+
+def stake (c : State p) : Nat :=
+  ((List.range c.validators.data.size).map fun i => if active c i then effective c i else 0).sum
+
+def deficit (c : State p) : Nat :=
+  ((List.range c.validators.data.size).map fun i =>
+    if active c i then p.MAX_EFFECTIVE_BALANCE.toNat - effective c i else 0).sum
+
+def maxOn (ss : List (State p)) (f : State p → Nat) : Nat :=
+  (ss.map f).foldl max 0
+
+def loss (c : State p) (ss : List (State p)) : Nat :=
+  ((List.range c.validators.data.size).map fun i =>
+    if active c i then maxOn ss (fun s => effective c i - effective s i) else 0).sum
+
+/-- Maximum added active weight outside C's active set, per one weighing state. -/
+def additions (c : State p) (ss : List (State p)) : Nat :=
+  maxOn ss fun s => ((List.range s.validators.data.size).map fun i =>
+    if active c i then 0 else if active s i then effective s i else 0).sum
+
+/-- Reference weight absent from at least one observed denominator, counted once per index. -/
+def exits (c : State p) (ss : List (State p)) : Nat :=
+  ((List.range c.validators.data.size).map fun i =>
+    if active c i && ss.any (fun s => !(active s i)) then effective c i else 0).sum
+
+/-- Previous-epoch voting weight missing from the current-active denominator. -/
+def previousGap (ss : List (State p)) : Nat :=
+  maxOn ss fun s => (s.validators.data.toList.map fun v =>
+    if isActiveValidator v (getPreviousEpoch s) && !isActiveValidator v (getCurrentEpoch s)
+    then v.effectiveBalance.toNat else 0).sum
+
+def Included (cfg : Config) (checks : SignatureChecks) (eng : ExecutionEngine p .phase0)
+    (c : State p) (bs : List (Block p)) (i : ValidatorIndex) (d : AttestationData) : Prop :=
+  ∃ earlier b later before atSlot, ∃ (pending : PendingAttestation p), ∃ inclusion recorded indexed attestation
+      header randao eth1 proposers attesters attestationPrefix attestationSuffix,
+    bs = earlier ++ b :: later ∧ Runs cfg checks eng c earlier before ∧
+    processSlots cfg before b.message.slot = .ok atSlot ∧
+    processBlockHeader atSlot b.message = .ok header ∧
+    processRandao cfg checks header b.message.body = .ok randao ∧
+    processEth1Data (by decide) randao b.message.body = .ok eth1 ∧
+    b.message.body.proposerSlashings.data.toList.foldlM
+      (processProposerSlashing cfg checks) eth1 = .ok proposers ∧
+    b.message.body.attesterSlashings.data.toList.foldlM
+      (processAttesterSlashing cfg checks) proposers = .ok attesters ∧
+    b.message.body.attestations.data.toList =
+      attestationPrefix ++ attestation :: attestationSuffix ∧
+    attestationPrefix.foldlM (processAttestation cfg checks) attesters = .ok inclusion ∧
+    processAttestation cfg checks inclusion attestation = .ok recorded ∧
+    pending.data = d ∧ indexed.data = d ∧ i ∈ indexed.attestingIndices.data ∧
+    isValidIndexedAttestation cfg checks recorded indexed = .ok true ∧
+    attestation.data = d ∧
+      getIndexedAttestation recorded attestation = .ok indexed ∧
+      pending.aggregationBits.bits = attestation.aggregationBits.bits
+
+def Slashable (cfg : Config) (checks : SignatureChecks) (eng : ExecutionEngine p .phase0)
+    (c : State p) (a b : List (Block p)) (i : ValidatorIndex) : Prop :=
+  ∃ x y, (Included cfg checks eng c a i x ∨ Included cfg checks eng c b i x) ∧
+    (Included cfg checks eng c a i y ∨ Included cfg checks eng c b i y) ∧
+    isSlashableAttestationData x y = true
+
+noncomputable def slashableStake (cfg : Config) (checks : SignatureChecks)
+    (eng : ExecutionEngine p .phase0) (c : State p) (a b : List (Block p)) : Nat := by
+  classical
+  exact ((List.range c.validators.data.size).map fun i =>
+    if active c i ∧ Slashable cfg checks eng c a b i.toUInt64 then effective c i else 0).sum
+
+/-- Raw parent-root ancestry, used only for non-genesis checkpoints.
+
+The zero genesis sentinel needs explicit resolution before using this relation. -/
+def Ancestor (bs : List (Block p)) (x y : Root) : Prop :=
+  Relation.ReflTransGen (fun x y => ∃ b ∈ bs,
+    b.message.parentRoot = x ∧ hashTreeRoot b.message = .ok y) x y
+
+def Conflicting (bs : List (Block p)) (x y : Checkpoint) : Prop :=
+  x.epoch ≠ GENESIS_EPOCH ∧ y.epoch ≠ GENESIS_EPOCH ∧
+    ¬Ancestor bs x.root y.root ∧ ¬Ancestor bs y.root x.root
+
+/-- The search pool uses states and latest headers actually observed on the supplied histories.
+
+Block and body SSZ computations are also included, so every binding reduction has a site. -/
+def messages (ss : List (State p)) (bs : List (Block p)) : List Bytes :=
+  (ss.flatMap fun s =>
+    ((valueTree (desc (State p)) (toValue s)).toOption.toList.flatMap (·.messages)) ++
+    ((valueTree (desc BeaconBlockHeader) (toValue s.latestBlockHeader)).toOption.toList.flatMap
+      (·.messages))) ++
+  bs.flatMap fun b =>
+    ((valueTree (desc (BeaconBlock p .phase0)) (toValue b.message)).toOption.toList.flatMap
+      (·.messages)) ++
+    ((valueTree (desc (BeaconBlockBody p .phase0)) (toValue b.message.body)).toOption.toList.flatMap
+      (·.messages))
+
+def CollisionFound (ss : List (State p)) (bs : List (Block p)) : Prop :=
+  ∃ x y, findMessageCollision (messages ss bs) (messages ss bs) = some (x, y) ∧
+    MessageCollision x y
+
+/-- Exact threshold witness in a cached state from a successful chain execution. -/
+def Threshold (s : State p) (e : Epoch) (is : List ValidatorIndex) : Prop :=
+  ∃ attestations,
+    getMatchingTargetAttestations s (by decide) e = .ok attestations ∧
+    getUnslashedAttestingIndices s attestations = .ok is ∧
+    2 * sumMarked s.validators.data
+        (markIndices s.validators.data.size (getActiveValidatorIndices s (getCurrentEpoch s))) ≤
+      3 * sumMarked s.validators.data (markIndices s.validators.data.size is) +
+        3 * totalBalanceFloor s is
+
+/-- This is a proposed interface, not an established theorem. -/
+def conflicting_finalizations_evidence_statement : Prop :=
+  ∀ (cfg : Config) (checks : SignatureChecks) (eng : ExecutionEngine p .phase0)
+    (g c left right : State p) (common a b : List (Block p)),
+    0 < p.MIN_SEED_LOOKAHEAD.toNat →
+    p.MIN_SEED_LOOKAHEAD.toNat + 3 < p.EPOCHS_PER_HISTORICAL_VECTOR.toNat →
+    Initialized cfg checks g → Runs cfg checks eng g common c →
+    Runs cfg checks eng c a left → Runs cfg checks eng c b right →
+    Conflicting (common ++ a ++ b) left.finalizedCheckpoint right.finalizedCheckpoint →
+    let ss := observations cfg checks eng c a ++ observations cfg checks eng c b
+    (∃ s ∈ ss, ∃ t ∈ ss, ∃ e f is js,
+      Threshold s e is ∧ Threshold t f js ∧
+      (getCurrentEpoch c).toNat < e.toNat ∧ (getCurrentEpoch c).toNat < f.toNat ∧
+      ∀ i, i ∈ is → i ∈ js → Slashable cfg checks eng c a b i) ∨
+    CollisionFound (observations cfg checks eng g common ++ ss) (common ++ a ++ b)
+
+/-- This interface preserves index identity, not merely registry length. -/
+def validator_alignment_statement : Prop :=
+  ∀ (cfg : Config) (checks : SignatureChecks) (eng : ExecutionEngine p .phase0)
+    (c after : State p) (bs : List (Block p)),
+    Invariant c → Runs cfg checks eng c bs after →
+    c.validators.data.size ≤ after.validators.data.size ∧
+    ∀ (i : ValidatorIndex) (v : Validator), getValidator c i = .ok v →
+      ∃ w, getValidator after i = .ok w ∧ w.pubkey = v.pubkey ∧
+        w.withdrawalCredentials = v.withdrawalCredentials ∧
+        (isActiveValidator v (getCurrentEpoch c) = true → w.activationEpoch = v.activationEpoch)
+
+/-- A registry-size bound covers queued churn even when C's active balance is small. -/
+def churnCap (cfg : Config) (c : State p) (n : Nat) : Nat :=
+  max 1 (max cfg.MIN_PER_EPOCH_CHURN_LIMIT.toNat
+    ((c.validators.data.size + (n + 1) * p.SLOTS_PER_EPOCH.toNat * p.MAX_DEPOSITS.toNat) /
+      cfg.CHURN_LIMIT_QUOTIENT.toNat))
+
+/-- Bound actual cohorts reaching activation and exit, not only newly scheduled cohorts. -/
+def realized_churn_statement : Prop :=
+  ∀ (cfg : Config) (checks : SignatureChecks) (eng : ExecutionEngine p .phase0)
+    (g c after : State p) (common bs : List (Block p)) (n : Nat),
+    Initialized cfg checks g → Runs cfg checks eng g common c →
+    Runs cfg checks eng c bs after →
+    (getCurrentEpoch after).toNat - (getCurrentEpoch c).toNat ≤ n →
+    let ss := observations cfg checks eng c bs
+    additions c ss ≤ n * churnCap cfg c n * p.MAX_EFFECTIVE_BALANCE.toNat ∧
+    exits c ss ≤ n * churnCap cfg c n * p.MAX_EFFECTIVE_BALANCE.toNat ∧
+    previousGap ss ≤ churnCap cfg c n * p.MAX_EFFECTIVE_BALANCE.toNat
+
+/-- Credits at actual operation sites; the event states and quotients must be retained. -/
+def SlashCredit (cfg : Config) (s t : State p) (i : ValidatorIndex) (r : Nat) : Prop :=
+  slashValidator cfg s i = .ok t ∧
+    ∃ v, getValidator s i = .ok v ∧
+      r = v.effectiveBalance.toNat /
+        (parameters p .phase0).WHISTLEBLOWER_REWARD_QUOTIENT.toNat
+
+/-- The event collector is a new function that follows the real operation calls.
+
+Its implementation is part of the slashing task, not an assumed oracle. -/
+def slashing_budget_statement
+    (collect : Config → SignatureChecks → ExecutionEngine p .phase0 →
+      State p → List (Block p) → Except TransitionError
+        (State p × List (State p × State p × ValidatorIndex × Nat))) : Prop :=
+  ∀ (cfg : Config) (checks : SignatureChecks) (eng : ExecutionEngine p .phase0)
+    (c after : State p) (bs : List (Block p)),
+    Invariant c → Runs cfg checks eng c bs after →
+    ∃ es, collect cfg checks eng c bs = .ok (after, es) ∧
+      (es.map fun e => e.2.2.1).Nodup ∧
+      (∀ e ∈ es, SlashCredit cfg e.1 e.2.1 e.2.2.1 e.2.2.2) ∧
+      (es.map fun e => e.2.2.2).sum ≤
+        es.length * (p.MAX_EFFECTIVE_BALANCE.toNat /
+          (parameters p .phase0).WHISTLEBLOWER_REWARD_QUOTIENT.toNat)
+
+/-- The arithmetic assembly is independent of root ancestry and of the horizon bound. -/
+def threshold_stake_bound_statement : Prop :=
+  ∀ (cfg : Config) (checks : SignatureChecks) (eng : ExecutionEngine p .phase0)
+    (g c left right : State p) (common a b : List (Block p)),
+    Initialized cfg checks g → Runs cfg checks eng g common c →
+    Runs cfg checks eng c a left → Runs cfg checks eng c b right →
+    let ss := observations cfg checks eng c a ++ observations cfg checks eng c b
+    ∀ s ∈ ss, ∀ t ∈ ss, ∀ e f is js,
+      Threshold s e is → Threshold t f js →
+      (∀ i, i ∈ is → i ∈ js → Slashable cfg checks eng c a b i) →
+      stake c ≤ 3 * (slashableStake cfg checks eng c a b + loss c ss) +
+        2 * deficit c + 2 * additions c ss + 2 * exits c ss +
+        6 * previousGap ss + 6 * p.EFFECTIVE_BALANCE_INCREMENT.toNat
+
+/-- Candidate horizon correction after proving the concrete assembly and actual churn.
+
+The zero-horizon case requires the no-new-finalization lemma, not substitution in this bound. -/
+def horizonCorrection (cfg : Config) (c : State p) (n : Nat) : Nat :=
+  if n = 0 then 0 else
+    2 * deficit c + 6 * (n + 1) * churnCap cfg c n * p.MAX_EFFECTIVE_BALANCE.toNat +
+      6 * p.EFFECTIVE_BALANCE_INCREMENT.toNat
+
+def phase0_safety_statement (horizon : Bool) : Prop :=
+  ∀ (cfg : Config) (checks : SignatureChecks) (eng : ExecutionEngine p .phase0)
+    (g c left right : State p) (common a b : List (Block p)) (n : Nat),
+    0 < p.MIN_SEED_LOOKAHEAD.toNat →
+    p.MIN_SEED_LOOKAHEAD.toNat + 3 < p.EPOCHS_PER_HISTORICAL_VECTOR.toNat →
+    Initialized cfg checks g → Runs cfg checks eng g common c →
+    Runs cfg checks eng c a left → Runs cfg checks eng c b right →
+    (getCurrentEpoch left).toNat - (getCurrentEpoch c).toNat ≤ n →
+    (getCurrentEpoch right).toNat - (getCurrentEpoch c).toNat ≤ n →
+    Conflicting (common ++ a ++ b) left.finalizedCheckpoint right.finalizedCheckpoint →
+    let ss := observations cfg checks eng c a ++ observations cfg checks eng c b
+    (stake c ≤ 3 * (slashableStake cfg checks eng c a b + loss c ss) +
+      if horizon then horizonCorrection cfg c n else
+        2 * deficit c + 2 * additions c ss + 2 * exits c ss +
+          6 * previousGap ss + 6 * p.EFFECTIVE_BALANCE_INCREMENT.toNat) ∨
+    CollisionFound (observations cfg checks eng g common ++ ss) (common ++ a ++ b)
+
+end EthLib.Consensus.Phase0SafetyPlan
