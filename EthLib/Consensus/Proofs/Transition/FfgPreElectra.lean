@@ -138,11 +138,12 @@ theorem exited_le :
   simp [activeAt_lt active, active, notActive]
 
 include withinX in
-/-- The loss term of the drift is the lost stake. -/
-theorem lost_eq :
-    ∑ v ∈ (Weighing.ofState x votersX).active,
-        ((Weighing.ofState x votersX).stake v - (Weighing.ofState s votersS).stake v) =
+/-- The loss term of the drift is at most the lost stake. -/
+theorem lost_le :
+    ∑ v ∈ (Weighing.ofState x votersX).active ∩ (Weighing.ofState s votersS).active,
+        ((Weighing.ofState x votersX).stake v - (Weighing.ofState s votersS).stake v) ≤
       lostStake x s := by
+  refine (Finset.sum_le_sum_of_subset Finset.inter_subset_left).trans (le_of_eq ?_)
   simp only [Weighing.ofState, effectiveBalanceAt_eq]
   exact sum_active withinX _ fun j => effectiveAt x j - effectiveAt s j
 
@@ -150,9 +151,10 @@ include withinX in
 /-- Before Electra, the gains of the validators active at `x` are at most their room below the
 cap. -/
 theorem gained_le (capped : EffectiveBalancesCapped s) (before : fork' < .pectra) :
-    ∑ v ∈ (Weighing.ofState x votersX).active,
+    ∑ v ∈ (Weighing.ofState x votersX).active ∩ (Weighing.ofState s votersS).voters,
         ((Weighing.ofState s votersS).stake v - (Weighing.ofState x votersX).stake v) ≤
       deficit (preset := preset) x := by
+  refine (Finset.sum_le_sum_of_subset Finset.inter_subset_left).trans ?_
   simp only [Weighing.ofState, effectiveBalanceAt_eq]
   rw [deficit, ← sum_active withinX]
   refine Finset.sum_le_sum fun i _ => ?_
@@ -187,7 +189,7 @@ theorem drift_ofState_le (capped : EffectiveBalancesCapped s) (before : fork' < 
       2 * leavingStake x s + 2 * lostStake x s + 3 * deficit (preset := preset) x +
         3 * joiningStakePrev x s + 3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat := by
   have e₁ := exited_le withinX withinS votersX votersS
-  have e₂ := lost_eq (s := s) withinX votersX votersS
+  have e₂ := lost_le (s := s) withinX votersX votersS
   have e₃ := gained_le withinX votersX votersS capped before
   have e₄ := entered_le (x := x) withinX votersX votersS voting
   unfold Weighing.drift

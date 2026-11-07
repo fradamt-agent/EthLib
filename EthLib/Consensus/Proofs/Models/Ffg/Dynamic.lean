@@ -102,16 +102,20 @@ variable [DecidableEq ν]
 ```
 
 - `exited`: reference stake of validators active in `ω₀` but not in `ω`.
-- `lost`: stake that reference-active validators hold in `ω₀` above their stake in `ω`.
-- `gained`: stake that reference-active validators hold in `ω` above their stake in `ω₀`.
+- `lost`: stake that validators active in both hold in `ω₀` above their stake in `ω`.
+- `gained`: stake that reference-active voters of `ω` hold in `ω` above their stake in `ω₀`.
+
+A validator that has left counts once, in `exited`, whatever its stake does later.
+
+So a deposit to a validator that has withdrawn, which spends no churn, counts nowhere.
 - `entered`: stake in `ω` of voters of `ω` not active in `ω₀`.
 - `floor`: the floor of `ω`.
 
 Each term is zero when `ω = ω₀` is a static weighing. -/
 def drift (ω₀ ω : Weighing ν) : ℕ :=
   2 * Models.stake ω₀.stake (ω₀.active \ ω.active) +
-    2 * ∑ v ∈ ω₀.active, (ω₀.stake v - ω.stake v) +
-    3 * ∑ v ∈ ω₀.active, (ω.stake v - ω₀.stake v) +
+    2 * ∑ v ∈ ω₀.active ∩ ω.active, (ω₀.stake v - ω.stake v) +
+    3 * ∑ v ∈ ω₀.active ∩ ω.voters, (ω.stake v - ω₀.stake v) +
     3 * Models.stake ω.stake (ω.voters \ ω₀.active) +
     3 * ω.floor
 
@@ -138,17 +142,19 @@ theorem Supermajority.reference {ω : Weighing ν} {q : Finset ν} (ω₀ : Weig
     exact Nat.add_le_add_left (stake_mono (Finset.sdiff_subset_sdiff hq le_rfl)) _
   -- Reference-active signers hold at most their reference stake plus their gains.
   have hgain : Models.stake ω.stake (q ∩ ω₀.active) ≤ Models.stake ω₀.stake (q ∩ ω₀.active) +
-      ∑ v ∈ ω₀.active, (ω.stake v - ω₀.stake v) := by
+      ∑ v ∈ ω₀.active ∩ ω.voters, (ω.stake v - ω₀.stake v) := by
     calc Models.stake ω.stake (q ∩ ω₀.active)
         ≤ ∑ v ∈ q ∩ ω₀.active, (ω₀.stake v + (ω.stake v - ω₀.stake v)) :=
           Finset.sum_le_sum fun _ _ => by omega
       _ = Models.stake ω₀.stake (q ∩ ω₀.active) + ∑ v ∈ q ∩ ω₀.active, (ω.stake v - ω₀.stake v) :=
           Finset.sum_add_distrib
-      _ ≤ _ := Nat.add_le_add_left
-          (Finset.sum_le_sum_of_subset (Finset.inter_subset_right)) _
+      _ ≤ _ := Nat.add_le_add_left (Finset.sum_le_sum_of_subset fun v hv => by
+          simp only [Finset.mem_inter] at hv ⊢
+          exact ⟨hv.2, hq hv.1⟩) _
   -- The reference total splits into validators still active in `ω` and the ones that left.
   have htotal : Models.stake ω₀.stake ω₀.active ≤ Models.stake ω.stake ω.active +
-      ∑ v ∈ ω₀.active, (ω₀.stake v - ω.stake v) + Models.stake ω₀.stake (ω₀.active \ ω.active) := by
+      ∑ v ∈ ω₀.active ∩ ω.active, (ω₀.stake v - ω.stake v) +
+        Models.stake ω₀.stake (ω₀.active \ ω.active) := by
     rw [← stake_inter_add_sdiff ω₀.stake ω₀.active ω.active]
     refine Nat.add_le_add_right ?_ _
     calc ∑ v ∈ ω₀.active ∩ ω.active, ω₀.stake v
@@ -157,9 +163,7 @@ theorem Supermajority.reference {ω : Weighing ν} {q : Finset ν} (ω₀ : Weig
       _ = ∑ v ∈ ω₀.active ∩ ω.active, ω.stake v +
             ∑ v ∈ ω₀.active ∩ ω.active, (ω₀.stake v - ω.stake v) :=
           Finset.sum_add_distrib
-      _ ≤ _ := Nat.add_le_add
-          (stake_mono Finset.inter_subset_right)
-          (Finset.sum_le_sum_of_subset Finset.inter_subset_left)
+      _ ≤ _ := Nat.add_le_add_right (stake_mono Finset.inter_subset_right) _
   have h' := h
   unfold Supermajority at h'
   unfold drift
