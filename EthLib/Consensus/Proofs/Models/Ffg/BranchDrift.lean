@@ -73,8 +73,9 @@ theorem finalized (x : Bool) : Finalized weighings ∅ votes ⟨{x}, 1⟩ := by
     exact .link .root (link (by simp) (Finset.empty_subset _) ⟨x, .inl rfl⟩)
   · exact link (by simp) le_rfl ⟨x, .inr rfl⟩
 
-/-- No validator is slashable: each signs two votes with different target epochs, and neither
-surrounds the other. -/
+/-- No validator is slashable.
+
+Each signs two votes with different target epochs, and neither surrounds the other. -/
 theorem not_slashable (v : Bool) : ¬Slashable votes v := by
   rintro ⟨x, ⟨a, hx⟩, y, ⟨b, hy⟩, rfl, hv, h⟩
   rcases hx with rfl | rfl <;> rcases hy with rfl | rfl <;>
@@ -104,8 +105,11 @@ Two weighings allowed for targets whose blocks are comparable have drift zero.
 
 Yet no validator is slashable.
 
-So for every reference weighing with positive total, some weighing between the two finalized
-epochs has drift at least half that total: `Dynamic.accountable_safety` needs `total₀ ≤ 2 * D`. -/
+So take any reference weighing with positive total.
+
+Some weighing between the two finalized epochs has drift at least half that total.
+
+This is because `Dynamic.accountable_safety` needs `total₀ ≤ 2 * D`. -/
 theorem exists_branches_not_slashable :
     ∃ (W : Checkpoint (Finset Bool) → Set (Weighing Bool))
       (votes : Set (Vote Bool (Finset Bool))) (c₁ c₂ : Checkpoint (Finset Bool)),

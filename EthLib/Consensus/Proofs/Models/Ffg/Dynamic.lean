@@ -189,8 +189,10 @@ def SupermajorityLink (W : Checkpoint β → Set (Weighing ν)) (votes : Set (Vo
     (s t : Checkpoint β) (ω : Weighing ν) : Prop :=
   s.epoch < t.epoch ∧ s.block ≤ t.block ∧ ω ∈ W t ∧ ω.Supermajority (ω.signers votes s t)
 
-/-- The justified checkpoints: the genesis checkpoint, and each target of a supermajority link
-from a justified source. -/
+/-- The justified checkpoints:
+
+- the genesis checkpoint;
+- each target of a supermajority link from a justified source. -/
 inductive Justified (W : Checkpoint β → Set (Weighing ν)) (genesis : β) (votes : Set (Vote ν β)) :
     Checkpoint β → Prop
   /-- The genesis checkpoint is justified. -/

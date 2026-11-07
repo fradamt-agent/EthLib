@@ -39,9 +39,11 @@ The map reads three things from the histories.
 
 Checkpoints become blocks of the model through `block`, with an order on blocks.
 
-The map takes the whole checkpoint, root and epoch, so the order can compare epoch-boundary pairs
-as in Gasper §4: a checkpoint is below another when its root is the epoch-boundary block of the
-other's chain at its epoch.
+The map takes the whole checkpoint, root and epoch.
+
+So the order can compare epoch-boundary pairs as in Gasper §4.
+
+Then `(r, e) ≤ (r', e')` when `r` is the epoch-boundary block of the chain of `r'` at `e`.
 
 The intended order is ancestry by the parent roots of actual blocks.
 
@@ -152,13 +154,13 @@ structure FfgRefinement (β : Type*) [Preorder β] where
   signed : Set (ValidatorIndex × AttestationData)
   /-- The weighing calls that justified a checkpoint (L1 for the calls, L5 for their contents). -/
   records : Set WeighingRecord
-  /-- The current and previous justified checkpoints of every state, and every checkpoint that
-  a weighing call justified (L1).
+  /-- The current and previous justified checkpoints of each state, and those a call justified (L1).
 
   A call that justifies both the previous and the current epoch keeps only the current one.
 
-  The previous one then appears in no state, but its justification bit is set, and a
-  finalization rule can read it. -/
+  The previous one then appears in no state.
+
+  But its justification bit is set, and a finalization rule can read it. -/
   justified : Set Checkpoint
   /-- The finalized checkpoints of every state (L1). -/
   finalized : Set Checkpoint
@@ -190,15 +192,15 @@ structure FfgRefinement (β : Type*) [Preorder β] where
 
   The call computes `3 * max floor voted ≥ 2 * max floor total`, from effective balances. -/
   threshold : ∀ r ∈ records, r.weighing.Supermajority r.weighing.voters
-  /-- A finalized checkpoint is genesis, or one of the four rules of a weighing call
-  finalized it (L5).
+  /-- A finalized checkpoint is genesis, or one of the four rules of a call finalized it (L5).
 
   The rules finalize with `k = 1` or `k = 2`.
 
   Checkpoints `cs 0 = c, ..., cs k` have the epochs of `c` and the next `k` epochs.
 
-  The first `k` are justified, each block is in the chain of the next one or there is evidence,
-  and a weighing call links `c` to `cs k`. -/
+  The first `k` are justified, and a weighing call links `c` to `cs k`.
+
+  Each block is in the chain of the next one, or there is evidence. -/
   finalized_rule : ∀ c ∈ finalized, c.toModel block = ⟨genesis, 0⟩ ∨
     ∃ k, 1 ≤ k ∧ ∃ cs : ℕ → Checkpoint, cs 0 = c ∧
       (∀ i ≤ k, (cs i).epoch.toNat = c.epoch.toNat + i) ∧
@@ -237,8 +239,7 @@ theorem link (hno : ¬R.evidence) {r : WeighingRecord} (hr : r ∈ R.records) :
   simp only [Weighing.signers, Ffg.signers, Finset.mem_filter]
   exact ⟨hi, ⟨i, d⟩, hd, by simp [hs, ht]⟩
 
-/-- Without hash evidence, every justified checkpoint of the histories is justified in the
-model. -/
+/-- Without hash evidence, each justified checkpoint of the histories is justified in the model. -/
 theorem justified_model (hno : ¬R.evidence) {c : Checkpoint} (hc : c ∈ R.justified) :
     Dynamic.Justified R.weighings R.genesis R.votes (c.toModel R.block) := by
   -- Induct on the epoch: the source of a weighing call has a smaller one.
@@ -250,8 +251,7 @@ theorem justified_model (hno : ¬R.evidence) {c : Checkpoint} (hc : c ∈ R.just
     · have hlt := R.source_lt_target r hr
       exact .link (ih _ (h ▸ hlt) (R.source_justified r hr) rfl) (link hno hr)
 
-/-- Without hash evidence, every finalized checkpoint of the histories is finalized in the
-model. -/
+/-- Without hash evidence, each finalized checkpoint of the histories is finalized in the model. -/
 theorem finalized_model (hno : ¬R.evidence) {c : Checkpoint} (hc : c ∈ R.finalized) :
     Dynamic.Finalized R.weighings R.genesis R.votes (c.toModel R.block) := by
   rcases R.finalized_rule c hc with hg | ⟨k, hk, cs, h0, hep, hj, hle, r, hr, hs, ht⟩
@@ -271,11 +271,13 @@ open scoped Classical in
 
 Take two finalized checkpoints of the histories whose blocks conflict.
 
-Take a reference weighing `ω₀`, and a bound `D` on the drift from it of every weighing call
-whose target epoch lies between the two finalized epochs.
+Consider the weighing calls whose target epoch lies between the two finalized epochs.
 
-Then validators active in `ω₀` with a third of its total stake, less `2 * D`, each signed two
-attestation data that the beacon chain slashes.
+Take a reference weighing `ω₀`, and a bound `D` on the drift from it of each such call.
+
+Then there are validators active in `ω₀` with a third of its total stake, less `2 * D`.
+
+Each of them signed two attestation data that the beacon chain slashes.
 
 Otherwise there is hash evidence.
 

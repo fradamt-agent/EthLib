@@ -12,16 +12,19 @@ public import EthLib.Consensus.Proofs.Transition.RegistryGrowth
 
 Here the histories are two runs from genesis, and the records are the calls on prefixes of them.
 
-The provenance proofs give each field along a given run, so every call that a field names is on
-one of the two runs.
+The provenance proofs give each field along a given run.
 
-That places the calls in time: the two runs share a run to a state `X`, and a call on either run
-at a slot after `X` runs on a state that `X` reaches.
+So every call that a field names is on one of the two runs.
+
+That places the calls in time.
+
+The two runs share a run to a state `X`.
+
+A call on either run at a slot after `X` runs on a state that `X` reaches.
 
 `accountable_safety_runs_preElectra` measures the drift from such an `X`, before Electra.
 
-Any `X` before the first slot of the earlier finalized epoch places every call between the two
-epochs.
+Any `X` before the first slot of the earlier finalized epoch places every call between the epochs.
 
 The best choice is the later of the last shared state and that slot.
 -/
@@ -277,8 +280,9 @@ theorem Reaches.fork_le {x y : ForkedBeaconState preset} (chain : Reaches config
     | block _ _ _ _ _ => exact ih
     | @upgrade pre post _ _ => exact Nat.le_trans ih (Nat.le_of_lt post.2)
 
-/-- Before Electra, the drift from the weighing of a reachable state `X` to a call that `X`
-reaches, in closed form.
+/-- Before Electra, a closed form bounds the drift from a reachable state `X` to a call it reaches.
+
+The drift is from the weighing of `X`.
 
 `n` bounds the epochs from `X` to the call's state, `K` the churn cap and `L` the lost stake there.
 -/
@@ -369,11 +373,13 @@ theorem runs_within {a b : ForkedBeaconState preset} (earlyA : a.fork < .glamste
   · exact Nat.lt_of_le_of_lt chain.fork_le earlyB
 
 open scoped Classical in
-/-- Accountable safety for two runs from genesis that share a run to `X`, before Electra,
-measured at `X`.
+/-- Accountable safety before Electra, measured at `X`, for two runs from genesis.
 
-`F` is finalized and `J` justified on the runs, the epoch of `F` is at most that of `J`, and they
-conflict as epoch-boundary pairs.
+The two runs share a run to `X`.
+
+`F` is finalized and `J` justified on the runs, and the epoch of `F` is at most that of `J`.
+
+They conflict as epoch-boundary pairs.
 
 `X` comes before the first slot of the epoch of `F`.
 
@@ -460,8 +466,9 @@ theorem accountable_safety_runs_preElectra {g a b : ForkedBeaconState preset}
     (lost _ fromX (by dsimp only; omega))
 
 open scoped Classical in
-/-- `accountable_safety_runs_preElectra` with the churn cap bounded by the registry growth from
-`X`: `K = max 1 (churnCapWithin X (J + 1 - E))`. -/
+/-- `accountable_safety_runs_preElectra` with the churn cap bounded by the registry growth from `X`.
+
+The bound is `K = max 1 (churnCapWithin X (J + 1 - E))`. -/
 theorem accountable_safety_runs_preElectra_registry {g a b : ForkedBeaconState preset}
     (X : CommonState config checks g a b) (caps : EffectiveBalanceCaps preset)
     (two : 2 ≤ preset.SLOTS_PER_EPOCH.toNat) (genesis : Genesis config checks g)

@@ -11,6 +11,7 @@ Accountable safety measures slashable stake against the weighing of one referenc
 That state must be one that both conflicting histories pass through.
 
 Facts about each history alone cannot bound the drift from any other reference.
+
 `Models/Ffg/BranchDrift.lean` shows this.
 
 Here two runs share a prefix that ends at a state `X`, and each continues with its own suffix.
@@ -128,8 +129,9 @@ theorem mem_states_append {middle : ForkedBeaconState preset}
       · exact .inr (List.mem_append_left _ h)
     · exact .inr (List.mem_append_right _ now)
 
-/-- A state of a run through `X`, with a slot after that of `X`, is a state of the part
-after `X`, and is reached from `X`. -/
+/-- A state of a run through `X`, with a slot after that of `X`, is a state of the part after `X`.
+
+It is also reached from `X`. -/
 theorem reaches_of_slot_lt {middle after : ForkedBeaconState preset}
     (head : Run config checks start middle) (tail : Run config checks middle after)
     {state : ForkedBeaconState preset} (member : state ∈ (head.append tail).states)
@@ -143,8 +145,11 @@ end Run
 
 /-- Two histories from one start that share the run to `X`, then go their own ways.
 
-`X` may be any state they share: the end of their longest common prefix gives the tightest
-drift bound, and a checkpoint finalized in both gives one that a client knows. -/
+`X` may be any state they share.
+
+The end of their longest common prefix gives the tightest drift bound.
+
+A checkpoint finalized in both gives one that a client knows. -/
 structure CommonState (config : Config) (checks : SignatureChecks)
     (start left right : ForkedBeaconState preset) where
   /-- The shared state. -/
@@ -167,8 +172,9 @@ def leftRun : Run config checks start left := X.shared.append X.leftTail
 /-- The second history. -/
 def rightRun : Run config checks start right := X.shared.append X.rightTail
 
-/-- Every state of either history with a slot after the shared state is reached from it on that
-history. -/
+/-- Take a state of either history with a slot after the shared state.
+
+It is in the rest of that history, and it is reached from the shared state. -/
 theorem reaches_of_slot_lt {state : ForkedBeaconState preset}
     (member : state ∈ X.leftRun.states ∨ state ∈ X.rightRun.states)
     (later : X.common.state.slot.toNat < state.state.slot.toNat) :
@@ -180,9 +186,11 @@ theorem reaches_of_slot_lt {state : ForkedBeaconState preset}
   · obtain ⟨m, r⟩ := Run.reaches_of_slot_lt X.shared X.rightTail h later
     exact ⟨.inr m, r⟩
 
-/-- The weighing call for a target epoch `t ≥ lo` runs at a state whose slot closes epoch `t`
-or `t + 1`. With at least two slots per epoch, its slot is after every slot up to the first slot
-of `lo`. So such a call lies after `X` when `X` is no later than that slot. -/
+/-- For a target epoch `t ≥ lo`, the weighing call runs at a state whose slot closes `t` or `t + 1`.
+
+With at least two slots per epoch, its slot is after every slot up to the first slot of `lo`.
+
+So such a call lies after `X` when `X` is no later than that slot. -/
 theorem slot_lt_of_epoch {slot xSlot slotsPerEpoch lo t closing : ℕ} (two : 2 ≤ slotsPerEpoch)
     (common : xSlot ≤ lo * slotsPerEpoch) (target : lo ≤ t) (closes : t ≤ closing)
     (atCall : slot = (closing + 1) * slotsPerEpoch - 1) : xSlot < slot := by

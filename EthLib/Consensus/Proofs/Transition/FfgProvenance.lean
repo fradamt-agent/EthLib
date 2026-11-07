@@ -11,8 +11,9 @@ public import EthLib.Consensus.Proofs.Transition.Provenance.PendingVoters
 
 The provenance proofs give parent-root ancestry and raw sums over lists of indices.
 
-Their `ChainAncestor` is a reflexive-transitive closure of parent links, and their raw balance is
-`markedStake`.
+Their `ChainAncestor` is a reflexive-transitive closure of parent links.
+
+Their raw balance is `markedStake`.
 
 This file joins the two.
 
@@ -84,8 +85,10 @@ theorem ofRoot_zero : (ofRoot (links := links) (Vector.replicate 32 0)).root = n
 theorem none_le (b : LinkedRoot links) : (⟨none⟩ : LinkedRoot links) ≤ b :=
   Or.inl rfl
 
-/-- A source root comes before a target root when the source is the zero root, or links lead
-from it to a target that is not the zero root. -/
+/-- A source root comes before a target root in two cases:
+
+- the source is the zero root;
+- links lead from it to a target that is not the zero root. -/
 theorem ofRoot_le {s t : Root} (h : s = Vector.replicate 32 0 ∨
       (Relation.ReflTransGen links s t ∧ t ≠ Vector.replicate 32 0)) :
     ofRoot (links := links) s ≤ ofRoot t := by
@@ -97,8 +100,9 @@ theorem ofRoot_le {s t : Root} (h : s = Vector.replicate 32 0 ∨
 
 end LinkedRoot
 
-/-- Checkpoints as epoch-boundary pairs, Gasper §4, over parent links that carry the child's
-slot: `none` for the genesis sentinel, or a root with an epoch. -/
+/-- Checkpoints as epoch-boundary pairs, Gasper §4, over parent links that carry the child's slot.
+
+Each is `none` for the genesis sentinel, or a root with an epoch. -/
 structure EpochBlock (links : Root → Root → ℕ → Prop) (slotsPerEpoch : ℕ) where
   /-- The root and the epoch, or `none` for the genesis sentinel. -/
   point : Option (Root × ℕ)
@@ -117,8 +121,11 @@ theorem after_mono {e e' : ℕ} (le : e ≤ e') {p r : Root}
   obtain ⟨slot, link, lt⟩ := h
   exact ⟨slot, link, lt_of_le_of_lt (Nat.mul_le_mul_right _ le) lt⟩
 
-/-- `(r, e) ≤ (r', e')` when `e ≤ e'` and links lead from `r` to `r'` through blocks after the
-first slot of `e`: `r` is the epoch-boundary block of the chain of `r'` at `e`.
+/-- `(r, e) ≤ (r', e')` when `e ≤ e'` and links lead from `r` to `r'`.
+
+These links pass through blocks after the first slot of `e`.
+
+That is, `r` is the epoch-boundary block of the chain of `r'` at `e`.
 
 The genesis sentinel is below every pair. -/
 instance : Preorder (EpochBlock links slotsPerEpoch) where
@@ -143,8 +150,11 @@ instance : Preorder (EpochBlock links slotsPerEpoch) where
 def ofCheckpoint (c : Checkpoint) : EpochBlock links slotsPerEpoch :=
   ⟨if c.root = Vector.replicate 32 0 then none else some (c.root, c.epoch.toNat)⟩
 
-/-- A checkpoint is below another when its root is zero, or when links lead from its root to the
-nonzero root of the other through blocks after the first slot of its epoch. -/
+/-- A checkpoint is below another in two cases:
+
+- its root is zero;
+- links lead from its root to the nonzero root of the other.
+  They pass through blocks after the first slot of its epoch. -/
 theorem ofCheckpoint_le {s t : Checkpoint}
     (h : s.root = Vector.replicate 32 0 ∨ (s.epoch.toNat ≤ t.epoch.toNat ∧
       Relation.ReflTransGen (after links slotsPerEpoch s.epoch.toNat) s.root t.root ∧
@@ -169,8 +179,9 @@ end EpochBlock
 
 This is the field `source_le_target` of `FfgRefinement`.
 
-`chain` is the parent links of one history; its closure is the provenance proofs'
-`ChainAncestor`.
+`chain` is the parent links of one history.
+
+Its closure is the provenance proofs' `ChainAncestor`.
 
 The links of the model must contain them.
 
@@ -296,11 +307,13 @@ theorem supermajority_of_threshold {state : BeaconState preset fork}
   rw [← markedStake_eq_stake activeInRange, ← markedStake_eq_stake inRange]
   exact passes
 
-/-- From Altair, the weighing call behind a justified checkpoint is a supermajority of the
-weighing of its state, and its voters were active in the target epoch.
+/-- From Altair, take the weighing call behind a justified checkpoint.
 
-This is the field `threshold` of `FfgRefinement`, with the record's weighing
-`Weighing.ofState cached voters`, for one record of one history.
+It is a supermajority of the weighing of its state, and its voters were active in the target epoch.
+
+This is the field `threshold` of `FfgRefinement`, for one record of one history.
+
+The record's weighing is `Weighing.ofState cached voters`.
 
 The registry must be within its limit, which its type gives before Gloas. -/
 theorem JustifiedBy.supermajority {start after : ForkedBeaconState preset}
@@ -318,8 +331,9 @@ theorem JustifiedBy.supermajority {start after : ForkedBeaconState preset}
   exact ⟨active, supermajority_of_threshold passes within fun i mem =>
     activeAt_lt ((mem_active_iff within).mp (active i mem))⟩
 
-/-- From genesis, at every fork, the weighing call behind a justified checkpoint is a
-supermajority of the weighing of its state, and its voters were active in the target epoch.
+/-- From genesis, at every fork, take the weighing call behind a justified checkpoint.
+
+It is a supermajority of the weighing of its state, and its voters were active in the target epoch.
 
 Before Altair the voters come from pending attestations, whose committees were active.
 

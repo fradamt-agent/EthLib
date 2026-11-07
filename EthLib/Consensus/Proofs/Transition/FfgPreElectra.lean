@@ -148,8 +148,7 @@ theorem lost_le :
   exact sum_active withinX _ fun j => effectiveAt x j - effectiveAt s j
 
 include withinX in
-/-- Before Electra, the gains of the validators active at `x` are at most their room below the
-cap. -/
+/-- Before Electra, the validators active at `x` gain at most their room below the cap. -/
 theorem gained_le (capped : EffectiveBalancesCapped s) (before : fork' < .pectra) :
     ∑ v ∈ (Weighing.ofState x votersX).active ∩ (Weighing.ofState s votersS).voters,
         ((Weighing.ofState s votersS).stake v - (Weighing.ofState x votersX).stake v) ≤
@@ -208,8 +207,11 @@ open scoped Classical in
 
 Take two finalized checkpoints of the histories whose blocks conflict.
 
-The hypothesis `placed` is for L5: each weighing call with a target between the two finalized
-epochs weighs a state `s` of one history, after `X` in slot and before Electra.
+The hypothesis `placed` is for L5.
+
+It says that each weighing call with a target between the two finalized epochs weighs a state `s`.
+
+That state `s` is on one history, after `X` in slot and before Electra.
 
 Its voters were active in the previous or the current epoch of `s`.
 
@@ -219,8 +221,10 @@ Its epoch is at most `n` after that of `X`, and `K` bounds its churn cap.
 
 The churn windows of L1 bound the leaving and the joining stake.
 
-Then the validators active at `X` hold at most three times the stake of those that signed slashable
-attestation data, plus twice the drift bound, measured at `X`.
+Then, measured at `X`, the validators active at `X` hold at most the sum of:
+
+- three times the stake of those that signed slashable attestation data;
+- twice the drift bound.
 
 Otherwise there is hash evidence. -/
 theorem FfgRefinement.accountable_safety_preElectra {β : Type*} [Preorder β]

@@ -6,8 +6,9 @@ public import EthLib.Consensus.Proofs.Transition.StakeLoss
 /-!
 # Proofs: accountable safety for a fork-choice store before Electra, in closed form
 
-`store_accountable_safety` loses twice a drift bound `D` of the weighing calls between the store's
-finalized and justified epochs.
+`store_accountable_safety` loses twice a drift bound `D` of some weighing calls.
+
+These are the calls between the store's finalized and justified epochs.
 
 Here `D` is instantiated before Electra, measured in the genesis state, which both chains share.
 
@@ -22,15 +23,19 @@ With `J` the justified epoch, `K` a bound on the churn cap and `L` a bound on lo
 - Gains: at most the room of the genesis validators below `MAX_EFFECTIVE_BALANCE`, by the cap.
 - Lost stake, `L`: a named bound on the effective balance that genesis validators lose.
   The inactivity leak drives it.
-  `lostStake_le_fallen` bounds it, along any run, by each validator's slack at the start, what the
-  run debits it, and the rounding; `Run.lost_le_budgets` splits the debits by flow.
+  Along any run, `lostStake_le_fallen` bounds it by three terms for each validator.
+  They are the validator's slack at the start, what the run debits it, and the rounding.
+  `Run.lost_le_budgets` splits the debits by flow.
 - The churn cap, `K`: a named bound on `max 1 (churnCap config size)` over the reached states.
   It grows with the registry.
 
 The store stays on one fork before Electra, so every state that its chains reach is of that fork.
 
-`store_accountable_safety_preElectra_from` measures instead at a state `X` that the chains reach,
-such as their last shared state, so that the windows count epochs since `X`.
+`store_accountable_safety_preElectra_from` measures instead at a state `X` that the chains reach.
+
+An example is their last shared state.
+
+The windows then count epochs since `X`.
 
 It asks that every weighing call between the two epochs runs on a state that `X` reaches.
 -/
@@ -61,8 +66,9 @@ theorem Reaches.fork_eq_of_notDue {s : BeaconState preset fork} {after : ForkedB
       rw [notDue middleState] at due
       cases due
 
-/-- The epoch of a state whose slot fits in 64 bits, with at least two slots per epoch, is below the
-far future epoch. -/
+/-- Take a state whose slot fits in 64 bits, with at least two slots per epoch.
+
+Its epoch is below the far future epoch. -/
 theorem currentEpoch_lt_farFuture {state : BeaconState preset fork}
     (two : 2 ≤ preset.SLOTS_PER_EPOCH.toNat) : (getCurrentEpoch state).toNat < 2 ^ 64 - 1 := by
   have slotBound := state.slot.toNat_lt
@@ -71,8 +77,9 @@ theorem currentEpoch_lt_farFuture {state : BeaconState preset fork}
     Nat.div_le_div_left two (by decide)
   omega
 
-/-- The lost stake from a reachable state along a run, by validator: its slack at the start, what
-the run debits its balance, and the rounding. -/
+/-- The lost stake from a reachable state along a run, by validator.
+
+Each validator gives its slack at the start, what the run debits its balance, and the rounding. -/
 theorem lostStake_le_fallen (caps : EffectiveBalanceCaps preset)
     (increment : 0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
     {start after : ForkedBeaconState preset} (reachable : Reachable config checks start)
@@ -92,13 +99,15 @@ variable [NeZero preset.BYTES_PER_LOGS_BLOOM.toNat] [NeZero preset.SYNC_COMMITTE
 open scoped Classical in
 /-- Accountable safety for a fork-choice store before Electra, measured in the genesis state.
 
-The hypotheses on the store are those of `store_accountable_safety`, and the store's fork is before
-Electra.
+The hypotheses on the store are those of `store_accountable_safety`.
+
+The store's fork is before Electra.
 
 `K` bounds the churn cap, and `L` the lost stake, from genesis to every state the chains reach.
 
-Then the validators active at genesis hold at most three times the genesis stake of those that
-signed two slashable attestation data, both checked in blocks of the chains, plus twice
+Consider the validators that signed two slashable attestation data checked in blocks of the chains.
+
+Then, at genesis, the active validators hold at most three times the stake of those, plus twice
 
 ```text
   2 * (J + 1) * K * MAX + 2 * L + 3 * deficit(genesis) + 3 * (J + 2) * K * MAX + 3 * INC
@@ -233,26 +242,42 @@ theorem store_accountable_safety_preElectra {anchorState : BeaconState preset fo
   omega
 
 open scoped Classical in
-/-- Accountable safety for a fork-choice store before Electra, measured in a state `X` that the
-chains reached from genesis, such as the last state that the store's two chains share.
+/-- Accountable safety for a fork-choice store before Electra, measured in a state `X`.
 
-`placed` asks that every weighing call between the two epochs, on either chain, runs on a state
-that `X` reaches.
+The chains reached `X` from genesis.
 
-For the last shared state of two runs, `CommonState.reaches_of_slot_lt` gives this for the calls
-on those runs. The calls behind a justification are found on one run by the provenance proofs, so
-`placed` is what a run-indexed form of those proofs discharges.
+For example, `X` can be the last state that the store's two chains share.
 
-With `E` the epoch of `X`, the bound is that of `store_accountable_safety_preElectra` with `J + 1`
-and `J + 2` replaced by `J + 1 - E` and `J + 1 - E + 1`: the time since `X`, not since genesis.
+`placed` asks this of every weighing call between the two epochs, on either chain.
 
-The hypotheses on the store are those of `store_accountable_safety`, and the store's fork is before
-Electra.
+The call must run on a state that `X` reaches.
+
+Take the last shared state of two runs as `X`.
+
+Then `CommonState.reaches_of_slot_lt` gives this for the calls on those runs.
+
+The provenance proofs find the calls behind a justification on one run.
+
+So `placed` is what a run-indexed form of those proofs discharges.
+
+Let `E` be the epoch of `X`.
+
+The bound is that of `store_accountable_safety_preElectra`, with two replacements:
+
+- `J + 1` becomes `J + 1 - E`;
+- `J + 2` becomes `J + 1 - E + 1`.
+
+These count the time since `X`, not since genesis.
+
+The hypotheses on the store are those of `store_accountable_safety`.
+
+The store's fork is before Electra.
 
 `K` bounds the churn cap, and `L` the lost stake, from genesis to every state the chains reach.
 
-Then the validators active at genesis hold at most three times the genesis stake of those that
-signed two slashable attestation data, both checked in blocks of the chains, plus twice
+Consider the validators that signed two slashable attestation data checked in blocks of the chains.
+
+Then, at genesis, the active validators hold at most three times the stake of those, plus twice
 
 ```text
   2 * (J + 1) * K * MAX + 2 * L + 3 * deficit(genesis) + 3 * (J + 2) * K * MAX + 3 * INC

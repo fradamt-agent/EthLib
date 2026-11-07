@@ -12,22 +12,22 @@ Two histories of the beacon chain start at one genesis state `g` and end at `a` 
 
 This file builds the `FfgRefinement` of the pair from the provenance proofs.
 
-- Blocks: epoch-boundary pairs, `EpochBlock`, over the parent links of the actual blocks of both
-  histories, with each child's slot.
+- Blocks: epoch-boundary pairs, `EpochBlock`, over the parent links of the actual blocks.
+  These links come from both histories, and each link carries the child's slot.
 - Evidence: a state with the zero root, or a cached header with the zero root, on either history.
-- Signed votes: data that a validator signed in an attestation checked in a block of either
-  history.
-- Records: the calls of `processJustificationAndFinalization` on states of either history, each
-  with its own source and weighing: those at epoch boundaries, and direct ones such as a store's
-  pulled-up tip.
-- Justified: the justified checkpoints of every state of either history, and every checkpoint that
-  a call justified.
-- Finalized: the finalized checkpoint of every state of either history, and every checkpoint that
-  a call finalized by one of the four rules.
+- Signed votes: data a validator signed in an attestation checked in a block of either history.
+- Records: the calls of `processJustificationAndFinalization` on states of either history.
+  Each call has its own source and weighing.
+  The calls are those at epoch boundaries, and direct ones such as a store's pulled-up tip.
+- Justified: the justified checkpoints of every state of either history.
+  It also holds every checkpoint that a call justified.
+- Finalized: the finalized checkpoint of every state of either history.
+  It also holds every checkpoint that a call finalized by one of the four rules.
 
 The provenance proofs give every field, at every fork.
 
 The finalization rule needs the root of a checkpoint three epochs back to stay in the buffer:
+
 `4 * SLOTS_PER_EPOCH ≤ SLOTS_PER_HISTORICAL_ROOT`.
 
 `accountable_safety_histories` then states accountable safety for the two histories.
@@ -69,8 +69,9 @@ theorem genesis_toFfg {links : Root → Root → ℕ → Prop} {spe : ℕ} :
         ⟨GENESIS_EPOCH, Vector.replicate 32 0⟩ = ⟨⟨none⟩, 0⟩ := by
   simp [Checkpoint.toModel, EpochBlock.ofCheckpoint, GENESIS_EPOCH]
 
-/-- Ancestry along blocks of one history past the first slot of an epoch is ancestry in the pair
-order of both histories. -/
+/-- Take ancestry along blocks of one history past the first slot of an epoch.
+
+It is ancestry in the pair order of both histories. -/
 theorem pastAncestor_history {g a b x : ForkedBeaconState preset}
     (hx : OnEither config checks g a b x) {e : ℕ} {r r' : Root}
     (path : PastAncestor config checks g x (e * preset.SLOTS_PER_EPOCH.toNat) r r') :
@@ -190,15 +191,21 @@ def historyRefinement {g a b : ForkedBeaconState preset} (genesis : Genesis conf
 open scoped Classical in
 /-- Accountable safety for two histories of the beacon chain from one genesis.
 
-Take a state on each history, or two states of one, whose finalized checkpoints conflict as
-epoch-boundary pairs: neither is the epoch-boundary block, at its epoch, of the other's chain,
-through the parent links of both histories.
+Take a state on each history, or two states of one, whose finalized checkpoints conflict.
 
-Take a reference weighing `ω₀`, and a bound `D` on the drift from it of every weighing call of
-either history with a target between the two finalized epochs.
+They conflict as epoch-boundary pairs, through the parent links of both histories.
 
-Then validators active in `ω₀` with a third of its total stake, less `2 * D`, each signed two
-attestation data, both checked in blocks of the histories, that the beacon chain slashes.
+That is, neither is the epoch-boundary block, at its epoch, of the other's chain.
+
+Consider the weighing calls of either history with a target between the two finalized epochs.
+
+Take a reference weighing `ω₀`, and a bound `D` on the drift from it of each such call.
+
+Then there are validators active in `ω₀` with a third of its total stake, less `2 * D`.
+
+Each of them signed two attestation data that the beacon chain slashes.
+
+Both data were checked in blocks of the histories.
 
 Otherwise a state or a cached block header of the histories has the zero root.
 
@@ -239,15 +246,21 @@ open scoped Classical in
 
 `xJ` is a state on the histories, and its current justified checkpoint is `J`.
 
-A fork-choice store holds such a pair: its finalized and its justified checkpoint each come from
-a state that its chain reached, possibly on different branches.
+A fork-choice store holds such a pair.
 
-If the epoch of `F` is at most that of `J` and they conflict as epoch-boundary pairs, the
-conclusion of
-`accountable_safety_histories` holds.
+Its finalized and its justified checkpoint each come from a state that its chain reached.
 
-A store compares its checkpoints as such pairs, so its failed descent check is meant to give this
-conflict, or hash evidence; that link is not proved here. -/
+These two states may be on different branches.
+
+Let the epoch of `F` be at most that of `J`, and let them conflict as epoch-boundary pairs.
+
+Then the conclusion of `accountable_safety_histories` holds.
+
+A store compares its checkpoints as such pairs.
+
+So its failed descent check is meant to give this conflict, or hash evidence.
+
+That link is not proved here. -/
 theorem accountable_safety_histories_justified {g a b : ForkedBeaconState preset}
     (genesis : Genesis config checks g)
     (wide4 : 4 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
