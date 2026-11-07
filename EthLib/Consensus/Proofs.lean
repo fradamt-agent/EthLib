@@ -95,6 +95,7 @@ public import EthLib.Consensus.Proofs.Transition.EpochParticipation
 public import EthLib.Consensus.Proofs.Transition.EpochPending
 public import EthLib.Consensus.Proofs.Transition.EpochRewards
 public import EthLib.Consensus.Proofs.Transition.EpochUpdates
+public import EthLib.Consensus.Proofs.Transition.ExitLoss
 public import EthLib.Consensus.Proofs.Transition.ExitStake
 public import EthLib.Consensus.Proofs.Transition.Execution
 public import EthLib.Consensus.Proofs.Transition.FfgVotes
