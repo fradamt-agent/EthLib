@@ -349,4 +349,199 @@ theorem processRewardsAndPenalties_sameSizes {config : Config}
     obtain ⟨_, _, applied⟩ := computed
     exact sameSizes_applyAllDeltas applied
 
+/-- A successful reward addition fits in 64 bits, before the penalty saturates at zero.
+
+The subtraction in the conclusion is on natural numbers. -/
+theorem balance_applyDeltas {rewards penalties : Array Gwei} {index : Nat}
+    (computed : applyDeltas rewards penalties state index = .ok after) :
+    ∃ balance : Gwei, getBalance state index.toUInt64 = .ok balance ∧
+      balance.toNat + (rewards.getD index 0).toNat < 2 ^ 64 ∧
+      getBalance after index.toUInt64 =
+        .ok (saturatingSub (balance + rewards.getD index 0) (penalties.getD index 0)) ∧
+      (saturatingSub (balance + rewards.getD index 0) (penalties.getD index 0)).toNat =
+        balance.toNat + (rewards.getD index 0).toNat - (penalties.getD index 0).toNat := by
+  simp only [applyDeltas, bind_ok_iff, liftAccessor_ok] at computed
+  obtain ⟨raised, raisedOk, lowered⟩ := computed
+  simp only [increaseBalance, bind_ok_iff, liftArith, mapError_ok_iff,
+    addChecked_ok_iff] at raisedOk
+  obtain ⟨balance, found, sum, ⟨fits, summed⟩, set⟩ := raisedOk
+  have sum_eq : sum = balance + rewards.getD index 0 :=
+    UInt64.toNat_inj.mp (summed.trans (toNat_add_of_lt fits).symm)
+  subst sum_eq
+  have read := getBalance_setBalance_self set
+  simp only [decreaseBalance, read, bind, Except.bind] at lowered
+  exact ⟨balance, found, fits, getBalance_setBalance_self lowered, by
+    rw [toNat_saturatingSub, toNat_add_of_lt fits]⟩
+
+/-- Applying another validator's deltas leaves this balance unchanged. -/
+private theorem getBalance_applyDeltas_of_ne {rewards penalties : Array Gwei} {index : Nat}
+    (computed : applyDeltas rewards penalties state index = .ok after)
+    {j : ValidatorIndex} (other : j.toNat ≠ index.toUInt64.toNat) :
+    getBalance after j = getBalance state j := by
+  simp only [applyDeltas, bind_ok_iff, liftAccessor_ok] at computed
+  obtain ⟨raised, raisedOk, lowered⟩ := computed
+  obtain ⟨_, set⟩ := increaseBalance_ok raisedOk
+  obtain ⟨_, rfl⟩ := setBalance_ok set
+  obtain ⟨_, set⟩ := decreaseBalance_ok lowered
+  obtain ⟨_, rfl⟩ := setBalance_ok set
+  simp only [getBalance, BeaconState.putBalance, Array.getElem?_set,
+    ite_eq_right (Ne.symm other)]
+
+/-- A sequence of updates at other indices keeps the selected balance. -/
+private theorem getBalance_fold_applyDeltas_of_not_mem
+    {rewards penalties : Array Gwei} {indices : List Nat} {j : ValidatorIndex}
+    (other : ∀ i ∈ indices, j.toNat ≠ i.toUInt64.toNat)
+    (computed : indices.foldlM (applyDeltas rewards penalties) state = .ok after) :
+    getBalance after j = getBalance state j := by
+  induction indices generalizing state with
+  | nil => cases computed; rfl
+  | cons i indices ih =>
+    rw [List.foldlM_cons, bind_ok_iff] at computed
+    obtain ⟨next, step, rest⟩ := computed
+    exact (ih (fun i hi => other i (by simp [hi])) rest).trans
+      (getBalance_applyDeltas_of_ne step (other i (by simp)))
+
+/-- A pass applies each validator's reward before its penalty, with no wrapping addition.
+
+Validator indices are 64-bit values.
+
+The index bound prevents distinct registry positions from naming the same validator.
+
+Before Gloas the registry type supplies this bound.
+
+From Gloas the progressive registry has no type-level bound. -/
+theorem balance_applyAllDeltas {deltas : Array Gwei × Array Gwei}
+    (bounded : state.validators.data.size ≤ 2 ^ 64)
+    (computed : applyAllDeltas state deltas = .ok after)
+    {j : Nat} (inside : j < state.validators.data.size) :
+    ∃ beforeBalance afterBalance : Gwei,
+      getBalance state j.toUInt64 = .ok beforeBalance ∧
+      getBalance after j.toUInt64 = .ok afterBalance ∧
+      beforeBalance.toNat + (deltas.1.getD j 0).toNat < 2 ^ 64 ∧
+      afterBalance.toNat = beforeBalance.toNat + (deltas.1.getD j 0).toNat -
+        (deltas.2.getD j 0).toNat := by
+  have jbound : j < 2 ^ 64 := Nat.lt_of_lt_of_le inside bounded
+  have convert : ∀ i, i < 2 ^ 64 → i.toUInt64.toNat = i := by
+    intro i hi
+    exact Nat.mod_eq_of_lt hi
+  have walk : ∀ (indices : List Nat) (pre post : BeaconState preset fork),
+      indices.Nodup → (∀ i ∈ indices, i < 2 ^ 64) → j ∈ indices →
+      indices.foldlM (applyDeltas deltas.1 deltas.2) pre = .ok post →
+      ∃ b a : Gwei, getBalance pre j.toUInt64 = .ok b ∧
+        getBalance post j.toUInt64 = .ok a ∧
+        b.toNat + (deltas.1.getD j 0).toNat < 2 ^ 64 ∧
+        a.toNat = b.toNat + (deltas.1.getD j 0).toNat - (deltas.2.getD j 0).toNat := by
+    intro indices
+    induction indices with
+    | nil => simp
+    | cons i indices ih =>
+      intro pre post unique bounds member folded
+      rw [List.foldlM_cons, bind_ok_iff] at folded
+      obtain ⟨next, step, rest⟩ := folded
+      rcases List.mem_cons.mp member with same | member
+      · subst i
+        obtain ⟨b, found, fits, read, value⟩ := balance_applyDeltas step
+        have kept := getBalance_fold_applyDeltas_of_not_mem (j := j.toUInt64)
+          (fun i hi => by
+            rw [convert j jbound, convert i (bounds i (by simp [hi]))]
+            exact fun eq => (List.nodup_cons.mp unique).1 (eq ▸ hi)) rest
+        exact ⟨b, _, found, kept.trans read, fits, value⟩
+      · obtain ⟨b, a, found, read, fits, value⟩ := ih next post
+          (List.nodup_cons.mp unique).2 (fun i hi => bounds i (by simp [hi])) member rest
+        have other : j ≠ i := by
+          exact fun eq => (List.nodup_cons.mp unique).1 (eq ▸ member)
+        have kept := getBalance_applyDeltas_of_ne step (j := j.toUInt64)
+          (by simpa [convert j jbound, convert i (bounds i (by simp))] using other)
+        exact ⟨b, a, kept ▸ found, read, fits, value⟩
+  exact walk (List.range state.validators.data.size) state after List.nodup_range
+    (fun i hi => Nat.lt_of_lt_of_le (List.mem_range.mp hi) bounded)
+    (List.mem_range.mpr inside) computed
+
+/-- Each pass saturates separately, in list order.
+
+Successful execution supplies the checked addition at every pass. -/
+theorem balance_fold_applyAllDeltas {passes : List (Array Gwei × Array Gwei)}
+    (bounded : state.validators.data.size ≤ 2 ^ 64)
+    (computed : passes.foldlM applyAllDeltas state = .ok after)
+    {j : Nat} (inside : j < state.validators.data.size) {balance : Gwei}
+    (found : getBalance state j.toUInt64 = .ok balance) :
+    ∃ finalBalance : Gwei, getBalance after j.toUInt64 = .ok finalBalance ∧
+      finalBalance.toNat = passes.foldl
+        (fun b d => b + (d.1.getD j 0).toNat - (d.2.getD j 0).toNat) balance.toNat := by
+  induction passes generalizing state balance with
+  | nil => cases computed; exact ⟨balance, found, rfl⟩
+  | cons delta passes ih =>
+    rw [List.foldlM_cons, bind_ok_iff] at computed
+    obtain ⟨next, step, rest⟩ := computed
+    obtain ⟨b, a, read, nextRead, _, value⟩ := balance_applyAllDeltas bounded step inside
+    have same : b = balance := Except.ok.inj (read.symm.trans found)
+    subst same
+    have sizes := sameSizes_applyAllDeltas step
+    obtain ⟨finalBalance, finalRead, finalValue⟩ := ih (by simpa [sizes.1] using bounded) rest
+      (by simpa [sizes.1] using inside) nextRead
+    exact ⟨finalBalance, finalRead, by simpa [List.foldl_cons, value] using finalValue⟩
+
+/-- Before Altair, the attestation deltas are applied in one saturating pass. -/
+theorem balance_processRewardsAndPenalties_before_altair {config : Config}
+    (before : fork < .altair) (notGenesis : getCurrentEpoch state ≠ GENESIS_EPOCH)
+    (computed : processRewardsAndPenalties config state = .ok after)
+    {j : Nat} (inside : j < state.validators.data.size) :
+    ∃ deltas : Array Gwei × Array Gwei,
+      getAttestationDeltas config state before = .ok deltas ∧
+      ∃ b a : Gwei, getBalance state j.toUInt64 = .ok b ∧
+        getBalance after j.toUInt64 = .ok a ∧
+        b.toNat + (deltas.1.getD j 0).toNat < 2 ^ 64 ∧
+        a.toNat = b.toNat + (deltas.1.getD j 0).toNat - (deltas.2.getD j 0).toNat := by
+  have notAltair : ¬Fork.altair ≤ fork := fun le =>
+    Nat.lt_irrefl _ (Nat.lt_of_lt_of_le before le)
+  simp only [processRewardsAndPenalties, notGenesis, ↓reduceIte,
+    notAltair, ↓reduceDIte, bind_ok_iff] at computed
+  obtain ⟨deltas, calculated, applied⟩ := computed
+  have bound := state.validators.bound (show fork < .glamsterdam from by
+    exact Nat.lt_trans before (by decide))
+  have limit := preset.VALIDATOR_REGISTRY_LIMIT.toNat_lt
+  have bounded : state.validators.data.size ≤ 2 ^ 64 := by omega
+  exact ⟨deltas, calculated, balance_applyAllDeltas bounded applied inside⟩
+
+/-- From Altair, apply the flags in index order, then inactivity, saturating after each pass.
+
+All deltas are computed from the state before any pass. -/
+theorem balance_processRewardsAndPenalties_from_altair {config : Config}
+    (altair : .altair ≤ fork) (notGenesis : getCurrentEpoch state ≠ GENESIS_EPOCH)
+    (bounded : state.validators.data.size ≤ 2 ^ 64)
+    (computed : processRewardsAndPenalties config state = .ok after)
+    {j : Nat} (inside : j < state.validators.data.size) {balance : Gwei}
+    (found : getBalance state j.toUInt64 = .ok balance) :
+    ∃ flags inactivity,
+      (List.finRange PARTICIPATION_FLAG_WEIGHTS.length).mapM
+        (getFlagIndexDeltas state altair) = .ok flags ∧
+      getInactivityPenaltyDeltas config state = .ok inactivity ∧
+      ∃ finalBalance : Gwei, getBalance after j.toUInt64 = .ok finalBalance ∧
+        finalBalance.toNat = (flags ++ [inactivity]).foldl
+          (fun b d => b + (d.1.getD j 0).toNat - (d.2.getD j 0).toNat) balance.toNat := by
+  simp only [processRewardsAndPenalties, notGenesis, ↓reduceIte, altair,
+    ↓reduceDIte, bind_ok_iff] at computed
+  obtain ⟨flags, calculated, inactivity, inactive, applied⟩ := computed
+  exact ⟨flags, inactivity, calculated, inactive,
+    balance_fold_applyAllDeltas bounded applied inside found⟩
+
+/-- Before Gloas, the registry type supplies the bound for the ordered flag passes. -/
+theorem balance_processRewardsAndPenalties_altair_before_gloas {config : Config}
+    (altair : .altair ≤ fork) (before : fork < .glamsterdam)
+    (notGenesis : getCurrentEpoch state ≠ GENESIS_EPOCH)
+    (computed : processRewardsAndPenalties config state = .ok after)
+    {j : Nat} (inside : j < state.validators.data.size) {balance : Gwei}
+    (found : getBalance state j.toUInt64 = .ok balance) :
+    ∃ flags inactivity,
+      (List.finRange PARTICIPATION_FLAG_WEIGHTS.length).mapM
+        (getFlagIndexDeltas state altair) = .ok flags ∧
+      getInactivityPenaltyDeltas config state = .ok inactivity ∧
+      ∃ finalBalance : Gwei, getBalance after j.toUInt64 = .ok finalBalance ∧
+        finalBalance.toNat = (flags ++ [inactivity]).foldl
+          (fun b d => b + (d.1.getD j 0).toNat - (d.2.getD j 0).toNat) balance.toNat := by
+  have bound := state.validators.bound before
+  have limit := preset.VALIDATOR_REGISTRY_LIMIT.toNat_lt
+  exact balance_processRewardsAndPenalties_from_altair altair notGenesis
+    (by omega) computed inside found
+
 end EthLib.Consensus
