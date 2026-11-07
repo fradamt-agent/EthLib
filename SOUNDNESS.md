@@ -1342,6 +1342,8 @@ A vote names the validator that signed it, so both theorems assume that no one f
 Its `Dynamic.accountable_safety` measures the slashable stake in a reference weighing.
 It loses twice a bound on the drift from that reference, over the weighings between the two finalized epochs.
 With one static weighing it gives `accountable_safety`.
+`exists_branches_not_slashable` (`BranchDrift.lean`) shows that the drift bound cannot come from each branch alone.
+Two branches finalize conflicting checkpoints of one epoch with no slashable validator, while every two weighings of one branch have drift zero.
 
 `FfgRefinement` (`Transition/FfgRefinement.lean`) lists, as structure fields, the facts that two histories of the beacon chain must provide for the dynamic model.
 `FfgRefinement.accountable_safety` proves that these fields give slashable stake, or hash evidence.
