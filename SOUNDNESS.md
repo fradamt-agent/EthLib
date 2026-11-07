@@ -1360,7 +1360,7 @@ From Gloas the state is a progressive container, and `lightClientGindices_eq_of_
 On a state of any fork from Altair, `BeaconState.nodeRoot_finalizedCheckpoint_root` reads the finality node as the root of `state.finalizedCheckpoint.root`.
 `BeaconState.nodeRoot_nextSyncCommittee` and `BeaconState.nodeRoot_currentSyncCommittee` read the committee nodes as the roots of those fields.
 These theorems take the lawful SSZ type of the state as an argument, and they name the root of the field, which always exists.
-Instance search does not yet find that lawful type at the mainnet or minimal preset, so a caller supplies it.
+At the mainnet and minimal presets, the instances of `Consensus/Proofs/Preset.lean` let instance search find that lawful type.
 `validateLightClientUpdate_finalizedCheckpoint` joins the finality result to these nodes.
 Take an accepted update, and a beacon state whose root is the attested state root.
 The proved root is then the root in the finalized checkpoint of that state.
@@ -1382,6 +1382,10 @@ From Capella to Fulu, `isValidLightClientHeader_executionPayload` takes a valid 
 It also takes a body of a fork from Capella to Fulu whose root is the body root of the header.
 The execution root of the header is then the root of the execution payload of that body, or `findBranchCollision` returns a SHA-256 collision.
 `BeaconBlockBody.nodeRoot_executionPayload` reads node 25 of such a body as the root of its payload, at every preset.
+`ExecutionPayload.hashTreeRoot_header` shows that before Gloas the header of a payload has the root of the payload.
+So `isValidLightClientHeader_execution_eq` takes the binding to the fields, for a body of the fork of the header at a slot from that fork.
+The execution header of the light client header is then the header of the payload of the body, field by field.
+Otherwise a search over the two branch climbs, or one over the hash inputs of the two header roots, names a SHA-256 collision.
 From Gloas, `isValidLightClientHeader_parentBlockHash` binds the block hash of a header at a slot from Gloas to the parent block hash of the bid of a Gloas body.
 `isValidLightClientHeader_executionBlockHash` binds it, for an earlier slot from Capella, to the block hash of the payload of a body of the fork of that slot.
 The headers that the client checks are valid: `initializeLightClientStore_header_valid`, `validateLightClientUpdate_attestedHeader_valid`, and `validateLightClientUpdate_finalizedHeader_valid` after the genesis slot.

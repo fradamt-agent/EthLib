@@ -5,6 +5,7 @@ public import EthLib.Consensus.Proofs.Builders
 public import EthLib.Consensus.Proofs.Churn
 public import EthLib.Consensus.Proofs.Mutators
 public import EthLib.Consensus.Proofs.Participation
+public import EthLib.Consensus.Proofs.Preset
 public import EthLib.Consensus.Proofs.PayloadTimeliness
 public import EthLib.Consensus.Proofs.Proposers
 public import EthLib.Consensus.Proofs.SyncCommittee
