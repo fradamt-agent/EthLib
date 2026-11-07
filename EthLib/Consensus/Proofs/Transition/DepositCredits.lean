@@ -28,34 +28,35 @@ open Base Uint64
 
 variable {preset : Preset} {fork : Base.Fork} {config : Config} {checks : SignatureChecks}
 
-/-- A position that holds a validator not withdrawn before an epoch. -/
+/-- A position that holds no validator, or one not withdrawn before an epoch. -/
 def HoldsUnwithdrawn (state : BeaconState preset fork) (epoch : Nat) (index : Nat) : Prop :=
-  ∃ validator, state.validators.data[index]? = some validator ∧
+  ∀ validator, state.validators.data[index]? = some validator →
     epoch ≤ validator.withdrawableEpoch.toNat
 
-/-- A registry that stays or grows by one keeps each validator that it holds. -/
+/-- A registry that stays, or grows by one validator not withdrawable, keeps the property. -/
 theorem HoldsUnwithdrawn.of_grown {state after : BeaconState preset fork} {epoch : Nat}
-    {index : Nat} {deposit : PendingDeposit}
+    {index : Nat} {deposit : PendingDeposit} (bounded : epoch < 2 ^ 64)
     (grown : after.validators.data = state.validators.data ∨
       ∃ validator, after.validators.data = state.validators.data.push validator ∧
-        validator.pubkey = deposit.pubkey)
+        validator.pubkey = deposit.pubkey ∧ validator.withdrawableEpoch = FAR_FUTURE_EPOCH)
     (holds : HoldsUnwithdrawn state epoch index) : HoldsUnwithdrawn after epoch index := by
-  obtain ⟨validator, found, later⟩ := holds
-  refine ⟨validator, ?_, later⟩
-  rcases grown with same | ⟨_, pushed, _⟩
-  · rw [same, found]
-  · have inside : index < state.validators.data.size := by
-      by_contra outside
-      rw [Array.getElem?_eq_none (Nat.le_of_not_lt outside)] at found
-      cases found
-    rw [pushed, Array.getElem?_push_lt inside]
-    exact (Array.getElem?_eq_getElem inside).symm.trans found
+  intro validator found
+  rcases grown with same | ⟨added, pushed, _, far⟩
+  · rw [same] at found
+    exact holds validator found
+  · rw [pushed, Array.getElem?_push] at found
+    split at found
+    · obtain rfl := Option.some.inj found
+      rw [far]
+      have : FAR_FUTURE_EPOCH.toNat = 2 ^ 64 - 1 := rfl
+      omega
+    · exact holds validator found
 
 /-- A registry that stays or grows by one has at most one validator more. -/
 theorem grown_size {state after : BeaconState preset fork} {deposit : PendingDeposit}
     (grown : after.validators.data = state.validators.data ∨
       ∃ validator, after.validators.data = state.validators.data.push validator ∧
-        validator.pubkey = deposit.pubkey) :
+        validator.pubkey = deposit.pubkey ∧ validator.withdrawableEpoch = FAR_FUTURE_EPOCH) :
     after.validators.data.size ≤ state.validators.data.size + 1 := by
   rcases grown with same | ⟨_, pushed, _⟩
   · rw [same]; omega
@@ -77,7 +78,8 @@ theorem withdrawn_target_not_mem {state : BeaconState preset fork} {epoch : Epoc
     (withdrawn : (depositTargetStatus state epoch deposit.pubkey).2 = true)
     (known : ∀ j, state.validators.data.findIdx? (·.pubkey == deposit.pubkey) = some j →
       target = some j)
-    {index : Nat} (holds : HoldsUnwithdrawn state epoch.toNat index) : target ≠ some index := by
+    {index : Nat} (holds : HoldsUnwithdrawn state epoch.toNat index) :
+    target ≠ some index := by
   unfold depositTargetStatus at withdrawn
   split at withdrawn
   · rename_i validator found
@@ -88,9 +90,7 @@ theorem withdrawn_target_not_mem {state : BeaconState preset fork} {epoch : Epoc
     rw [known j index']
     intro same
     obtain rfl := Option.some.inj same
-    obtain ⟨held, heldFound, later⟩ := holds
-    rw [Array.getElem?_eq_getElem inside, value] at heldFound
-    obtain rfl := Option.some.inj heldFound
+    have later := holds validator (by rw [Array.getElem?_eq_getElem inside, value])
     simp only [decide_eq_true_eq] at withdrawn
     exact absurd later (Nat.not_le.mpr (UInt64.lt_iff_toNat_lt.mp withdrawn))
   · cases withdrawn
@@ -135,7 +135,8 @@ theorem PendingDepositTrace.credits {stop : PendingDeposit → Bool} {nextEpoch 
       · simp [depositChanges, here]
     · rw [Finset.sum_add_distrib, Finset.sum_eq_zero fun i member =>
         ite_eq_right (withdrawn_target_not_mem withdrawn known (inside i member))]
-      simpa using bound positions fun i member => (inside i member).of_grown grown
+      simpa using bound positions fun i member =>
+        (inside i member).of_grown nextEpoch.toNat_lt grown
   | @charged _ _ _ deposit _ _ _ _ _ _ applied _ ih =>
     intro holds room
     simp only [List.length_cons] at room
@@ -150,7 +151,7 @@ theorem PendingDepositTrace.credits {stop : PendingDeposit → Bool} {nextEpoch 
       · simp [depositChanges, here, BalanceChange.apply]; omega
       · simp [depositChanges, here]
     · rw [Finset.sum_add_distrib]
-      have := bound positions fun i member => (inside i member).of_grown grown
+      have := bound positions fun i member => (inside i member).of_grown nextEpoch.toNat_lt grown
       have := sum_depositCredit_le positions target deposit.amount.toNat
       omega
 
@@ -222,9 +223,7 @@ def depositCreditsAt (config : Config) (checks : SignatureChecks)
 
 /-- One slot from Electra credits deposits to validators that stay, within the churn it charges.
 
-Take positions that hold a validator before the slot.
-
-After the slot each such validator must not exit before the current epoch.
+After the slot, each validator at those positions must not exit before the current epoch.
 
 The deposits that the slot credits to those positions sum to at most the balance it charges.
 
@@ -234,7 +233,6 @@ theorem advanceSlot_depositCredits {state after : BeaconState preset fork}
     (holds : Invariant state)
     (room : state.validators.data.size + preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat < 2 ^ 64)
     (small : after.validators.data.size < 2 ^ 64) (positions : Finset Nat)
-    (present : ∀ i ∈ positions, i < state.validators.data.size)
     (staying : ∀ i ∈ positions, ∀ validator, after.validators.data[i]? = some validator →
       (getCurrentEpoch after).toNat ≤ validator.exitEpoch.toNat) :
     ∑ i ∈ positions, depositCreditsAt config checks state i ≤
@@ -366,16 +364,10 @@ theorem advanceSlot_depositCredits {state after : BeaconState preset fork}
       · rw [creditsIs i, credited i]
         omega
       · -- The validator at the position stays at least until the next epoch.
-        have resetSmall : reset.validators.data.size < 2 ^ 64 := by
-          rw [resetSizes.1]; omega
-        obtain ⟨validator, found⟩ : ∃ validator, reset.validators.data[i]? = some validator := by
-          have := present i member
-          rw [← resetSizes.1] at this
-          exact ⟨_, Array.getElem?_eq_getElem this⟩
+        intro validator found
         obtain ⟨later, laterFound, exit⟩ := quiet.exits (by simpa using small) i validator found
         have stays := staying i member later (by simpa using laterFound)
         have ordered := resetOrdered validator (Array.mem_of_getElem? found)
-        refine ⟨validator, found, ?_⟩
         rw [resetEpoch]
         have := UInt64.le_iff_toNat_le.mp ordered
         rw [exit] at stays
@@ -401,6 +393,30 @@ def Run.depositCredits {start : ForkedBeaconState preset} (index : Nat) :
   | _, .nil => 0
   | _, .snoc run step => run.depositCredits index + step.depositCredits index
 
+/-- What a run credits a balance beyond the deposits of its epoch transitions.
+
+Each step counts its rise less the deposits it credits, or zero.
+
+For a validator that the run adds, it is what the validator gains after its deposits.
+
+It counts rewards, rewards of blocks and of reports, and balances received by consolidation. -/
+def Run.gainsAfterDeposit {start : ForkedBeaconState preset} (index : Nat) :
+    {after : ForkedBeaconState preset} → Run config checks start after → Nat
+  | _, .nil => 0
+  | after, .snoc (middle := middle) run step =>
+    run.gainsAfterDeposit index +
+      ((balanceAt after.state index - balanceAt middle.state index) - step.depositCredits index)
+
+/-- What a run credits a balance is at most its deposits, plus what it gains after them. -/
+theorem Run.credited_le {start : ForkedBeaconState preset} (index : Nat) :
+    ∀ {after : ForkedBeaconState preset} (run : Run config checks start after),
+      run.credited index ≤ run.depositCredits index + run.gainsAfterDeposit index
+  | _, .nil => by simp [Run.credited, Run.depositCredits, Run.gainsAfterDeposit]
+  | _, .snoc run step => by
+    have := Run.credited_le index run
+    simp only [Run.credited, Run.depositCredits, Run.gainsAfterDeposit]
+    omega
+
 /-- The epoch does not decrease over one step from Electra on. -/
 theorem Step.epoch_le {before after : ForkedBeaconState preset}
     (electra : .pectra ≤ before.fork) (step : Step config checks before after) :
@@ -424,9 +440,9 @@ theorem exitEpoch_ge_of_lifecycle {validator later : Validator} {epoch epoch' : 
 
 /-- A run from Electra on credits deposits to validators that stay, within the churn it charges.
 
-Take positions that hold a validator at the start.
+At the end, each validator at the positions must not exit before the current epoch.
 
-At the end, each such validator must not exit before the current epoch.
+A position may be new, and a deposit that creates its validator takes from the churn.
 
 Then it was not withdrawn at any pass of the run, so each deposit to it took from the churn.
 
@@ -443,12 +459,12 @@ theorem Run.depositCredits_le {start : ForkedBeaconState preset}
       after.state.validators.data.size < 2 ^ 64 →
       (∀ state ∈ run.states,
         state.state.validators.data.size + preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat < 2 ^ 64) →
-      ∀ positions : Finset Nat, (∀ i ∈ positions, i < start.state.validators.data.size) →
+      ∀ positions : Finset Nat,
       (∀ i ∈ positions, ∀ validator, after.state.validators.data[i]? = some validator →
         (getCurrentEpoch after.state).toNat ≤ validator.exitEpoch.toNat) →
       ∑ i ∈ positions, run.depositCredits i ≤ run.depositsCharged
-  | _, .nil, _, _, positions, _, _ => by simp [Run.depositCredits, Run.depositsCharged]
-  | after, .snoc (middle := middle) run step, small, room, positions, present, staying => by
+  | _, .nil, _, _, positions, _ => by simp [Run.depositCredits, Run.depositsCharged]
+  | after, .snoc (middle := middle) run step, small, room, positions, staying => by
     have lifecycle := stepRelation_registryLifecycle.step step
     have middleSmall := Nat.lt_of_le_of_lt lifecycle.size_le small
     have electraMiddle : .pectra ≤ middle.fork := Nat.le_trans electra (Run.fork_le run)
@@ -462,16 +478,13 @@ theorem Run.depositCredits_le {start : ForkedBeaconState preset}
       exact exitEpoch_ge_of_lifecycle kept epochs (getCurrentEpoch middle.state).toNat_lt
         (staying i member later laterFound)
     have earlier := Run.depositCredits_le electra reachable run middleSmall
-      (fun state member => room state (List.mem_append_left _ member)) positions present
-      stayedBefore
+      (fun state member => room state (List.mem_append_left _ member)) positions stayedBefore
     have here : ∑ i ∈ positions, step.depositCredits i ≤ step.depositsCharged := by
       cases step with
       | slot _ computed =>
-        have startSize := (stepRelation_registryLifecycle.run run).size_le
         exact advanceSlot_depositCredits (electra := electraMiddle) computed
           (Reachable.invariant (reachable.reaches ⟨run⟩))
-          (room _ (List.mem_append_left _ (Run.end_mem_states run))) small positions
-          (fun i member => Nat.lt_of_lt_of_le (present i member) startSize) staying
+          (room _ (List.mem_append_left _ (Run.end_mem_states run))) small positions staying
       | upgrade _ _ => simp [Step.depositCredits, Step.depositsCharged]
       | block _ _ _ _ _ => simp [Step.depositCredits, Step.depositsCharged]
     simp only [Run.depositCredits, Run.depositsCharged, Finset.sum_add_distrib]
