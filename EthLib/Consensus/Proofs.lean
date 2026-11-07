@@ -116,6 +116,7 @@ public import EthLib.Consensus.Proofs.Transition.SlashingPayouts
 public import EthLib.Consensus.Proofs.Transition.StakeLoss
 public import EthLib.Consensus.Proofs.Transition.Slot
 public import EthLib.Consensus.Proofs.Transition.StateTransition
+public import EthLib.Consensus.Proofs.Transition.StepDebits
 public import EthLib.Consensus.Proofs.Transition.SyncAggregate
 public import EthLib.Consensus.Proofs.Transition.Upgrade
 public import EthLib.Consensus.Proofs.Transition.Withdrawals
