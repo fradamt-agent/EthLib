@@ -190,6 +190,104 @@ theorem processPendingDeposits_credits {state after : BeaconState preset fork}
   · rw [processed]
     exact bound positions fun i member => epoch ▸ inside i member
 
+/-! ## New validators -/
+
+/-- Each validator at or past a position has an effective balance at most its balance. -/
+def NewCapped (start : Nat) (state : BeaconState preset fork) : Prop :=
+  ∀ i, start ≤ i → ∀ validator, state.validators.data[i]? = some validator →
+    validator.effectiveBalance.toNat ≤ balanceNat state i
+
+/-- A deposit keeps each new validator at most its balance.
+
+It raises a balance, or adds a validator with an effective balance at most its first deposit. -/
+theorem applyPendingDeposit_newCapped {state after : BeaconState preset fork}
+    {deposit : PendingDeposit} {start : Nat}
+    (computed : applyPendingDeposit config checks state deposit = .ok after)
+    (holds : BalancesMatch state) (small : state.validators.data.size < 2 ^ 64)
+    (capped : NewCapped start state) : NewCapped start after := by
+  have original := computed
+  obtain ⟨target, _, _, _, ledger⟩ := applyPendingDeposit_ledger computed holds small
+  have raised : ∀ i, balanceNat state i ≤ balanceNat after i := by
+    intro i
+    rw [ledger i]
+    unfold depositChanges
+    split <;> simp [BalanceChange.apply]
+  cases known : state.validators.data.findIdx? (·.pubkey == deposit.pubkey) with
+  | some j =>
+    have registry : after.validators = state.validators := by
+      simp only [applyPendingDeposit, known, liftAccessor_ok] at computed
+      exact increaseBalance_validators computed
+    intro i above validator found
+    rw [registry] at found
+    exact Nat.le_trans (capped i above validator found) (raised i)
+  | none =>
+    unfold applyPendingDeposit at computed
+    rw [known] at computed
+    dsimp only at computed
+    split at computed
+    · cases computed
+      exact capped
+    rename_i notBls
+    simp only [bind_ok_iff] at computed
+    obtain ⟨valid, validOk, computed⟩ := computed
+    cases valid with
+    | false =>
+      simp only [Bool.false_eq_true, ↓reduceIte, pure, Except.pure, Except.ok.injEq] at computed
+      subst computed
+      exact capped
+    | true =>
+      obtain ⟨validators, balances⟩ :=
+        applyPendingDeposit_new_valid known notBls validOk original holds small
+      have sizes : state.balances.data.size = state.validators.data.size := holds
+      intro i above validator found
+      rw [validators, Array.getElem?_push] at found
+      split at found
+      · rename_i same
+        subst same
+        obtain rfl := Option.some.inj found
+        have : balanceNat after state.validators.data.size = deposit.amount.toNat := by
+          simp only [balanceNat, balances, Array.getElem?_push, ← sizes, ↓reduceIte,
+            Option.map_some, Option.getD_some]
+        rw [this]
+        exact getValidatorFromDeposit_le_amount
+      · exact Nat.le_trans (capped i above validator found) (raised i)
+
+/-- Deposits in turn keep each new validator at most its balance. -/
+theorem foldlM_applyPendingDeposit_newCapped {start : Nat} :
+    ∀ {deposits : List PendingDeposit} {state after : BeaconState preset fork},
+      deposits.foldlM (applyPendingDeposit config checks) state = .ok after →
+      BalancesMatch state → state.validators.data.size + deposits.length < 2 ^ 64 →
+      NewCapped start state → NewCapped start after
+  | [], state, after, computed, _, _, capped => by
+    simp only [List.foldlM_nil, pure, Except.pure, Except.ok.injEq] at computed
+    exact computed ▸ capped
+  | deposit :: rest, state, after, computed, holds, room, capped => by
+    simp only [List.length_cons] at room
+    rw [List.foldlM_cons, bind_ok_iff] at computed
+    obtain ⟨middle, stepped, folded⟩ := computed
+    obtain ⟨_, _, _, grown, _⟩ := applyPendingDeposit_ledger stepped holds (by omega)
+    have size := grown_size grown
+    exact foldlM_applyPendingDeposit_newCapped folded ((applyPendingDeposit_kept stepped).1 holds)
+      (by omega) (applyPendingDeposit_newCapped stepped holds (by omega) capped)
+
+/-- From Electra, the pending deposits of an epoch leave each new validator at most its balance.
+
+That needs one balance for each validator, and room in 64 bits for the new validators. -/
+theorem processPendingDeposits_newCapped {state after : BeaconState preset fork}
+    {electra : .pectra ≤ fork}
+    (computed : processPendingDeposits config checks state electra = .ok after)
+    (holds : BalancesMatch state)
+    (room : state.validators.data.size + preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat < 2 ^ 64) :
+    NewCapped state.validators.data.size after := by
+  obtain ⟨read, rest, applied, postponed, next, pending, carried, queue, kept, length, inRead, _,
+    perm, folded, rfl⟩ := processPendingDeposits_applied computed
+  have capped := foldlM_applyPendingDeposit_newCapped folded holds
+    (by have := inRead.length_le; omega) (start := state.validators.data.size)
+    (fun i above validator found => by
+      rw [Array.getElem?_eq_none above] at found
+      cases found)
+  exact capped
+
 /-! ## One slot -/
 
 /-- The deposit balance that a slot credits at a position, from Electra.
@@ -377,6 +475,133 @@ theorem advanceSlot_depositCredits {state after : BeaconState preset fork}
   · rename_i notLast
     simp [depositCreditsAt, notLast]
 
+/-- One slot from Electra adds validators only in its pass over the pending deposits.
+
+Each has an effective balance at most the deposits the slot credits it, or its balance after.
+
+That needs one balance for each validator, and room in 64 bits for the new validators. -/
+theorem advanceSlot_newEffective {state after : BeaconState preset fork}
+    {electra : .pectra ≤ fork} (computed : advanceSlot config checks state = .ok after)
+    (holds : BalancesMatch state)
+    (room : state.validators.data.size + preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat < 2 ^ 64)
+    (small : after.validators.data.size < 2 ^ 64) {i : Nat}
+    (above : state.validators.data.size ≤ i) {validator : Validator}
+    (found : after.validators.data[i]? = some validator) :
+    validator.effectiveBalance.toNat ≤
+      max (depositCreditsAt config checks state i) (balanceAt after i) := by
+  simp only [advanceSlot, bind_ok_iff, liftAccessor_ok, liftArith, mapError_ok_iff,
+    addChecked_ok_iff, pure, Except.pure, Except.ok.injEq] at computed
+  obtain ⟨next, ⟨_, nextValue⟩, cached, cachedOk, epoched, epochedOk, rfl⟩ := computed
+  have nextIs : next = state.slot + 1 := by
+    apply UInt64.toNat_inj.mp
+    rw [nextValue, UInt64.toNat_add]
+    have : (1 : UInt64).toNat = 1 := rfl
+    omega
+  have cachedSizes : SameSizes state cached := by
+    obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+    exact ⟨rfl, rfl⟩
+  have cachedValidators : cached.validators.data = state.validators.data := by
+    obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+    rfl
+  change epoched.validators.data[i]? = some validator at found
+  change _ ≤ max _ (balanceAt epoched i)
+  unfold epochIfLast at epochedOk
+  rw [nextIs] at epochedOk
+  split at epochedOk
+  · rename_i last
+    unfold processEpoch at epochedOk
+    split at epochedOk
+    · rename_i altair
+      unfold processEpochAltair at epochedOk
+      simp only [bind_ok_iff] at epochedOk
+      obtain ⟨justified, justifiedOk, scored, scoredOk, rewarded, rewardedOk, registered,
+        registeredOk, slashed, slashedOk, reset, resetOk, pending, pendingOk, paid, paidOk,
+        balanced, balancedOk, cleared, clearedOk, mixed, mixedOk, computed⟩ := epochedOk
+      have resetSizes : SameSizes state reset := by
+        have upTo := cachedSizes.trans <|
+          (sameSizes_processJustificationAndFinalization justifiedOk).trans <|
+          (sameSizes_processInactivityUpdates scoredOk).trans <|
+          (processRewardsAndPenalties_sameSizes rewardedOk).trans <|
+          (sameSizes_processRegistryUpdates registeredOk).trans
+            (sameSizes_processSlashings slashedOk)
+        split at resetOk
+        · exact upTo.trans (sameSizes_processEth1DataReset resetOk)
+        · cases resetOk
+          exact upTo
+      have resetMatch : BalancesMatch reset := balancesMatch_of_sameSizes resetSizes holds
+      have paidUntouched : Untouched pending paid := by
+        split at paidOk
+        · simp only [processBuilderPendingPayments, liftAccessor_ok, bind_ok_iff, pure,
+            Except.pure, Except.ok.injEq] at paidOk
+          obtain ⟨_, _, rfl⟩ := paidOk
+          exact ⟨rfl, rfl⟩
+        · simp only [pure, Except.pure, Except.ok.injEq] at paidOk
+          exact paidOk ▸ ⟨rfl, rfl⟩
+      have clearedUntouched : Untouched balanced cleared := by
+        obtain ⟨_, _, _, _, rfl⟩ := processSlashingsReset_eq clearedOk
+        exact ⟨rfl, rfl⟩
+      have mixedUntouched : Untouched cleared mixed := by
+        obtain ⟨_, _, _, _, _, _, rfl⟩ := processRandaoMixesReset_eq mixedOk
+        exact ⟨rfl, rfl⟩
+      have suffix : Untouched balanced epoched := by
+        split at computed <;> simp only [bind_ok_iff] at computed <;>
+          obtain ⟨rooted, rootedOk, synced, syncedOk, looked, lookedOk, windowed⟩ := computed
+        · have rootedUntouched : Untouched mixed rooted := by
+            unfold processHistoricalSummariesUpdate at rootedOk
+            simp only [bind, Except.bind, pure, Except.pure] at rootedOk
+            repeat' (split at rootedOk <;> try cases rootedOk)
+            all_goals exact ⟨rfl, rfl⟩
+          exact clearedUntouched.trans <| mixedUntouched.trans <| rootedUntouched.trans
+            (untouched_epochEnd syncedOk lookedOk windowed)
+        · exact clearedUntouched.trans <| mixedUntouched.trans <|
+            (untouched_processHistoricalRootsUpdate rootedOk).trans
+              (untouched_epochEnd syncedOk lookedOk windowed)
+      -- The pass is the one that `depositCreditsAt` recomputes.
+      unfold processPendingBalances at pendingOk
+      simp only [electra, ↓reduceDIte, bind_ok_iff] at pendingOk
+      obtain ⟨deposited, depositedOk, consolidatedOk⟩ := pendingOk
+      have creditsIs : depositCreditsAt config checks state i =
+          balanceNat deposited i - balanceNat reset i := by
+        simp only [depositCreditsAt, last, electra, ↓reduceIte, ↓reduceDIte]
+        simp only [bind, Except.bind, cachedOk, justifiedOk, scoredOk, rewardedOk, registeredOk,
+          slashedOk, resetOk, depositedOk]
+      have consolidated : EffectiveCapped deposited pending ∧
+          pending.validators.data = deposited.validators.data := by
+        unfold processPendingConsolidations at consolidatedOk
+        simp only [bind, Except.bind, pure, Except.pure] at consolidatedOk
+        repeat' (split at consolidatedOk <;> try cases consolidatedOk)
+        all_goals exact ⟨(effectiveCapped_passPendingConsolidations ‹_›).trans (.of_data rfl),
+          by simp [passPendingConsolidations_validators ‹_›]⟩
+      have prefixHeld : EffectiveCapped deposited paid :=
+        consolidated.1.trans (.of_data paidUntouched.1)
+      have ceiling := ceiling_of_update prefixHeld balancedOk suffix
+      -- The registry keeps its size from the pass to the end of the epoch.
+      have sizes : epoched.validators.data.size = deposited.validators.data.size := by
+        rw [suffix.1, (sameSizes_processEffectiveBalanceUpdates balancedOk).1, paidUntouched.1,
+          consolidated.2]
+      have inside : i < deposited.validators.data.size := by
+        rw [← sizes]
+        exact (Array.getElem?_eq_some_iff.mp found).1
+      obtain ⟨later, laterFound, bound⟩ := ceiling small i deposited.validators.data[i]
+        (Array.getElem?_eq_getElem inside)
+      obtain rfl := Option.some.inj (laterFound.symm.trans found)
+      have capped := processPendingDeposits_newCapped depositedOk resetMatch
+        (by rw [resetSizes.1]; exact room) i (by rw [resetSizes.1]; exact above) _
+        (Array.getElem?_eq_getElem inside)
+      have resetZero : balanceNat reset i = 0 := by
+        have sizes' : reset.balances.data.size ≤ i := by
+          have match' : state.balances.data.size = state.validators.data.size := holds
+          rw [resetSizes.2]; omega
+        simp [balanceNat, Array.getElem?_eq_none sizes']
+      rw [creditsIs, resetZero, Nat.sub_zero]
+      exact Nat.le_trans bound (by simp only [balanceAt] at capped ⊢; omega)
+    · rename_i notAltair
+      exact absurd (Nat.le_trans (by decide) electra) notAltair
+  · simp only [pure, Except.pure, Except.ok.injEq] at epochedOk
+    subst epochedOk
+    rw [cachedValidators, Array.getElem?_eq_none above] at found
+    cases found
+
 /-! ## Runs -/
 
 /-- The deposit balance that one step credits at a position: only a slot step may. -/
@@ -489,5 +714,88 @@ theorem Run.depositCredits_le {start : ForkedBeaconState preset}
       | block _ _ _ _ _ => simp [Step.depositCredits, Step.depositsCharged]
     simp only [Run.depositCredits, Run.depositsCharged, Finset.sum_add_distrib]
     omega
+
+/-- One step from Electra adds validators only by deposits.
+
+A pass over the pending deposits adds them, or a block adds them with no effective balance.
+
+Each has an effective balance at most the deposits the step credits it, or its balance after.
+
+That needs one balance for each validator, and room in 64 bits for the new validators. -/
+theorem Step.newEffective {before after : ForkedBeaconState preset}
+    (step : Step config checks before after) (electra : .pectra ≤ before.fork)
+    (holds : BalancesMatch before.state)
+    (room : before.state.validators.data.size + preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat <
+      2 ^ 64)
+    (small : after.state.validators.data.size < 2 ^ 64) {i : Nat}
+    (above : before.state.validators.data.size ≤ i) {validator : Validator}
+    (found : after.state.validators.data[i]? = some validator) :
+    validator.effectiveBalance.toNat ≤ max (step.depositCredits i) (balanceAt after.state i) := by
+  cases step with
+  | slot _ computed =>
+    exact advanceSlot_newEffective (electra := electra) computed holds room small above found
+  | block _ _ _ _ computed =>
+    have fresh := (chargedStep_processBlock (capExit := 0) (capConsolidation := 0) (largest := 0)
+      (electra := electra) (applySignedBlock_ok computed).2.1).frozen.fresh small i validator
+      above found
+    simp [fresh]
+  | upgrade _ computed =>
+    rw [(upgradeNext_keeps electra computed).1, Array.getElem?_eq_none above] at found
+    cases found
+
+/-- A run from Electra on bounds the effective balance of each validator that it adds.
+
+The bound is its deposits, plus what it gains after them.
+
+Its balance at the end is at most that bound too.
+
+The start must be reachable.
+
+Each state of the run must have room in 64 bits for the new validators of the pending deposits.
+
+It also needs a registry of fewer than `2^64` validators at the end, which holds before Gloas. -/
+theorem Run.effectiveAt_new_le {start : ForkedBeaconState preset}
+    (electra : .pectra ≤ start.fork) (reachable : Reachable config checks start) (index : Nat)
+    (above : start.state.validators.data.size ≤ index) :
+    ∀ {after : ForkedBeaconState preset} (run : Run config checks start after),
+      after.state.validators.data.size < 2 ^ 64 →
+      (∀ state ∈ run.states,
+        state.state.validators.data.size + preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat < 2 ^ 64) →
+      effectiveAt after.state index ≤ run.depositCredits index + run.gainsAfterDeposit index ∧
+        balanceAt after.state index ≤ run.depositCredits index + run.gainsAfterDeposit index
+  | _, .nil, _, _ => by
+    have sizes : start.state.balances.data.size = start.state.validators.data.size :=
+      reachable.invariant.balancesMatch
+    simp [effectiveAt, balanceAt, Array.getElem?_eq_none above,
+      Array.getElem?_eq_none (sizes ▸ above : start.state.balances.data.size ≤ index)]
+  | after, .snoc (middle := middle) run step, small, room => by
+    have lifecycle := stepRelation_registryLifecycle.step step
+    have middleSmall := Nat.lt_of_le_of_lt lifecycle.size_le small
+    have electraMiddle : .pectra ≤ middle.fork := Nat.le_trans electra (Run.fork_le run)
+    have middleHolds := (Reachable.invariant (reachable.reaches ⟨run⟩)).balancesMatch
+    have middleRoom := room middle (List.mem_append_left _ (Run.end_mem_states run))
+    obtain ⟨effective, balance⟩ := Run.effectiveAt_new_le electra reachable index above run
+      middleSmall fun state member => room state (List.mem_append_left _ member)
+    simp only [Run.depositCredits, Run.gainsAfterDeposit]
+    refine ⟨?_, by omega⟩
+    cases middleFound : middle.state.validators.data[index]? with
+    | some earlier =>
+      obtain ⟨later, laterFound, bound⟩ := step.ceilingStep small index earlier middleFound
+      have earlierEffective : earlier.effectiveBalance.toNat ≤ effectiveAt middle.state index := by
+        simp [effectiveAt, middleFound]
+      simp only [effectiveAt, laterFound, Option.map_some, Option.getD_some]
+      omega
+    | none =>
+      have outside : middle.state.validators.data.size ≤ index := by
+        by_contra inside
+        rw [Array.getElem?_eq_getElem (Nat.lt_of_not_le inside)] at middleFound
+        cases middleFound
+      cases laterFound : after.state.validators.data[index]? with
+      | none => simp [effectiveAt, laterFound]
+      | some later =>
+        have bound := step.newEffective electraMiddle middleHolds middleRoom small outside
+          laterFound
+        simp only [effectiveAt, laterFound, Option.map_some, Option.getD_some]
+        omega
 
 end EthLib.Consensus

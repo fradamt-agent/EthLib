@@ -814,6 +814,33 @@ theorem processPendingConsolidations_ledger {electra : .pectra ≤ fork}
     passPendingConsolidations_ledger (fun _ member => member) passedOk
   exact ⟨nextEpoch, transfers, by simpa using next, made, fun i => ledger i⟩
 
+/-- Deposits credited only credit. -/
+theorem debited_depositChanges (flow : BalanceFlow) (i : Nat) :
+    ∀ pairs : List (PendingDeposit × Option Nat),
+      BalanceChange.debited flow (pairs.flatMap fun pair => depositChanges pair.1 pair.2 i) = 0
+  | [] => rfl
+  | pair :: rest => by
+    have later := debited_depositChanges flow i rest
+    simp only [List.flatMap_cons, BalanceChange.debited, List.map_append,
+      List.sum_append] at later ⊢
+    rw [later]
+    unfold depositChanges
+    split <;> simp
+
+/-- Transfers debit only as consolidations. -/
+theorem debited_transferChanges {flow : BalanceFlow} (other : flow ≠ .consolidation) (i : Nat) :
+    ∀ transfers : List Transfer, BalanceChange.debited flow (transferChanges transfers i) = 0
+  | [] => rfl
+  | transfer :: rest => by
+    have later := debited_transferChanges other i rest
+    rw [transferChanges_cons]
+    simp only [transferChanges, List.flatMap_cons, List.flatMap_nil, List.append_nil,
+      BalanceChange.debited, List.map_append, List.sum_append] at later ⊢
+    rw [later]
+    have : (BalanceFlow.consolidation = flow) = False := propext ⟨fun same => other same.symm,
+      False.elim⟩
+    split <;> split <;> simp [this]
+
 /-- From Electra, the ledger of the pending balances of an epoch.
 
 The pending deposits credit first, as `processPendingDeposits_ledger` says.
@@ -831,7 +858,9 @@ theorem processPendingBalances_ledger
       BalanceLedger state after (fun i => deposits i ++ transfers i) ∧
       (fork < .pectra → deposited = state ∧ (∀ i, deposits i = []) ∧ ∀ i, transfers i = []) ∧
       (∀ electra : .pectra ≤ fork, processPendingDeposits config checks state electra =
-          .ok deposited ∧ processPendingConsolidations deposited electra = .ok after) := by
+          .ok deposited ∧ processPendingConsolidations deposited electra = .ok after) ∧
+      (∀ i flow, BalanceChange.debited flow (deposits i) = 0 ∧
+        (flow ≠ .consolidation → BalanceChange.debited flow (transfers i) = 0)) := by
   unfold processPendingBalances at computed
   split at computed
   · rename_i electra
@@ -843,12 +872,14 @@ theorem processPendingBalances_ledger
       processPendingConsolidations_ledger consolidated
     exact ⟨deposited, _, _, depositLedger, transferLedger, depositLedger.trans transferLedger,
       fun before => absurd electra (Nat.not_le_of_lt before),
-      fun _ => ⟨depositedOk, consolidated⟩⟩
+      fun _ => ⟨depositedOk, consolidated⟩,
+      fun i flow => ⟨debited_depositChanges flow i _, fun other =>
+        debited_transferChanges other i _⟩⟩
   · rename_i electra
     cases computed
     exact ⟨state, fun _ => [], fun _ => [], BalanceLedger.refl state, BalanceLedger.refl state,
       fun i => rfl, fun _ => ⟨rfl, fun _ => rfl, fun _ => rfl⟩,
-      fun electra' => absurd electra' electra⟩
+      fun electra' => absurd electra' electra, fun _ _ => ⟨rfl, fun _ => rfl⟩⟩
 
 /-! ## The epoch -/
 
@@ -941,6 +972,8 @@ theorem processEpochAltair_ledger_of_slashings (slashings : SlashingsLedger pres
           processPendingConsolidations middle electra = .ok deposited ∧
           BalanceLedger pending middle deposits ∧ BalanceLedger middle deposited transfers) ∧
         (fork < .pectra → (∀ i, deposits i = []) ∧ ∀ i, transfers i = [])) ∧
+      (∀ i flow, BalanceChange.debited flow (deposits i) = 0 ∧
+        (flow ≠ .consolidation → BalanceChange.debited flow (transfers i) = 0)) ∧
       (∃ registered slashedOut, processRegistryUpdates config rewarded = .ok registered ∧
         processSlashings registered = .ok slashedOut ∧ SlashingPenaltyAt registered penalty) ∧
       BalanceLedger state after fun i =>
@@ -967,7 +1000,7 @@ theorem processEpochAltair_ledger_of_slashings (slashings : SlashingsLedger pres
     processRewardsAndPenalties_ledger (size2.registryWithinLimit within) s3Ok
   obtain ⟨penalty, penaltyAt, slashed⟩ := slashings s4 s5 (size4.registryWithinLimit within) s5Ok
   obtain ⟨deposited, deposits, transfers, depositLedger, transferLedger, pendingLedger, early,
-    late⟩ := processPendingBalances_ledger s7Ok (balancesMatch_of_sameSizes size6 holds)
+    late, kinds⟩ := processPendingBalances_ledger s7Ok (balancesMatch_of_sameSizes size6 holds)
       (by rw [size6.1]; exact room)
   -- Every other step keeps the balances.
   have one := (BalanceLedger.of_balances (processJustificationAndFinalization_balances s1Ok)).trans
@@ -1019,7 +1052,8 @@ theorem processEpochAltair_ledger_of_slashings (slashings : SlashingsLedger pres
   have tail := BalanceLedger.of_balances rest
   refine ⟨s2, s3, s6, deltas, penalty, deposits, transfers, ⟨s1, s1Ok, s2Ok⟩, s3Ok,
     fun later => ?_, genesis, ⟨s7, s7Ok, fun electra => ?_,
-      fun before => ⟨(early before).2.1, (early before).2.2⟩⟩, ⟨s4, s5, s4Ok, s5Ok, penaltyAt⟩, ?_⟩
+      fun before => ⟨(early before).2.1, (early before).2.2⟩⟩, kinds,
+    ⟨s4, s5, s4Ok, s5Ok, penaltyAt⟩, ?_⟩
   · obtain ⟨flags, inactivity, flagsOk, inactivityOk, same⟩ := fromAltair altair later
     exact ⟨flags, inactivity, flagsOk, inactivityOk, same⟩
   · obtain ⟨depositedOk, consolidatedOk⟩ := late electra
@@ -1140,6 +1174,8 @@ theorem processEpochAltair_ledger {altair : .altair ≤ fork} (within : state.Re
           processPendingConsolidations middle electra = .ok deposited ∧
           BalanceLedger pending middle deposits ∧ BalanceLedger middle deposited transfers) ∧
         (fork < .pectra → (∀ i, deposits i = []) ∧ ∀ i, transfers i = [])) ∧
+      (∀ i flow, BalanceChange.debited flow (deposits i) = 0 ∧
+        (flow ≠ .consolidation → BalanceChange.debited flow (transfers i) = 0)) ∧
       (∃ registered slashedOut, processRegistryUpdates config rewarded = .ok registered ∧
         processSlashings registered = .ok slashedOut ∧ SlashingPenaltyAt registered penalty) ∧
       BalanceLedger state after fun i =>
