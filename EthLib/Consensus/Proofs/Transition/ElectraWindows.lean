@@ -336,6 +336,41 @@ theorem Run.leavingStake_le_capsAll {start after : ForkedBeaconState preset}
     (getCurrentEpoch after.state).toNat
   omega
 
+/-- A run that starts before Gloas needs no hypothesis on the exit carry, and may cross into Gloas.
+
+The exit carry at the start is at most `MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT`. -/
+theorem Run.leavingStake_le_capsAll_of_before {start after : ForkedBeaconState preset}
+    (caps : EffectiveBalanceCaps preset) (reachable : Reachable config checks start)
+    (electra : .pectra ≤ start.fork) (beforeGloas : start.fork < .glamsterdam)
+    (run : Run config checks start after)
+    (small : after.state.validators.data.size < 2 ^ 64)
+    (epochs : getCurrentEpoch start.state ≤ getCurrentEpoch after.state)
+    (finite : getCurrentEpoch after.state < FAR_FUTURE_EPOCH) {total : Nat}
+    (totals : ∀ forked ∈ run.states, ∀ balance,
+      getTotalActiveBalance forked.state = .ok balance → balance.toNat ≤ total)
+    (consolidationLeft : ∀ electra : .pectra ≤ start.fork,
+      (start.state.consolidationBalanceToConsume electra).toNat ≤
+        consolidationCapAll config total) :
+    (((List.range start.state.validators.data.size).filter fun position =>
+        (start.state.validators.data[position]?).any
+            (isActiveValidator · (getCurrentEpoch start.state)) &&
+          !(after.state.validators.data[position]?).any
+            (isActiveValidator · (getCurrentEpoch after.state))).map
+        fun position => effectiveBalanceAtPosition start.state position).sum ≤
+      (((List.range start.state.validators.data.size).filter fun position =>
+          (start.state.validators.data[position]?).any fun validator =>
+            isActiveValidator validator (getCurrentEpoch start.state) &&
+              decide (validator.exitEpoch ≤ getCurrentEpoch after.state)).map
+          fun position => effectiveBalanceAtPosition start.state position).sum +
+        ((getCurrentEpoch after.state).toNat + 1 - firstExitEpoch preset start.state) *
+          (exitCapAll config total + consolidationCapAll config total) +
+        ∑ position ∈ exitsBetween start.state after.state 0 (getCurrentEpoch after.state).toNat,
+          (effectiveBalanceAtPosition start.state position - run.chargedBalance position) :=
+  run.leavingStake_le_capsAll caps reachable electra small epochs finite totals fun electra' =>
+    ⟨Nat.le_trans (UInt64.le_iff_toNat_le.mp
+        (reachable.exitBalanceToConsume_le electra' beforeGloas)) (Nat.le_max_left _ _),
+      consolidationLeft electra'⟩
+
 /-- From Gloas, with `2^64` validators, the index for a new validator is that of the first one.
 
 So a deposit to a new key then replaces the first validator, and the registry keeps its size.
