@@ -1,6 +1,7 @@
 module
 
 public import EthLib.Consensus.Proofs.Transition.Cohorts
+public import EthLib.Consensus.Proofs.Transition.EffectiveBalanceCap
 public import EthLib.Consensus.WeakSubjectivity
 
 /-!
@@ -35,7 +36,11 @@ That limit counts only the validators active then.
 
 The cap here counts the whole later registry, since later churn limits may be larger.
 
-The bound counts validators, not stake.
+The bound counts validators.
+
+Each effective balance is at most `MAX_EFFECTIVE_BALANCE` before Electra.
+
+So the stake that leaves or joins is at most the count times that maximum.
 
 The last epoch `E'` must be below the far future epoch.
 -/
@@ -451,6 +456,82 @@ theorem Reaches.churn_le_of_epochs_le {start after : ForkedBeaconState preset} {
   exact ⟨Nat.le_trans (chain.leavingCount_le reachable early finite)
       (Nat.mul_le_mul_right _ span),
     Nat.le_trans (chain.joiningCount_le reachable early finite) (Nat.mul_le_mul_right _ span)⟩
+
+/-! ## Stake -/
+
+/-- The effective balance of the validator at a position of the registry, or zero. -/
+def effectiveAt (state : BeaconState preset fork) (index : Nat) : Nat :=
+  ((state.validators.data[index]?).map (·.effectiveBalance.toNat)).getD 0
+
+/-- The effective balance, in the first state, of the validators that leave the active set. -/
+def leavingStake (state : BeaconState preset fork) (after : BeaconState preset fork') : Nat :=
+  (((List.range state.validators.data.size).filter fun index =>
+    activeAt state (getCurrentEpoch state) index &&
+      !activeAt after (getCurrentEpoch after) index).map (effectiveAt state)).sum
+
+/-- The effective balance, in the later state, of the validators that join the active set. -/
+def joiningStake (state : BeaconState preset fork) (after : BeaconState preset fork') : Nat :=
+  (((List.range after.validators.data.size).filter fun index =>
+    activeAt after (getCurrentEpoch after) index &&
+      !activeAt state (getCurrentEpoch state) index).map (effectiveAt after)).sum
+
+theorem sum_map_filter_le {test : Nat → Bool} {value : Nat → Nat} {bound : Nat} :
+    ∀ list : List Nat, (∀ item ∈ list, value item ≤ bound) →
+      ((list.filter test).map value).sum ≤ list.countP test * bound
+  | [], _ => by simp
+  | head :: rest, le => by
+    have tail := sum_map_filter_le (test := test) rest fun item member =>
+      le item (List.mem_cons_of_mem _ member)
+    have first := le head List.mem_cons_self
+    simp only [List.filter_cons, List.countP_cons]
+    split
+    · simp only [List.map_cons, List.sum_cons, Nat.succ_mul]
+      omega
+    · simpa using tail
+
+/-- Before Electra, each effective balance of a capped state is at most the maximum. -/
+theorem effectiveAt_le_max {state : BeaconState preset fork}
+    (capped : EffectiveBalancesCapped state) (before : fork < .pectra) (index : Nat) :
+    effectiveAt state index ≤ preset.MAX_EFFECTIVE_BALANCE.toNat := by
+  unfold effectiveAt
+  cases found : state.validators.data[index]? with
+  | none => exact Nat.zero_le _
+  | some validator =>
+    exact UInt64.le_iff_toNat_le.mp (capped.le_max before (Array.mem_of_getElem? found))
+
+/-- Along a chain from a reachable state, at most `n * max 1 cap` top balances leave in `n` epochs.
+
+The chain must stay before Electra, and the top balance is `MAX_EFFECTIVE_BALANCE`. -/
+theorem Reaches.leavingStake_le {start after : ForkedBeaconState preset}
+    (caps : EffectiveBalanceCaps preset) (reachable : Reachable config checks start)
+    (chain : Reaches config checks start after) (early : after.fork < .pectra)
+    (finite : (getCurrentEpoch after.state).toNat < 2 ^ 64 - 1) :
+    leavingStake start.state after.state ≤
+      ((getCurrentEpoch after.state).toNat - (getCurrentEpoch start.state).toNat) *
+        max 1 (churnCap config after.state.validators.data.size) *
+        preset.MAX_EFFECTIVE_BALANCE.toNat := by
+  have startEarly : start.fork < .pectra :=
+    Nat.lt_of_le_of_lt (chain.pastCohorts reachable.cohorts).1 early
+  refine Nat.le_trans (sum_map_filter_le _ fun index _ =>
+    effectiveAt_le_max (reachable.effectiveBalancesCapped caps) startEarly index)
+    (Nat.mul_le_mul_right _ (chain.leavingCount_le reachable early finite))
+
+/-- Along a chain from a reachable state, at most `n * cap` top balances join in `n` epochs.
+
+The chain must stay before Electra, and the top balance is `MAX_EFFECTIVE_BALANCE`. -/
+theorem Reaches.joiningStake_le {start after : ForkedBeaconState preset}
+    (caps : EffectiveBalanceCaps preset) (reachable : Reachable config checks start)
+    (chain : Reaches config checks start after) (early : after.fork < .pectra)
+    (finite : (getCurrentEpoch after.state).toNat < 2 ^ 64 - 1) :
+    joiningStake start.state after.state ≤
+      ((getCurrentEpoch after.state).toNat - (getCurrentEpoch start.state).toNat) *
+        churnCap config after.state.validators.data.size *
+        preset.MAX_EFFECTIVE_BALANCE.toNat :=
+  Nat.le_trans (sum_map_filter_le _ fun index _ =>
+    effectiveAt_le_max
+      (Reachable.effectiveBalancesCapped caps (ReachableFrom.reaches reachable chain)) early
+      index)
+    (Nat.mul_le_mul_right _ (chain.joiningCount_le reachable early finite))
 
 /-! ## The churn limit of the first state does not bound a window
 
