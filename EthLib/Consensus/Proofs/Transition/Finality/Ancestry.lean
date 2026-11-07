@@ -145,4 +145,69 @@ theorem finality_observations_cached {cfg : Config} {checks : SignatureChecks}
   simp only [advanced, cachedOk, Except.toOption, Option.toList_some]
   exact List.mem_cons_of_mem _ List.mem_cons_self
 
+/-- The first justification above a boundary is weighed on the supplied fork suffix.
+
+Both stored source epochs at that call are below the boundary.
+
+The threshold retains the exact new checkpoint, its block-root query and its observation. -/
+theorem finality_justified_crossing
+    {cfg : Config} {checks : SignatureChecks} {eng : ExecutionEngine p .phase0}
+    {c after : FinalityState p} {bs : List (FinalityBlock p)} {boundary : Nat}
+    (inv : Invariant c) (ran : finalityRuns cfg checks eng c bs after)
+    (below : c.currentJustifiedCheckpoint.epoch.toNat ≤ boundary)
+    (above : boundary < after.currentJustifiedCheckpoint.epoch.toNat) :
+    ∃ earlier block later atBlock offset atStep cached justified indices,
+      bs = earlier ++ block :: later ∧
+      finalityRuns cfg checks eng c earlier atBlock ∧
+      offset < block.message.slot.toNat - atBlock.slot.toNat ∧
+      advanceSlots cfg offset atBlock = .ok atStep ∧
+      processSlot atStep = .ok cached ∧
+      processJustificationAndFinalization cached = .ok justified ∧
+      cached ∈ finalityObservations cfg checks eng c bs ∧
+      cached.previousJustifiedCheckpoint.epoch.toNat ≤ boundary ∧
+      cached.currentJustifiedCheckpoint.epoch.toNat ≤ boundary ∧
+      boundary < justified.currentJustifiedCheckpoint.epoch.toNat ∧
+      FinalityThreshold cached justified.currentJustifiedCheckpoint.epoch indices ∧
+      getBlockRoot cached justified.currentJustifiedCheckpoint.epoch =
+        .ok justified.currentJustifiedCheckpoint.root := by
+  obtain ⟨earlier, block, later, atBlock, offset, atStep, next, split, prefixOk,
+    inside, advanced, stepOk, stepBelow, stepAbove⟩ :=
+    stateTransition_chain_justified_crossing (by decide) ran below above
+  have changed : next.currentJustifiedCheckpoint ≠ atStep.currentJustifiedCheckpoint := by
+    intro equal
+    rw [equal] at stepAbove
+    omega
+  obtain ⟨cached, epoched, justified, cachedOk, _, weighed, assigned, changedEpoch⟩ :=
+    advanceSlot_justified_origin (by decide) stepOk changed
+  have atInv := (advanceSlots_invariant (by decide)
+    (foldlM_ok_invariant Invariant
+      (fun _ _ _ h ok => (stateTransition_invariant (by decide) h ok).1) inv prefixOk)
+    advanced).1
+  have frame := frame_processSlot cachedOk
+  have previousBelow : cached.previousJustifiedCheckpoint.epoch.toNat ≤ boundary := by
+    rw [frame.previousJustified]
+    have ordered := UInt64.le_iff_toNat_le.mp atInv.ordered.2
+    omega
+  obtain ⟨epoch, attestations, indices, _, matching, indicesOk, epochEq, enough, _⟩ :=
+    processJustificationAndFinalization_pending_signers (by decide) weighed changedEpoch
+  have observed : cached ∈ finalityObservations cfg checks eng c bs := by
+    apply List.mem_cons_of_mem
+    apply List.mem_flatMap.mpr
+    refine ⟨(block, earlier.length), ?_, ?_⟩
+    · apply List.mk_mem_zipIdx_iff_getElem?.mpr
+      simp [split]
+    · simp only [show bs.take earlier.length = earlier by simp [split], prefixOk]
+      apply List.mem_append_right
+      apply List.mem_cons_of_mem
+      apply List.mem_flatMap.mpr
+      refine ⟨offset, List.mem_range.mpr inside, ?_⟩
+      simp only [advanced, cachedOk, Except.toOption, Option.toList_some]
+      exact List.mem_cons_of_mem _ List.mem_cons_self
+  refine ⟨earlier, block, later, atBlock, offset, atStep, cached, justified, indices,
+    split, prefixOk, inside, advanced, cachedOk, weighed, observed, previousBelow,
+    ?_, ?_, ?_, processJustificationAndFinalization_justified_root weighed changedEpoch⟩
+  · simpa only [frame.currentJustified] using stepBelow
+  · simpa only [assigned] using stepAbove
+  · exact ⟨attestations, epochEq ▸ matching, indicesOk, enough⟩
+
 end EthLib.Consensus
