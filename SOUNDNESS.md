@@ -709,6 +709,17 @@ The new votes come from justified sources, and no honest validator becomes slash
 A vote names the validator that signed it, so both theorems assume that no one forges a vote.
 No theorem links the model to the beacon chain, so neither theorem is yet about what a client runs.
 
+The direct Phase 0 proofs in `Consensus/Proofs/Transition/Finality/` remain incomplete.
+They recover concrete threshold queries and included signers, and bound stake drift for two queries with a slashable intersection.
+The horizon composition is conditional on the main safety and realized churn bounds.
+Its conclusion permits explicit SHA-256 collision evidence or `FinalityZeroRootFound`, as well as the stake bound.
+
+Slot caching uses zero as the "not yet filled" sentinel for a header's state root.
+If a state hashes to zero, caching leaves that sentinel in place, and a later cache can change the header root without a new block.
+Parent-root ancestry therefore needs to exclude this event or return its evidence.
+`FinalityZeroRootFound` records an observed zero-root state and a 64-byte input from its SSZ tree whose SHA-256 digest is zero.
+The proofs do not assume that this event is impossible.
+
 ### What cannot be proved yet
 
 Some definitions cannot be unfolded by the kernel, so the kernel cannot evaluate them, and their intended computational properties remain unproved.
