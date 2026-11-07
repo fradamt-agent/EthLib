@@ -68,6 +68,8 @@ public import EthLib.Consensus.Proofs.Transition.Execution
 public import EthLib.Consensus.Proofs.Transition.FfgVotes
 public import EthLib.Consensus.Proofs.Transition.Finality.Ancestry
 public import EthLib.Consensus.Proofs.Transition.Finality.Churn
+public import EthLib.Consensus.Proofs.Transition.Finality.ChurnAdditions
+public import EthLib.Consensus.Proofs.Transition.Finality.ChurnExits
 public import EthLib.Consensus.Proofs.Transition.Finality.Definitions
 public import EthLib.Consensus.Proofs.Transition.Finality.FinalizedLink
 public import EthLib.Consensus.Proofs.Transition.Finality.Horizon
