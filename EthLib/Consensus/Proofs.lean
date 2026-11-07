@@ -103,6 +103,7 @@ public import EthLib.Consensus.Proofs.Transition.Provenance.PendingVoters
 public import EthLib.Consensus.Proofs.Transition.Provenance.Roots
 public import EthLib.Consensus.Proofs.Transition.Provenance.Settled
 public import EthLib.Consensus.Proofs.Transition.Provenance.Sources
+public import EthLib.Consensus.Proofs.Transition.Provenance.UpgradeVoters
 public import EthLib.Consensus.Proofs.Transition.Provenance.Voters
 public import EthLib.Consensus.Proofs.Transition.Provenance.Votes
 public import EthLib.Consensus.Proofs.Transition.Provenance.Weighing
