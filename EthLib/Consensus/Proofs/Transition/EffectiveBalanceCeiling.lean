@@ -1200,16 +1200,16 @@ private theorem foldlM_updateEffectiveBalance_ceiling :
 /-! ## The epoch transition -/
 
 /-- A step that keeps the validators and the balances. -/
-private def Untouched (state after : BeaconState preset fork) : Prop :=
+def Untouched (state after : BeaconState preset fork) : Prop :=
   after.validators.data = state.validators.data ∧ after.balances = state.balances
 
-private theorem Untouched.trans {first second third : BeaconState preset fork}
+theorem Untouched.trans {first second third : BeaconState preset fork}
     (one : Untouched first second) (two : Untouched second third) : Untouched first third :=
   ⟨two.1.trans one.1, two.2.trans one.2⟩
 
 /-- The steps that close an epoch from Altair, after the history, touch no validator or balance.
 -/
-private theorem untouched_epochEnd {altair : .altair ≤ fork}
+theorem untouched_epochEnd {altair : .altair ≤ fork}
     {rooted synced looked : BeaconState preset fork}
     (syncedOk : processSyncCommitteeUpdates (processParticipationFlagUpdates rooted altair) altair =
       .ok synced)
@@ -1240,7 +1240,7 @@ private theorem untouched_epochEnd {altair : .altair ≤ fork}
       exact windowed ▸ ⟨rfl, rfl⟩
   exact syncedKept.trans (lookedKept.trans windowedKept)
 
-private theorem untouched_processHistoricalRootsUpdate
+theorem untouched_processHistoricalRootsUpdate
     (computed : processHistoricalRootsUpdate state = .ok after) : Untouched state after := by
   unfold processHistoricalRootsUpdate at computed
   split at computed
@@ -1275,7 +1275,7 @@ theorem EffectiveCapped.ceilingStep {fork' : Base.Fork} {after : BeaconState pre
     Nat.le_trans (UInt64.le_iff_toNat_le.mp step) (Nat.le_max_left _ _)⟩
 
 /-- The effective balances after the update, against those of the state the epoch starts from. -/
-private theorem ceiling_of_update {paid balanced : BeaconState preset fork}
+theorem ceiling_of_update {paid balanced : BeaconState preset fork}
     (prefixHeld : EffectiveCapped state paid)
     (balancedOk : processEffectiveBalanceUpdates paid = .ok balanced)
     (suffix : Untouched balanced after) : CeilingStep state after := by
