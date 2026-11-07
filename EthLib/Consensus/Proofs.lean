@@ -98,6 +98,7 @@ public import EthLib.Consensus.Proofs.Transition.Provenance.Justification
 public import EthLib.Consensus.Proofs.Transition.Provenance.Kept
 public import EthLib.Consensus.Proofs.Transition.Provenance.Links
 public import EthLib.Consensus.Proofs.Transition.Provenance.Pending
+public import EthLib.Consensus.Proofs.Transition.Provenance.PendingVoters
 public import EthLib.Consensus.Proofs.Transition.Provenance.Roots
 public import EthLib.Consensus.Proofs.Transition.Provenance.Settled
 public import EthLib.Consensus.Proofs.Transition.Provenance.Sources
