@@ -393,6 +393,50 @@ theorem processProposerSlashing_ne_ok_of_slashed {config : Config} {checks : Sig
     simpa [slashedFlag, found, Except.map] using flag
   simp [isSlashableValidator, set] at slashable
 
+/-- A proposer slashing preserves every slashed flag that was already set. -/
+theorem processProposerSlashing_slashedFlag {config : Config} {checks : SignatureChecks}
+    {state after : BeaconState preset fork} {slashing : ProposerSlashing}
+    (computed : processProposerSlashing config checks state slashing = .ok after)
+    {index : ValidatorIndex} (flag : slashedFlag state index = .ok true) :
+    slashedFlag after index = .ok true := by
+  simp only [processProposerSlashing, bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at computed
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, slashed⟩ := computed
+  obtain ⟨set, others⟩ := slashValidator_slashedFlag slashed
+  by_cases same : index = slashing.signedHeader1.message.proposerIndex
+  · exact same ▸ set
+  · exact (others index same).trans flag
+
+/-- A successful list of proposer slashings names each slashed validator at most once.
+
+This follows the checked operations, including preservation of flags between slashings. -/
+theorem foldlM_processProposerSlashing_nodup {config : Config} {checks : SignatureChecks}
+    {state after : BeaconState preset fork} {slashings : List ProposerSlashing}
+    (computed : slashings.foldlM (processProposerSlashing config checks) state = .ok after) :
+    (slashings.map (·.signedHeader1.message.proposerIndex)).Nodup := by
+  have excludes : ∀ (items : List ProposerSlashing) (input output : BeaconState preset fork)
+      (index : ValidatorIndex),
+      items.foldlM (processProposerSlashing config checks) input = .ok output →
+      slashedFlag input index = .ok true →
+      index ∉ items.map (·.signedHeader1.message.proposerIndex) := by
+    intro items
+    induction items with
+    | nil => simp
+    | cons first rest ih =>
+      intro input output index run flag
+      obtain ⟨middle, firstOk, restOk⟩ := bind_ok_iff.mp run
+      simp only [List.map_cons, List.mem_cons, not_or]
+      refine ⟨?_, ih middle output index restOk
+        (processProposerSlashing_slashedFlag firstOk flag)⟩
+      intro equal
+      exact processProposerSlashing_ne_ok_of_slashed (equal ▸ flag) firstOk
+  induction slashings generalizing state with
+  | nil => simp
+  | cons first rest ih =>
+    obtain ⟨middle, firstOk, restOk⟩ := bind_ok_iff.mp computed
+    simp only [List.map_cons, List.nodup_cons]
+    exact ⟨excludes rest middle after _ restOk (processProposerSlashing_slashed firstOk),
+      ih restOk⟩
+
 theorem sameSizes_processProposerSlashing {config : Config} {checks : SignatureChecks}
     {state after : BeaconState preset fork} {slashing : ProposerSlashing}
     (computed : processProposerSlashing config checks state slashing = .ok after) :
@@ -538,6 +582,18 @@ theorem processAttesterSlashing_slashed {config : Config} {checks : SignatureChe
   · cases never
   · rw [slashingIndices, mem_sortedSet, List.mem_filter, decide_eq_true_iff] at member
     exact ⟨index, member.1, member.2, flag⟩
+
+/-- Attester slashing preserves every slashed flag already set before the operation. -/
+theorem processAttesterSlashing_slashedFlag {config : Config} {checks : SignatureChecks}
+    {state after : BeaconState preset fork} {slashing : AttesterSlashing preset fork}
+    (computed : processAttesterSlashing config checks state slashing = .ok after)
+    {index : ValidatorIndex} (flag : slashedFlag state index = .ok true) :
+    slashedFlag after index = .ok true := by
+  simp only [processAttesterSlashing, bind_ok_iff, ensure_ok_iff] at computed
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, ⟨folded, slashedAny⟩, foldOk, computed⟩ := computed
+  simp only [pure, Except.pure, Except.ok.injEq] at computed
+  obtain ⟨_, _, rfl⟩ := computed
+  exact (foldlM_slashIfSlashable _ foldOk).2.1 index flag
 
 theorem sameSizes_processAttesterSlashing {config : Config} {checks : SignatureChecks}
     {state after : BeaconState preset fork} {slashing : AttesterSlashing preset fork}

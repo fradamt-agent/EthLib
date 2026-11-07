@@ -414,6 +414,57 @@ theorem slashedFlag_initiateValidatorExit {config : Config}
     simp [slashedFlag, getValidator_setValidator_self foundQueued, found, Except.map]
   · simp [slashedFlag, getValidator_setValidator_of_ne equal, same]
 
+/-- Starting an exit keeps the selected validator's effective balance. -/
+theorem initiateValidatorExit_effectiveBalance {config : Config}
+    {state after : BeaconState preset fork} {index : ValidatorIndex}
+    (computed : initiateValidatorExit config state index = .ok after) :
+    ∃ validator updated,
+      getValidator state index = .ok validator ∧
+      getValidator after index = .ok updated ∧
+      updated.effectiveBalance = validator.effectiveBalance := by
+  obtain ⟨validator, found, ⟨_, rfl⟩ | ⟨_, queued, exitEpoch, withdrawableEpoch,
+    queue, _, rfl⟩⟩ := initiateValidatorExit_ok computed
+  · exact ⟨validator, validator, found, found, rfl⟩
+  · have foundQueued : getValidator queued index = .ok validator :=
+      (getValidator_of_validators_eq (exitQueue_validators queue).1 index).trans found
+    exact ⟨validator, { validator with exitEpoch, withdrawableEpoch }, found,
+      getValidator_setValidator_self foundQueued _, rfl⟩
+
+/-- A Phase 0 slashing pays exactly one quotient of the validator it actually slashes.
+
+The two successful balance credits retain their actual recipient indices and amounts. -/
+theorem slashValidator_phase0_credits {config : Config}
+    {state after : BeaconState preset .phase0}
+    {slashedIndex : ValidatorIndex} {whistleblowerIndex : Option ValidatorIndex}
+    (computed : slashValidator config state slashedIndex whistleblowerIndex = .ok after) :
+    ∃ validator lowered raised proposer whistleblower proposerReward whistleblowerReward,
+      getValidator state slashedIndex = .ok validator ∧
+      getBeaconProposerIndex lowered = .ok proposer ∧
+      whistleblower = whistleblowerIndex.getD proposer ∧
+      increaseBalance lowered proposer proposerReward = .ok raised ∧
+      increaseBalance raised whistleblower whistleblowerReward = .ok after ∧
+      proposerReward.toNat + whistleblowerReward.toNat =
+        validator.effectiveBalance.toNat /
+          (parameters preset .phase0).WHISTLEBLOWER_REWARD_QUOTIENT.toNat := by
+  unfold slashValidator at computed
+  simp only [bind_ok_iff, liftArith, mapError_ok_iff] at computed
+  obtain ⟨exited, exitedOk, validator, found, _, _, _, _, _, _, lowered, _, proposer,
+    proposerOk, proposerReward, shareOk, raised, raisedOk, last, final, done⟩ := computed
+  have finalOk : last = after := by
+    simpa only [show ¬Fork.glamsterdam ≤ Fork.phase0 by decide, ↓reduceDIte,
+      pure, Except.pure, Except.ok.injEq] using done
+  obtain ⟨original, updated, originalFound, updatedFound, balanceEq⟩ :=
+    initiateValidatorExit_effectiveBalance exitedOk
+  have same : validator = updated := Except.ok.inj (found.symm.trans updatedFound)
+  obtain ⟨actualShare, actualOk, credits⟩ :=
+    proposerShare_phase0_credits preset validator.effectiveBalance
+  have shareEq : proposerReward = actualShare := Except.ok.inj (shareOk.symm.trans actualOk)
+  refine ⟨original, lowered, raised, proposer, whistleblowerIndex.getD proposer, proposerReward,
+    validator.effectiveBalance / (parameters preset .phase0).WHISTLEBLOWER_REWARD_QUOTIENT -
+      proposerReward, originalFound, proposerOk, rfl, raisedOk, finalOk ▸ final, ?_⟩
+  rw [shareEq]
+  simpa only [same, balanceEq] using credits
+
 /-- Slashing a validator sets its slashed flag, and changes no other flag. -/
 theorem slashValidator_slashedFlag {config : Config} {state after : BeaconState preset fork}
     {slashedIndex : ValidatorIndex} {whistleblowerIndex : Option ValidatorIndex}

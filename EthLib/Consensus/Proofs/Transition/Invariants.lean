@@ -1032,6 +1032,83 @@ theorem frame_processOperations (altair : fork < .altair) {body : BeaconBlockBod
     (Frame.foldlM (fun _ _ _ ok => frame_processDeposit altair ok) depositedOk).trans <|
     Frame.foldlM (fun _ _ _ ok => frame_processVoluntaryExit ok) exitsOk
 
+/-- A Phase 0 deposit cannot clear a slashed flag of an existing validator. -/
+theorem processDeposit_slashedFlag (before : fork < .altair)
+    {beforeHeze : fork < .hegota} {deposit : Deposit} {index : ValidatorIndex}
+    (computed : processDeposit config checks beforeHeze state deposit = .ok after)
+    (flag : slashedFlag state index = .ok true) : slashedFlag after index = .ok true := by
+  have insertion {s s' : BeaconState preset fork} {key credentials amount}
+      (ok : addValidatorToRegistry s key credentials amount = .ok s')
+      (set : slashedFlag s index = .ok true) : slashedFlag s' index = .ok true := by
+    have inside : index.toNat < s.validators.data.size := by
+      unfold slashedFlag getValidator at set
+      split at set
+      · rename_i read
+        exact (Array.getElem?_eq_some_iff.mp read).1
+      · cases set
+    unfold addValidatorToRegistry at ok
+    split at ok
+    · exact (Nat.not_le_of_lt before ‹_›).elim
+    split at ok <;> cases ok
+    simpa only [slashedFlag, getValidator, Array.getElem?_push,
+      show index.toNat ≠ s.validators.data.size by omega, ↓reduceIte] using set
+  obtain ⟨_, _, next, _, applied⟩ := processDeposit_ok computed
+  have set : slashedFlag { state with eth1DepositIndex := fun _ => next } index = .ok true := flag
+  have notElectra : ¬Fork.pectra ≤ fork :=
+    Nat.not_le_of_lt (Nat.lt_trans before (by decide))
+  simp only [applyDeposit, notElectra, ↓reduceDIte, applyPendingDeposit] at applied
+  split at applied
+  · simp only [bind_ok_iff] at applied
+    obtain ⟨_, _, applied⟩ := applied
+    split at applied
+    · exact insertion applied set
+    · cases applied
+      exact set
+  · simpa only [slashedFlag,
+      getValidator_of_validators_eq (increaseBalance_validators (liftAccessor_ok.mp applied))]
+      using set
+
+/-- Phase 0 block operations cannot clear a validator's slashed flag. -/
+theorem processOperations_slashedFlag (before : fork < .altair)
+    {body : BeaconBlockBody preset fork} {index : ValidatorIndex}
+    (computed : processOperations config checks state body = .ok after)
+    (flag : slashedFlag state index = .ok true) : slashedFlag after index = .ok true := by
+  have attest {s s' : BeaconState preset fork} {a}
+      (ok : processAttestation config checks s a = .ok s') :
+      slashedFlag s' index = slashedFlag s index := by
+    obtain ⟨_, _, _, _, _, recorded, _, _, _⟩ := processAttestation_records before ok
+    cases current : a.data.target.epoch == getCurrentEpoch s <;>
+      simp only [recordPendingAttestation, current, Bool.false_eq_true, ↓reduceIte] at recorded <;>
+      split at recorded <;> cases recorded <;> rfl
+  have exit {s s' : BeaconState preset fork} {e}
+      (ok : processVoluntaryExit config checks s e = .ok s') :
+      slashedFlag s' index = slashedFlag s index := by
+    unfold processVoluntaryExit at ok
+    split at ok
+    · cases ok
+    simp only [bind_ok_iff, ensure_ok_iff, liftAccessor_ok, liftSsz_ok] at ok
+    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, exited⟩ := ok
+    exact slashedFlag_initiateValidatorExit exited index
+  unfold processOperations at computed
+  split at computed
+  · cases computed
+  simp only [bind_ok_iff, ensure_ok_iff, ← Array.foldlM_toList] at computed
+  obtain ⟨_, _, _, _, proposers, proposersOk, attesters, attestersOk, attested, attestedOk,
+    deposited, depositedOk, exited, exitsOk, changesOk⟩ := computed
+  have capella : ¬Fork.shapella ≤ fork := Nat.not_le_of_lt (Nat.lt_trans before (by decide))
+  simp only [capella, ↓reduceDIte, pure, Except.pure, Except.ok.injEq] at changesOk
+  subst changesOk
+  have proposerFlag := foldlM_ok_invariant (fun s => slashedFlag s index = .ok true)
+    (fun _ _ _ set ok => processProposerSlashing_slashedFlag ok set) flag proposersOk
+  have attesterFlag := foldlM_ok_invariant (fun s => slashedFlag s index = .ok true)
+    (fun _ _ _ set ok => processAttesterSlashing_slashedFlag ok set) proposerFlag attestersOk
+  have attestedFlag := foldlM_ok_invariant (fun s => slashedFlag s index = .ok true)
+    (fun _ _ _ set ok => (attest ok).trans set) attesterFlag attestedOk
+  have depositFlag := foldlM_ok_invariant (fun s => slashedFlag s index = .ok true)
+    (fun _ _ _ set ok => processDeposit_slashedFlag before ok set) attestedFlag depositedOk
+  exact foldlM_ok_invariant (fun s => slashedFlag s index = .ok true)
+    (fun _ _ _ set ok => (exit ok).trans set) depositFlag exitsOk
+
 /-- Preserved indexed activity queries preserve the ordered active population. -/
 theorem active_indices_of_validator_queries {epoch : Epoch}
     (within : state.RegistryWithinLimit) (afterWithin : after.RegistryWithinLimit)
@@ -1317,6 +1394,28 @@ theorem processBlock_pending_sources (before : fork < .altair)
   exact (headerPending.trans (randaoPending.trans eth1Pending)).sources
     ((frame_processBlockHeader headerOk).trans
       ((frame_processRandao randaoOk).trans (frame_processEth1Data eth1Ok))) holds
+
+/-- A Phase 0 block cannot clear an existing slashed flag. -/
+theorem processBlock_slashedFlag (before : fork < .altair)
+    {block : BeaconBlock preset fork} {index : ValidatorIndex}
+    (computed : processBlock config checks engine state block = .ok after)
+    (flag : slashedFlag state index = .ok true) : slashedFlag after index = .ok true := by
+  have notAltair : ¬Fork.altair ≤ fork := Nat.not_le_of_lt before
+  simp only [processBlock, notAltair, ↓reduceDIte, bind_ok_iff] at computed
+  obtain ⟨header, headerOk, randao, randaoOk, eth1, eth1Ok, operationsOk⟩ := computed
+  have headerRegistry : header.validators = state.validators := by
+    obtain ⟨_, _, rfl⟩ := processBlockHeader_eq headerOk
+    rfl
+  have randaoRegistry : randao.validators = header.validators := by
+    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq randaoOk
+    rfl
+  have eth1Registry : eth1.validators = randao.validators := by
+    obtain ⟨_, _, unchanged⟩ := processEth1Data_eq eth1Ok
+    rw [← unchanged]
+  apply processOperations_slashedFlag before operationsOk
+  simpa only [slashedFlag,
+    getValidator_of_validators_eq (eth1Registry.trans (randaoRegistry.trans headerRegistry))]
+    using flag
 
 /-- Block operations preserve the target and slot epochs checked at inclusion. -/
 theorem processOperations_pending_epochs (before : fork < .altair)
@@ -1814,6 +1913,53 @@ theorem processEpoch_invariant (altair : fork < .altair) (holds : Invariant stat
   · apply frame.effectiveBalancesBounded
     rw [EffectiveBalancesBounded, validators]
     exact holds.effectiveBalancesBounded
+
+/-- A Phase 0 epoch transition changes no validator's slashed flag. -/
+theorem processEpoch_slashedFlag (before : fork < .altair)
+    (holds : Invariant state) (computed : processEpoch config state = .ok after)
+    (index : ValidatorIndex) : slashedFlag after index = slashedFlag state index := by
+  have notAltair : ¬Fork.altair ≤ fork := Nat.not_le_of_lt before
+  simp only [processEpoch, notAltair, ↓reduceDIte, bind_ok_iff] at computed
+  obtain ⟨justified, justifiedOk, rewarded, rewardedOk, registered, registeredOk, slashed,
+    slashedOk, reset, resetOk, balanced, balancedOk, cleared, clearedOk, mixed, mixedOk, rooted,
+    rootedOk, rotated⟩ := computed
+  have within (s : BeaconState preset fork) : s.RegistryWithinLimit :=
+    s.validators.bound (Nat.lt_trans before (by decide))
+  have justificationInvariant :=
+    processJustificationAndFinalization_invariant holds.ordered holds.settled justifiedOk
+  have justifiedRegistry := justificationInvariant.2.2.2.2.1
+  have rewardRegistry := processRewardsAndPenalties_validators rewardedOk
+  have slashedRegistry := processSlashings_validators slashedOk
+  have resetRegistry := processEth1DataReset_validators resetOk
+  have clearedEq := processSlashingsReset_eq clearedOk
+  have mixedEq := processRandaoMixesReset_eq mixedOk
+  have rootedRegistry := processHistoricalRootsUpdate_validators rootedOk
+  have rotatedRegistry := processParticipationRecordUpdates_validators rotated
+  calc
+    slashedFlag after index = slashedFlag rooted index := by
+      simp only [slashedFlag, getValidator_of_validators_eq rotatedRegistry]
+    _ = slashedFlag mixed index := by
+      simp only [slashedFlag, getValidator_of_validators_eq rootedRegistry]
+    _ = slashedFlag cleared index := by
+      obtain ⟨_, _, _, _, eq⟩ := mixedEq
+      rw [eq]
+      rfl
+    _ = slashedFlag balanced index := by
+      obtain ⟨_, _, eq⟩ := clearedEq
+      rw [eq]
+      rfl
+    _ = slashedFlag reset index :=
+      processEffectiveBalanceUpdates_slashedFlag (within reset) balancedOk index
+    _ = slashedFlag slashed index := by
+      simp only [slashedFlag, getValidator_of_validators_eq resetRegistry]
+    _ = slashedFlag registered index := by
+      simp only [slashedFlag, getValidator_of_validators_eq slashedRegistry]
+    _ = slashedFlag rewarded index :=
+      processRegistryUpdates_slashedFlag (within rewarded) registeredOk index
+    _ = slashedFlag justified index := by
+      simp only [slashedFlag, getValidator_of_validators_eq rewardRegistry]
+    _ = slashedFlag state index := by
+      simp only [slashedFlag, getValidator_of_validators_eq justifiedRegistry]
 
 /-- A Phase 0 epoch transition preserves the current and previous attester seeds.
 
@@ -5063,5 +5209,62 @@ theorem stateTransition_chain_newest_bit_source (before : fork < .altair)
         stepOk, cachedOk, epochOk, justifiedOk, weighed, bit, target, source⟩
       simp only [List.foldlM_cons, bind_ok_iff]
       exact ⟨middle, firstOk, blocksOk⟩
+
+/-- Advancing a Phase 0 slot cannot clear an existing slashed flag. -/
+theorem advanceSlot_slashedFlag (before : fork < .altair) (holds : Invariant state)
+    (computed : advanceSlot config state = .ok after) (index : ValidatorIndex) :
+    slashedFlag after index = slashedFlag state index := by
+  simp only [advanceSlot, bind_ok_iff, liftAccessor_ok, liftArith, mapError_ok_iff,
+    addChecked_ok_iff, pure, Except.pure, Except.ok.injEq] at computed
+  obtain ⟨_, _, cached, cachedOk, epoched, epochedOk, rfl⟩ := computed
+  have registry : cached.validators = state.validators := by
+    obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+    rfl
+  have saved : slashedFlag cached index = slashedFlag state index := by
+    simp only [slashedFlag, getValidator_of_validators_eq registry]
+  change slashedFlag epoched index = slashedFlag state index
+  unfold epochIfLast at epochedOk
+  split at epochedOk
+  · exact (processEpoch_slashedFlag before
+      ((frame_processSlot cachedOk).invariant holds) epochedOk index).trans saved
+  · cases epochedOk
+    exact saved
+
+/-- Advancing any number of Phase 0 slots preserves each slashed flag. -/
+theorem advanceSlots_slashedFlag (before : fork < .altair) {count : Nat}
+    (holds : Invariant state) (computed : advanceSlots config count state = .ok after)
+    (index : ValidatorIndex) : slashedFlag after index = slashedFlag state index := by
+  induction count generalizing state with
+  | zero => cases computed; rfl
+  | succ count ih =>
+    obtain ⟨middle, first, tail⟩ := bind_ok_iff.mp computed
+    exact (ih (advanceSlot_invariant before holds first).1 tail).trans
+      (advanceSlot_slashedFlag before holds first index)
+
+/-- A valid Phase 0 state transition cannot clear an existing slashed flag. -/
+theorem stateTransition_slashedFlag (before : fork < .altair) (holds : Invariant state)
+    {signed : SignedBeaconBlock preset fork}
+    (computed : stateTransition config checks engine state signed true = .ok after)
+    {index : ValidatorIndex} (flag : slashedFlag state index = .ok true) :
+    slashedFlag after index = .ok true := by
+  obtain ⟨advanced, slotsOk, _, _, blockOk, _⟩ := stateTransition_ok computed
+  simp only [processSlots, bind_ok_iff, ensure_ok_iff] at slotsOk
+  obtain ⟨_, _, advancedOk⟩ := slotsOk
+  apply processBlock_slashedFlag before blockOk
+  exact (advanceSlots_slashedFlag before holds advancedOk index).trans flag
+
+/-- A valid Phase 0 chain cannot clear a slashed flag between two slashing operations. -/
+theorem stateTransition_chain_slashedFlag (before : fork < .altair)
+    {blocks : List (SignedBeaconBlock preset fork)} (holds : Invariant state)
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block true)
+        state = .ok after)
+    {index : ValidatorIndex} (flag : slashedFlag state index = .ok true) :
+    slashedFlag after index = .ok true := by
+  have kept := foldlM_ok_invariant
+    (fun s => Invariant s ∧ slashedFlag s index = .ok true)
+    (fun _ _ _ prior ok => ⟨(stateTransition_invariant before prior.1 ok).1,
+      stateTransition_slashedFlag before prior.1 ok prior.2⟩) ⟨holds, flag⟩ computed
+  exact kept.2
 
 end EthLib.Consensus

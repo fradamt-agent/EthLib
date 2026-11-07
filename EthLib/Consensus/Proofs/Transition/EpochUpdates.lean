@@ -135,6 +135,24 @@ theorem updateEffectiveBalance_bounded {index : Nat}
     exact bounded _ (Array.mem_of_getElem? read)
   · cases found
 
+/-- Updating an effective balance changes no slashed flag at an exact registry index. -/
+theorem updateEffectiveBalance_slashedFlag {index : Nat}
+    (exactIndex : index.toUInt64.toNat = index)
+    (computed : updateEffectiveBalance state index = .ok after) (other : ValidatorIndex) :
+    slashedFlag after other = slashedFlag state other := by
+  simp only [updateEffectiveBalance, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+    Except.ok.injEq] at computed
+  obtain ⟨validator, found, _, _, effectiveBalance, _, rfl⟩ := computed
+  by_cases same : other = index.toUInt64
+  · subst other
+    have updated := getValidator_setValidator_self found { validator with effectiveBalance }
+    rw [exactIndex] at updated
+    simp only [slashedFlag, updated, found, Except.map]
+  · have unchanged := getValidator_setValidator_of_ne (state := state) same
+      { validator with effectiveBalance }
+    simpa only [exactIndex, slashedFlag] using congrArg (fun result => result.map (·.slashed))
+      unchanged
+
 /-- Updating every effective balance preserves the cap. -/
 theorem processEffectiveBalanceUpdates_bounded
     (bounded : EffectiveBalancesBounded state)
@@ -387,6 +405,39 @@ theorem sameSizes_processEffectiveBalanceUpdates
 
 /-! ## Registry updates and slashings -/
 
+/-- A complete effective-balance pass changes no slashed flag within the registry limit. -/
+theorem processEffectiveBalanceUpdates_slashedFlag
+    (within : state.RegistryWithinLimit)
+    (computed : processEffectiveBalanceUpdates state = .ok after) (other : ValidatorIndex) :
+    slashedFlag after other = slashedFlag state other := by
+  unfold processEffectiveBalanceUpdates at computed
+  split at computed
+  · cases computed
+  have preserve : ∀ (indices : List Nat) (s s' : BeaconState preset fork),
+      s.RegistryWithinLimit → (∀ i ∈ indices, i < s.validators.data.size) →
+      indices.foldlM updateEffectiveBalance s = .ok s' →
+      slashedFlag s' other = slashedFlag s other := by
+    intro indices
+    induction indices with
+    | nil =>
+      intro s s' _ _ ok
+      cases ok
+      rfl
+    | cons index rest ih =>
+      intro s s' bound inside ok
+      obtain ⟨next, first, tail⟩ := bind_ok_iff.mp ok
+      have sizes := sameSizes_updateEffectiveBalance first
+      have nextBound : next.RegistryWithinLimit := by
+        unfold BeaconState.RegistryWithinLimit at bound ⊢
+        rw [sizes.1]
+        exact bound
+      exact (ih next s' nextBound (fun i member => by
+        rw [sizes.1]
+        exact inside i (List.mem_cons_of_mem _ member)) tail).trans
+        (updateEffectiveBalance_slashedFlag
+          (toNat_toUInt64_of_lt bound (inside index List.mem_cons_self)) first other)
+  exact preserve _ state after within (fun _ member => List.mem_range.mp member) computed
+
 theorem sameSizes_updateRegistryEntry {config : Config} {index : Nat}
     (computed : updateRegistryEntry config state index = .ok after) : SameSizes state after := by
   simp only [updateRegistryEntry, bind_ok_iff, liftAccessor_ok] at computed
@@ -425,6 +476,54 @@ theorem activateValidator_slot {index : ValidatorIndex}
     Except.ok.injEq] at computed
   obtain ⟨_, _, _, _, rfl⟩ := computed
   rfl
+
+/-- Eligibility-queue updates leave a validator's slashed flag unchanged. -/
+theorem queueForActivation_slashed {validator queued : Validator}
+    (computed : queueForActivation state validator = .ok queued) :
+    queued.slashed = validator.slashed := by
+  unfold queueForActivation at computed
+  split at computed
+  · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at computed
+    obtain ⟨_, _, rfl⟩ := computed
+    rfl
+  · cases computed
+    rfl
+
+/-- Registry eligibility processing changes no slashed flag at an exact registry index. -/
+theorem updateRegistryEntry_slashedFlag {config : Config} {index : Nat}
+    (exactIndex : index.toUInt64.toNat = index)
+    (computed : updateRegistryEntry config state index = .ok after) (other : ValidatorIndex) :
+    slashedFlag after other = slashedFlag state other := by
+  simp only [updateRegistryEntry, bind_ok_iff, liftAccessor_ok] at computed
+  obtain ⟨validator, found, queued, queuedOk, rest⟩ := computed
+  have unchanged : slashedFlag (state.setValidator index queued) other =
+      slashedFlag state other := by
+    by_cases same : other = index.toUInt64
+    · subst other
+      have updated := getValidator_setValidator_self found queued
+      rw [exactIndex] at updated
+      simp only [slashedFlag, updated, found, Except.map,
+        queueForActivation_slashed queuedOk]
+    · have kept := getValidator_setValidator_of_ne (state := state) same queued
+      simpa only [exactIndex, slashedFlag] using
+        congrArg (fun result => result.map (·.slashed)) kept
+  split at rest
+  · exact (slashedFlag_initiateValidatorExit (liftAccessor_ok.mp rest) other).trans unchanged
+  · simp only [pure, Except.pure, Except.ok.injEq] at rest
+    subst after
+    exact unchanged
+
+/-- Activation scheduling changes no slashed flag. -/
+theorem activateValidator_slashedFlag {index : ValidatorIndex}
+    (computed : activateValidator state index = .ok after) (other : ValidatorIndex) :
+    slashedFlag after other = slashedFlag state other := by
+  simp only [activateValidator, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+    Except.ok.injEq] at computed
+  obtain ⟨validator, found, activationEpoch, _, rfl⟩ := computed
+  by_cases same : other = index
+  · subst other
+    simp only [slashedFlag, getValidator_setValidator_self found, found, Except.map]
+  · simp only [slashedFlag, getValidator_setValidator_of_ne same]
 
 /-- Eligibility-queue updates leave activation and exit epochs unchanged. -/
 theorem queueForActivation_active {validator queued : Validator} (epoch : Epoch)
@@ -792,6 +891,44 @@ theorem processRegistryUpdates_ok {config : Config}
     (SameSizes.refl state) updatedOk
   exact foldlM_ok_invariant (SameSizes state)
     (fun _ _ _ sizes step => sizes.trans (sameSizes_activateValidator step)) first activated
+
+/-- A complete registry pass preserves every slashed flag at a bounded registry index. -/
+theorem processRegistryUpdates_slashedFlag {config : Config}
+    (within : state.RegistryWithinLimit)
+    (computed : processRegistryUpdates config state = .ok after) (other : ValidatorIndex) :
+    slashedFlag after other = slashedFlag state other := by
+  unfold processRegistryUpdates at computed
+  split at computed
+  · cases computed
+  simp only [bind_ok_iff] at computed
+  obtain ⟨middle, updated, activated⟩ := computed
+  have preserve : ∀ (indices : List Nat) (s s' : BeaconState preset fork),
+      s.RegistryWithinLimit → (∀ i ∈ indices, i < s.validators.data.size) →
+      indices.foldlM (updateRegistryEntry config) s = .ok s' →
+      slashedFlag s' other = slashedFlag s other := by
+    intro indices
+    induction indices with
+    | nil =>
+      intro s s' _ _ ok
+      cases ok
+      rfl
+    | cons index rest ih =>
+      intro s s' bound inside ok
+      obtain ⟨next, first, tail⟩ := bind_ok_iff.mp ok
+      have sizes := sameSizes_updateRegistryEntry first
+      have nextBound : next.RegistryWithinLimit := by
+        unfold BeaconState.RegistryWithinLimit at bound ⊢
+        rw [sizes.1]
+        exact bound
+      exact (ih next s' nextBound (fun i member => by
+        rw [sizes.1]
+        exact inside i (List.mem_cons_of_mem _ member)) tail).trans
+        (updateRegistryEntry_slashedFlag
+          (toNat_toUInt64_of_lt bound (inside index List.mem_cons_self)) first other)
+  have kept := preserve _ state middle within (fun _ member => List.mem_range.mp member) updated
+  exact (foldlM_ok_invariant (fun s => slashedFlag s other = slashedFlag middle other)
+    (fun _ _ _ holds ok => (activateValidator_slashedFlag ok other).trans holds)
+    rfl activated).trans kept
 
 /-- Successful registry processing leaves the same ordered active indices for a past epoch. -/
 theorem processRegistryUpdates_active_indices {config : Config} {epoch : Epoch}
