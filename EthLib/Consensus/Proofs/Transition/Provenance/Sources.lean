@@ -412,6 +412,32 @@ For a target in epoch 1 the source may instead be the current justified checkpoi
 epoch 1 of the chain, since the end of epoch 1 weighs nothing.
 
 The flag may also come from the start of the chain, or from the upgrade to Altair. -/
+theorem WeighingCall.voters_signed {start after : ForkedBeaconState preset} {fork : Fork}
+    {state cached weighed next : BeaconState preset fork} {voters : List ValidatorIndex}
+    {checkpoint : Checkpoint}
+    (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    .altair ≤ fork → ∀ index ∈ voters,
+      FlagAtStart start index.toNat TIMELY_TARGET_FLAG_INDEX ∨
+      FlagFromAltairUpgrade config checks start ⟨fork, state⟩ index.toNat
+        TIMELY_TARGET_FLAG_INDEX checkpoint.epoch ∨
+      ∃ data, data.target = checkpoint ∧
+        SignedTarget config checks start ⟨fork, state⟩ index data ∧
+        (data.source = recordSource cached checkpoint.epoch ∨
+          (checkpoint.epoch.toNat = 1 ∧ ∃ (fork' : Fork) (epochOne : BeaconState preset fork'),
+            Reaches config checks start ⟨fork', epochOne⟩ ∧
+            Reaches config checks ⟨fork', epochOne⟩ ⟨fork, state⟩ ∧
+            (getCurrentEpoch epochOne).toNat = 1 ∧
+            data.source = epochOne.currentJustifiedCheckpoint)) := by
+  intro altair index member
+  rcases TargetVoters.origin altair call.head call.cachedOk call.recent call.counted member with
+    atStart | upgraded | ⟨data, epoch, signed⟩
+  · exact .inl atStart
+  · exact .inr (.inl upgraded)
+  have link := SignedTarget.link wide signed epoch call.cachedOk call.later call.recent call.rootOk
+  exact .inr (.inr ⟨data, link.1, signed, link.2⟩)
+
+/-- `WeighingCall.voters_signed` for a call that `JustifiedBy` names. -/
 theorem JustifiedBy.voters_signed {start after : ForkedBeaconState preset}
     {checkpoint : Checkpoint}
     (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
@@ -435,17 +461,9 @@ theorem JustifiedBy.voters_signed {start after : ForkedBeaconState preset}
               Reaches config checks ⟨fork', epochOne⟩ ⟨fork, state⟩ ∧
               (getCurrentEpoch epochOne).toNat = 1 ∧
               data.source = epochOne.currentJustifiedCheckpoint))) := by
-  obtain ⟨fork, state, cached, _, next, voters, head, notDue, nextOk, tail, closes, cachedOk,
-    _, later, recent, counted, passes, rootOk⟩ := justified
-  refine ⟨fork, state, cached, voters, head,
-    (Reaches.refl _).step (.slot notDue nextOk) |>.trans tail, cachedOk, later, recent, counted,
-    passes, rootOk, fun altair index member => ?_⟩
-  rcases TargetVoters.origin altair head cachedOk recent counted member with atStart | upgraded |
-    ⟨data, epoch, signed⟩
-  · exact .inl atStart
-  · exact .inr (.inl upgraded)
-  exact .inr (.inr ⟨data, (SignedTarget.link wide signed epoch cachedOk later recent rootOk).1,
-    signed, (SignedTarget.link wide signed epoch cachedOk later recent rootOk).2⟩)
+  obtain ⟨fork, state, cached, _, _, voters, call⟩ := justified
+  exact ⟨fork, state, cached, voters, call.head, call.toAfter, call.cachedOk, call.later,
+    call.recent, call.counted, call.passes, call.rootOk, call.voters_signed wide⟩
 
 /-! ## Justification bits -/
 
