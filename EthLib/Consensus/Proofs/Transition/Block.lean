@@ -437,6 +437,18 @@ theorem foldlM_processProposerSlashing_nodup {config : Config} {checks : Signatu
     exact ⟨excludes rest middle after _ restOk (processProposerSlashing_slashed firstOk),
       ih restOk⟩
 
+/-- Proposer slashings preserve each indexed effective balance before the next epoch update. -/
+theorem processProposerSlashing_effectiveBalance_query {config : Config}
+    {checks : SignatureChecks} {state after : BeaconState preset fork}
+    {slashing : ProposerSlashing}
+    (computed : processProposerSlashing config checks state slashing = .ok after)
+    (other : ValidatorIndex) :
+    (getValidator after other).map (·.effectiveBalance) =
+      (getValidator state other).map (·.effectiveBalance) := by
+  simp only [processProposerSlashing, bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at computed
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, slashed⟩ := computed
+  exact slashValidator_effectiveBalance_query slashed other
+
 theorem sameSizes_processProposerSlashing {config : Config} {checks : SignatureChecks}
     {state after : BeaconState preset fork} {slashing : ProposerSlashing}
     (computed : processProposerSlashing config checks state slashing = .ok after) :
@@ -554,6 +566,121 @@ theorem foldlM_slashIfSlashable_filter_slashed {config : Config}
       rw [List.foldlM_cons, bind_ok_iff]
       exact ⟨middle, firstOk, restFiltered⟩
 
+/-- An attester-slashing step preserves every indexed effective balance. -/
+theorem slashIfSlashable_effectiveBalance_query {config : Config}
+    {step after : BeaconState preset fork × Bool} {index : ValidatorIndex}
+    (computed : slashIfSlashable config step index = .ok after) (other : ValidatorIndex) :
+    (getValidator after.1 other).map (·.effectiveBalance) =
+      (getValidator step.1 other).map (·.effectiveBalance) := by
+  obtain ⟨state, slashedAny⟩ := step
+  simp only [slashIfSlashable, bind_ok_iff, liftAccessor_ok] at computed
+  obtain ⟨validator, _, computed⟩ := computed
+  split at computed
+  · simp only [bind_ok_iff, liftAccessor_ok, pure, Except.pure, Except.ok.injEq] at computed
+    obtain ⟨slashed, slashedOk, rfl⟩ := computed
+    exact slashValidator_effectiveBalance_query slashedOk other
+  · cases computed
+    rfl
+
+/-- Every effective balance in an attester-slashing fold is its pre-fold effective balance. -/
+theorem foldlM_slashIfSlashable_effectiveBalance_query {config : Config}
+    (indices : List ValidatorIndex) {step after : BeaconState preset fork × Bool}
+    (computed : indices.foldlM (slashIfSlashable config) step = .ok after)
+    (other : ValidatorIndex) :
+    (getValidator after.1 other).map (·.effectiveBalance) =
+      (getValidator step.1 other).map (·.effectiveBalance) := by
+  induction indices generalizing step with
+  | nil => cases computed; rfl
+  | cons index rest ih =>
+    obtain ⟨middle, firstOk, restOk⟩ := bind_ok_iff.mp computed
+    exact (ih restOk).trans (slashIfSlashable_effectiveBalance_query firstOk other)
+
+/-- An attester-slashing fold has an equivalent execution of distinct newly slashed indices.
+
+Repeated indices and validators already slashed before the fold pay no additional reward. -/
+theorem foldlM_slashIfSlashable_distinct_paid {config : Config} (indices : List ValidatorIndex)
+    {step after : BeaconState preset fork × Bool}
+    (computed : indices.foldlM (slashIfSlashable config) step = .ok after) :
+    ∃ paid : List ValidatorIndex,
+      paid.Sublist indices ∧ paid.Nodup ∧
+      paid.foldlM (slashIfSlashable config) step = .ok after ∧
+      ∀ index ∈ paid,
+        slashedFlag step.1 index ≠ .ok true ∧ slashedFlag after.1 index = .ok true := by
+  induction indices generalizing step with
+  | nil =>
+    cases computed
+    exact ⟨[], .refl _, by simp, rfl, by simp⟩
+  | cons index rest ih =>
+    obtain ⟨middle, first, tail⟩ := bind_ok_iff.mp computed
+    obtain ⟨paid, subset, unique, paidOk, flags⟩ := ih tail
+    have kept := (slashIfSlashable_ok first).2.1
+    have read := first
+    simp only [slashIfSlashable, bind_ok_iff, liftAccessor_ok] at read
+    obtain ⟨validator, found, action⟩ := read
+    split at action
+    · rename_i slashable
+      simp only [bind_ok_iff, liftAccessor_ok, pure, Except.pure, Except.ok.injEq] at action
+      obtain ⟨slashed, slashedOk, equal⟩ := action
+      have set : slashedFlag middle.1 index = .ok true := by
+        rw [← equal]
+        exact (slashValidator_slashedFlag slashedOk).1
+      have absent : index ∉ paid := fun member => (flags index member).1 set
+      refine ⟨index :: paid, subset.cons_cons _, List.nodup_cons.mpr ⟨absent, unique⟩, ?_, ?_⟩
+      · exact bind_ok_iff.mpr ⟨middle, first, paidOk⟩
+      · intro other member
+        rcases List.mem_cons.mp member with rfl | member
+        · refine ⟨?_, (foldlM_slashIfSlashable rest tail).2.1 other set⟩
+          have clear : validator.slashed = false := by
+            cases flag : validator.slashed <;> simp_all [isSlashableValidator]
+          simp [slashedFlag, found, Except.map, clear]
+        · exact ⟨fun old => (flags other member).1 (kept other old), (flags other member).2⟩
+    · simp only [pure, Except.pure, Except.ok.injEq] at action
+      have same : middle = step := action.symm
+      refine ⟨paid, subset.cons _, unique, ?_, ?_⟩
+      · simpa only [same] using paidOk
+      · simpa only [same] using flags
+
+/-- A newly set flag in a slashing fold identifies the actual call that slashed that index.
+
+The prefix retains the state immediately before that call. -/
+theorem foldlM_slashIfSlashable_flag_origin {config : Config} (indices : List ValidatorIndex)
+    {step after : BeaconState preset fork × Bool} {index : ValidatorIndex}
+    (computed : indices.foldlM (slashIfSlashable config) step = .ok after)
+    (unset : slashedFlag step.1 index ≠ .ok true)
+    (set : slashedFlag after.1 index = .ok true) :
+    ∃ earlier later atStep slashed,
+      indices = earlier ++ index :: later ∧
+      earlier.foldlM (slashIfSlashable config) step = .ok atStep ∧
+      slashValidator config atStep.1 index = .ok slashed ∧
+      slashIfSlashable config atStep index = .ok (slashed, true) := by
+  induction indices generalizing step with
+  | nil => cases computed; exact (unset set).elim
+  | cons first rest ih =>
+    obtain ⟨middle, firstOk, restOk⟩ := bind_ok_iff.mp computed
+    by_cases middleSet : slashedFlag middle.1 index = .ok true
+    · have read := firstOk
+      simp only [slashIfSlashable, bind_ok_iff, liftAccessor_ok] at read
+      obtain ⟨validator, _, action⟩ := read
+      split at action
+      · simp only [bind_ok_iff, liftAccessor_ok, pure, Except.pure, Except.ok.injEq] at action
+        obtain ⟨slashed, slashedOk, equal⟩ := action
+        have same : index = first := by
+          by_cases distinct : index = first
+          · exact distinct
+          · apply False.elim
+            apply unset
+            have saved := (slashValidator_slashedFlag slashedOk).2 index distinct
+            rw [← equal] at middleSet
+            exact saved.symm.trans middleSet
+        subst first
+        exact ⟨[], rest, step, slashed, rfl, rfl, slashedOk, by simpa [← equal] using firstOk⟩
+      · simp only [pure, Except.pure, Except.ok.injEq] at action
+        exact (unset (by simpa only [← action] using middleSet)).elim
+    · obtain ⟨earlier, later, atStep, slashed, split, prefixOk, slashedOk, action⟩ :=
+        ih restOk middleSet
+      refine ⟨first :: earlier, later, atStep, slashed, by simp [split], ?_, slashedOk, action⟩
+      exact bind_ok_iff.mpr ⟨middle, firstOk, prefixOk⟩
+
 /-- A valid attester slashing holds two valid attestations that Casper FFG forbids together. -/
 theorem processAttesterSlashing_checks {config : Config} {checks : SignatureChecks}
     {state after : BeaconState preset fork} {slashing : AttesterSlashing preset fork}
@@ -594,6 +721,147 @@ theorem processAttesterSlashing_slashedFlag {config : Config} {checks : Signatur
   simp only [pure, Except.pure, Except.ok.injEq] at computed
   obtain ⟨_, _, rfl⟩ := computed
   exact (foldlM_slashIfSlashable _ foldOk).2.1 index flag
+
+/-- A successful attester slashing pays only distinct validators whose flags it newly sets.
+
+The retained indices execute the same slashing fold, including its actual balance credits. -/
+theorem processAttesterSlashing_distinct_paid {config : Config} {checks : SignatureChecks}
+    {state after : BeaconState preset fork} {slashing : AttesterSlashing preset fork}
+    (computed : processAttesterSlashing config checks state slashing = .ok after) :
+    ∃ paid : List ValidatorIndex,
+      paid.Sublist (slashingIndices slashing) ∧ paid.Nodup ∧
+      paid.foldlM (slashIfSlashable config) (state, false) = .ok (after, true) ∧
+      ∀ index ∈ paid,
+        slashedFlag state index ≠ .ok true ∧ slashedFlag after index = .ok true := by
+  simp only [processAttesterSlashing, bind_ok_iff, ensure_ok_iff] at computed
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, ⟨folded, slashedAny⟩, foldOk, computed⟩ := computed
+  simp only [pure, Except.pure, Except.ok.injEq] at computed
+  obtain ⟨_, done, rfl⟩ := computed
+  subst slashedAny
+  exact foldlM_slashIfSlashable_distinct_paid _ foldOk
+
+/-- Each distinct paid index has the exact two Phase 0 credits of its actual slashing call.
+
+The reward uses its pre-operation effective balance, since slashings do not change that balance. -/
+theorem processAttesterSlashing_paid_credits {config : Config} {checks : SignatureChecks}
+    {state after : BeaconState preset .phase0} {slashing : AttesterSlashing preset .phase0}
+    (computed : processAttesterSlashing config checks state slashing = .ok after) :
+    ∃ paid : List ValidatorIndex,
+      paid.Sublist (slashingIndices slashing) ∧ paid.Nodup ∧
+      paid.foldlM (slashIfSlashable config) (state, false) = .ok (after, true) ∧
+      ∀ index ∈ paid,
+        ∃ earlier later atStep slashed original validator lowered raised proposer whistleblower
+            proposerReward whistleblowerReward,
+          paid = earlier ++ index :: later ∧
+          earlier.foldlM (slashIfSlashable config) (state, false) = .ok atStep ∧
+          slashValidator config atStep.1 index = .ok slashed ∧
+          getValidator state index = .ok original ∧
+          getValidator atStep.1 index = .ok validator ∧
+          getBeaconProposerIndex lowered = .ok proposer ∧ whistleblower = proposer ∧
+          increaseBalance lowered proposer proposerReward = .ok raised ∧
+          increaseBalance raised whistleblower whistleblowerReward = .ok slashed ∧
+          proposerReward.toNat + whistleblowerReward.toNat =
+            original.effectiveBalance.toNat /
+              (parameters preset .phase0).WHISTLEBLOWER_REWARD_QUOTIENT.toNat := by
+  obtain ⟨paid, subset, unique, paidOk, flags⟩ := processAttesterSlashing_distinct_paid computed
+  refine ⟨paid, subset, unique, paidOk, ?_⟩
+  intro index member
+  obtain ⟨earlier, later, atStep, slashed, split, prefixOk, slashedOk, _⟩ :=
+    foldlM_slashIfSlashable_flag_origin paid paidOk (flags index member).1 (flags index member).2
+  obtain ⟨validator, lowered, raised, proposer, whistleblower, proposerReward,
+    whistleblowerReward, found, proposerOk, recipient, raisedOk, finalOk, credits⟩ :=
+    slashValidator_phase0_credits slashedOk
+  have saved := foldlM_slashIfSlashable_effectiveBalance_query earlier prefixOk index
+  rw [found] at saved
+  cases originalFound : getValidator state index with
+  | error error => simp [originalFound, Except.map] at saved
+  | ok original =>
+    have equal : validator.effectiveBalance = original.effectiveBalance := by
+      simpa only [originalFound, Except.map, Except.ok.injEq] using saved
+    exact ⟨earlier, later, atStep, slashed, original, validator, lowered, raised, proposer,
+      whistleblower, proposerReward, whistleblowerReward, split, prefixOk, slashedOk,
+      rfl, found, proposerOk, recipient, raisedOk, finalOk, by simpa [equal] using credits⟩
+
+/-- Validators paid by different attester slashings in one list are disjoint.
+
+Each operation retains its actual successful fold, not a bound on the registry size. -/
+theorem foldlM_processAttesterSlashing_distinct_paid {config : Config}
+    {checks : SignatureChecks} (slashings : List (AttesterSlashing preset fork))
+    {state after : BeaconState preset fork}
+    (computed : slashings.foldlM (processAttesterSlashing config checks) state = .ok after) :
+    ∃ paid : List ValidatorIndex,
+      paid.Nodup ∧
+      (∀ index ∈ paid,
+        slashedFlag state index ≠ .ok true ∧ slashedFlag after index = .ok true) ∧
+      ∃ batches : List (List ValidatorIndex),
+        batches.flatten = paid ∧ batches.length = slashings.length ∧
+        batches.foldlM (fun s batch =>
+          (batch.foldlM (slashIfSlashable config) (s, false)).map Prod.fst) state = .ok after ∧
+        ∀ pair ∈ slashings.zip batches, pair.2.Sublist (slashingIndices pair.1) := by
+  induction slashings generalizing state with
+  | nil =>
+    cases computed
+    exact ⟨[], by simp, by simp, [], rfl, rfl, rfl, by simp⟩
+  | cons first rest ih =>
+    obtain ⟨middle, firstOk, restOk⟩ := bind_ok_iff.mp computed
+    obtain ⟨paid, subset, unique, paidOk, flags⟩ := processAttesterSlashing_distinct_paid firstOk
+    obtain ⟨tail, tailUnique, tailFlags, batches, flattened, count, batchesOk, subsets⟩ := ih restOk
+    have kept : ∀ index, slashedFlag middle index = .ok true →
+        slashedFlag after index = .ok true := by
+      intro index flag
+      exact foldlM_ok_invariant (fun s => slashedFlag s index = .ok true)
+        (fun _ _ _ prior ok => processAttesterSlashing_slashedFlag ok prior) flag restOk
+    refine ⟨paid ++ tail, List.nodup_append.mpr ⟨unique, tailUnique, ?_⟩, ?_,
+      paid :: batches, by simp [flattened], by simp [count], ?_, ?_⟩
+    · intro index member other otherMember equal
+      subst other
+      exact (tailFlags index otherMember).1 (flags index member).2
+    · intro index member
+      rcases List.mem_append.mp member with member | member
+      · exact ⟨(flags index member).1, kept index (flags index member).2⟩
+      · exact ⟨fun flag => (tailFlags index member).1
+          (processAttesterSlashing_slashedFlag firstOk flag), (tailFlags index member).2⟩
+    · simpa only [List.foldlM_cons, paidOk, Except.map, bind, Except.bind] using batchesOk
+    · intro pair member
+      rcases List.mem_cons.mp member with rfl | member
+      · exact subset
+      · exact subsets pair member
+
+/-- A block's proposer and attester slashings pay disjoint sets of validators.
+
+The attester batches retain an equivalent execution of their concrete slashing steps. -/
+theorem proposer_attester_slashings_distinct_paid {config : Config} {checks : SignatureChecks}
+    {proposers : List ProposerSlashing} {attesters : List (AttesterSlashing preset fork)}
+    {state middle after : BeaconState preset fork}
+    (proposerOk : proposers.foldlM (processProposerSlashing config checks) state = .ok middle)
+    (attesterOk : attesters.foldlM (processAttesterSlashing config checks) middle = .ok after) :
+    ∃ batches : List (List ValidatorIndex),
+      ((proposers.map (·.signedHeader1.message.proposerIndex)) ++ batches.flatten).Nodup ∧
+      batches.length = attesters.length ∧
+      batches.foldlM (fun s batch =>
+        (batch.foldlM (slashIfSlashable config) (s, false)).map Prod.fst) middle = .ok after ∧
+      ∀ pair ∈ attesters.zip batches, pair.2.Sublist (slashingIndices pair.1) := by
+  have flagged : ∀ index ∈ proposers.map (·.signedHeader1.message.proposerIndex),
+      slashedFlag middle index = .ok true := by
+    intro index member
+    induction proposers generalizing state with
+    | nil => simp at member
+    | cons first rest ih =>
+      obtain ⟨next, firstOk, restOk⟩ := bind_ok_iff.mp proposerOk
+      rcases List.mem_cons.mp member with rfl | member
+      · exact foldlM_ok_invariant (fun s => slashedFlag s _ = .ok true)
+          (fun _ _ _ prior ok => processProposerSlashing_slashedFlag ok prior)
+          (processProposerSlashing_slashed firstOk) restOk
+      · exact ih restOk member
+  obtain ⟨paid, unique, flags, batches, flattened, count, batchesOk, subsets⟩ :=
+    foldlM_processAttesterSlashing_distinct_paid attesters attesterOk
+  refine ⟨batches, ?_, count, batchesOk, subsets⟩
+  rw [flattened]
+  apply List.nodup_append.mpr
+  refine ⟨foldlM_processProposerSlashing_nodup proposerOk, unique, ?_⟩
+  intro index member other otherMember equal
+  subst other
+  exact (flags index otherMember).1 (flagged index member)
 
 theorem sameSizes_processAttesterSlashing {config : Config} {checks : SignatureChecks}
     {state after : BeaconState preset fork} {slashing : AttesterSlashing preset fork}

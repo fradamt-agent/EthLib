@@ -5267,4 +5267,171 @@ theorem stateTransition_chain_slashedFlag (before : fork < .altair)
       stateTransition_slashedFlag before prior.1 ok prior.2⟩) ⟨holds, flag⟩ computed
   exact kept.2
 
+/-- A proposer slashed before a valid chain cannot receive another proposer-slashing reward. -/
+theorem processProposerSlashing_ne_ok_after_chain (before : fork < .altair)
+    {slashed final : BeaconState preset fork}
+    {first second : ProposerSlashing} {blocks : List (SignedBeaconBlock preset fork)}
+    (holds : Invariant state)
+    (firstOk : processProposerSlashing config checks state first = .ok slashed)
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block true)
+        slashed = .ok after)
+    (same : first.signedHeader1.message.proposerIndex =
+      second.signedHeader1.message.proposerIndex) :
+    processProposerSlashing config checks after second ≠ .ok final := by
+  apply processProposerSlashing_ne_ok_of_slashed
+  rw [← same]
+  exact stateTransition_chain_slashedFlag before
+    ((frame_processProposerSlashing firstOk).invariant holds) computed
+    (processProposerSlashing_slashed firstOk)
+
+/-- A proposer slashed before a valid chain is skipped by every later attester-slashing step. -/
+theorem slashIfSlashable_eq_after_proposer_chain (before : fork < .altair)
+    {slashed : BeaconState preset fork} {first : ProposerSlashing}
+    {blocks : List (SignedBeaconBlock preset fork)} (slashedAny : Bool)
+    (holds : Invariant state)
+    (firstOk : processProposerSlashing config checks state first = .ok slashed)
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block true)
+        slashed = .ok after) :
+    slashIfSlashable config (after, slashedAny) first.signedHeader1.message.proposerIndex =
+      .ok (after, slashedAny) := by
+  exact slashIfSlashable_eq_of_slashed
+    (stateTransition_chain_slashedFlag before
+      ((frame_processProposerSlashing firstOk).invariant holds) computed
+      (processProposerSlashing_slashed firstOk))
+
+/-- An attester-slashing payment before a valid chain prevents another payment at that index.
+
+The first payment retains its actual prefix and successful `slashValidator` call. -/
+theorem slashIfSlashable_eq_after_attester_chain (before : fork < .altair)
+    {slashed : BeaconState preset fork} {first : AttesterSlashing preset fork}
+    {blocks : List (SignedBeaconBlock preset fork)} {index : ValidatorIndex}
+    (slashedAny : Bool) (holds : Invariant state)
+    (firstOk : processAttesterSlashing config checks state first = .ok slashed)
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block true)
+        slashed = .ok after)
+    (newlySet : slashedFlag state index ≠ .ok true)
+    (paid : slashedFlag slashed index = .ok true) :
+    (∃ earlier later atStep paidState,
+      slashingIndices first = earlier ++ index :: later ∧
+      earlier.foldlM (slashIfSlashable config) (state, false) = .ok atStep ∧
+      slashValidator config atStep.1 index = .ok paidState) ∧
+      slashIfSlashable config (after, slashedAny) index = .ok (after, slashedAny) := by
+  have read := firstOk
+  simp only [processAttesterSlashing, bind_ok_iff, ensure_ok_iff] at read
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, ⟨folded, any⟩, foldOk, read⟩ := read
+  simp only [pure, Except.pure, Except.ok.injEq] at read
+  obtain ⟨_, _, rfl⟩ := read
+  obtain ⟨earlier, later, atStep, paidState, split, prefixOk, slashedOk, _⟩ :=
+    foldlM_slashIfSlashable_flag_origin _ foldOk newlySet paid
+  refine ⟨⟨earlier, later, atStep, paidState, split, prefixOk, slashedOk⟩, ?_⟩
+  exact slashIfSlashable_eq_of_slashed
+    (stateTransition_chain_slashedFlag before
+      ((frame_processAttesterSlashing firstOk).invariant holds) computed paid)
+
+/-- Registry indices whose slashed flag changes to true during the supplied execution.
+
+The state transition never clears the flag, so successive block lists are disjoint. -/
+def newlySlashedIndices (state after : BeaconState preset fork) : List ValidatorIndex :=
+  (sortedSet ((List.range after.validators.data.size).map Nat.toUInt64)).filter fun index =>
+    (slashedFlag state index).toOption != some true &&
+      (slashedFlag after index).toOption == some true
+
+/-- Each recorded slashing index has a newly set flag in the actual states. -/
+theorem newlySlashedIndices_flags {index : ValidatorIndex}
+    (member : index ∈ newlySlashedIndices state after) :
+    slashedFlag state index ≠ .ok true ∧ slashedFlag after index = .ok true := by
+  have flags := (List.mem_filter.mp member).2
+  cases old : slashedFlag state index <;> cases new : slashedFlag after index <;>
+    simp_all [Except.toOption]
+
+/-- The indices recorded for one state transition contain no duplicate. -/
+theorem newlySlashedIndices_nodup (state after : BeaconState preset fork) :
+    (newlySlashedIndices state after).Nodup := by
+  apply List.Pairwise.filter
+  exact (sortedSet_sorted _).imp (fun lt equal => by
+    subst equal
+    exact (UInt64.lt_irrefl _) lt)
+
+/-- A Phase 0 chain with one list of newly slashed indices for each successful block.
+
+The returned state is computed by `stateTransition` with result validation enabled. -/
+def stateTransitionSlashingIndices (config : Config) (checks : SignatureChecks)
+    (engine : ExecutionEngine preset fork) :
+    List (SignedBeaconBlock preset fork) → BeaconState preset fork →
+      Except TransitionError (BeaconState preset fork × List ValidatorIndex)
+  | [], state => .ok (state, [])
+  | block :: rest, state => do
+    let middle ← stateTransition config checks engine state block true
+    let (after, paid) ← stateTransitionSlashingIndices config checks engine rest middle
+    return (after, newlySlashedIndices state middle ++ paid)
+
+/-- Recording the new slashing flags leaves the validated chain execution unchanged. -/
+theorem stateTransitionSlashingIndices_ok
+    {blocks : List (SignedBeaconBlock preset fork)}
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block true)
+        state = .ok after) :
+    ∃ paid,
+      stateTransitionSlashingIndices config checks engine blocks state = .ok (after, paid) := by
+  induction blocks generalizing state with
+  | nil => cases computed; exact ⟨[], rfl⟩
+  | cons block rest ih =>
+    obtain ⟨middle, firstOk, restOk⟩ := bind_ok_iff.mp computed
+    obtain ⟨paid, paidOk⟩ := ih restOk
+    exact ⟨newlySlashedIndices state middle ++ paid, by
+      simp only [stateTransitionSlashingIndices, firstOk, paidOk,
+        bind, Except.bind, pure, Except.pure]⟩
+
+/-- Removing the recorded slashing indices recovers the original validated block fold. -/
+theorem stateTransitionSlashingIndices_fold
+    {blocks : List (SignedBeaconBlock preset fork)} {paid : List ValidatorIndex}
+    (computed : stateTransitionSlashingIndices config checks engine blocks state =
+      .ok (after, paid)) :
+    blocks.foldlM (fun state block => stateTransition config checks engine state block true)
+      state = .ok after := by
+  induction blocks generalizing state paid with
+  | nil => cases computed; rfl
+  | cons block rest ih =>
+    simp only [stateTransitionSlashingIndices, bind_ok_iff, pure, Except.pure,
+      Except.ok.injEq, Prod.mk.injEq] at computed
+    obtain ⟨middle, firstOk, ⟨last, tail⟩, tailOk, rfl, _⟩ := computed
+    exact bind_ok_iff.mpr ⟨middle, firstOk, ih tailOk⟩
+
+/-- Over a valid Phase 0 chain each newly slashed registry index is recorded at most once. -/
+theorem stateTransitionSlashingIndices_nodup (before : fork < .altair)
+    {blocks : List (SignedBeaconBlock preset fork)} {paid : List ValidatorIndex}
+    (holds : Invariant state)
+    (computed : stateTransitionSlashingIndices config checks engine blocks state =
+      .ok (after, paid)) :
+    paid.Nodup ∧ ∀ index ∈ paid,
+      slashedFlag state index ≠ .ok true ∧ slashedFlag after index = .ok true := by
+  induction blocks generalizing state paid with
+  | nil =>
+    cases computed
+    exact ⟨by simp, by simp⟩
+  | cons block rest ih =>
+    simp only [stateTransitionSlashingIndices, bind_ok_iff, pure, Except.pure,
+      Except.ok.injEq, Prod.mk.injEq] at computed
+    obtain ⟨middle, firstOk, ⟨last, tail⟩, tailOk, rfl, rfl⟩ := computed
+    obtain ⟨unique, flags⟩ := ih (stateTransition_invariant before holds firstOk).1 tailOk
+    have kept : ∀ index, slashedFlag middle index = .ok true →
+        slashedFlag last index = .ok true := by
+      intro index flag
+      exact stateTransition_chain_slashedFlag before
+        (stateTransition_invariant before holds firstOk).1
+        (stateTransitionSlashingIndices_fold tailOk) flag
+    refine ⟨List.nodup_append.mpr ⟨newlySlashedIndices_nodup _ _, unique, ?_⟩, ?_⟩
+    · intro index member other otherMember same
+      subst other
+      exact (flags index otherMember).1 (newlySlashedIndices_flags member).2
+    · intro index member
+      rcases List.mem_append.mp member with member | member
+      · exact ⟨(newlySlashedIndices_flags member).1,
+          kept index (newlySlashedIndices_flags member).2⟩
+      · exact ⟨fun flag => (flags index member).1
+          (stateTransition_slashedFlag before holds firstOk flag), (flags index member).2⟩
+
 end EthLib.Consensus

@@ -430,6 +430,22 @@ theorem initiateValidatorExit_effectiveBalance {config : Config}
     exact ⟨validator, { validator with exitEpoch, withdrawableEpoch }, found,
       getValidator_setValidator_self foundQueued _, rfl⟩
 
+/-- Starting an exit preserves the effective balance at every registry index. -/
+theorem initiateValidatorExit_effectiveBalance_query {config : Config}
+    {state after : BeaconState preset fork} {index : ValidatorIndex}
+    (computed : initiateValidatorExit config state index = .ok after) (other : ValidatorIndex) :
+    (getValidator after other).map (·.effectiveBalance) =
+      (getValidator state other).map (·.effectiveBalance) := by
+  obtain ⟨validator, found, ⟨_, rfl⟩ | ⟨_, queued, exitEpoch, withdrawableEpoch,
+    queue, _, rfl⟩⟩ := initiateValidatorExit_ok computed
+  · rfl
+  have same := getValidator_of_validators_eq (exitQueue_validators queue).1
+  by_cases equal : other = index
+  · subst other
+    have foundQueued : getValidator queued index = .ok validator := (same index).trans found
+    simp only [getValidator_setValidator_self foundQueued, found, Except.map]
+  · rw [getValidator_setValidator_of_ne equal, same]
+
 /-- A Phase 0 slashing pays exactly one quotient of the validator it actually slashes.
 
 The two successful balance credits retain their actual recipient indices and amounts. -/
@@ -488,6 +504,35 @@ theorem slashValidator_slashedFlag {config : Config} {state after : BeaconState 
       Except.map, marked]
   · rw [slashedFlag, getValidator_of_validators_eq same, getValidator_setValidator_of_ne distinct]
     exact slashedFlag_initiateValidatorExit exitedOk other
+
+/-- Slashing preserves all effective balances, including the validator it penalizes.
+
+The immediate penalty lowers actual balance, and an epoch update changes effective balance. -/
+theorem slashValidator_effectiveBalance_query {config : Config}
+    {state after : BeaconState preset fork}
+    {slashedIndex : ValidatorIndex} {whistleblowerIndex : Option ValidatorIndex}
+    (computed : slashValidator config state slashedIndex whistleblowerIndex = .ok after)
+    (other : ValidatorIndex) :
+    (getValidator after other).map (·.effectiveBalance) =
+      (getValidator state other).map (·.effectiveBalance) := by
+  unfold slashValidator at computed
+  simp only [bind_ok_iff, liftArith, mapError_ok_iff] at computed
+  obtain ⟨exited, exitedOk, validator, found, withdrawable, _, _, _, _, _, _, lowered, _, _, _, _,
+    _, raised, _, final, done⟩ := computed
+  let marked : Validator :=
+    { validator with
+      slashed := true, withdrawableEpoch := max validator.withdrawableEpoch withdrawable }
+  have same := (slashValidator_last done).1.trans ((increaseBalance_validators final).trans
+    ((increaseBalance_validators raised).trans (decreaseBalance_validators lowered)))
+  replace same : after.validators = (exited.setValidator slashedIndex.toNat marked).validators :=
+    same
+  rw [getValidator_of_validators_eq same]
+  have saved := initiateValidatorExit_effectiveBalance_query exitedOk other
+  by_cases equal : other = slashedIndex
+  · subst other
+    simpa only [getValidator_setValidator_self found, found, Except.map, marked] using saved
+  · rw [getValidator_setValidator_of_ne equal]
+    exact saved
 
 /-- Slashing preserves past committee activity, although it removes the validator from tallies.
 
