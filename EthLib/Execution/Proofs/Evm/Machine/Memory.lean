@@ -13,6 +13,11 @@ public import EthLib.Execution.Proofs.Evm.Gas.Memory
 - A write within memory sets each byte of its range and keeps every other byte.
 - Growth keeps every byte, and a read gives the bytes of its range.
 - Growth by no byte, and a write or a read of a whole memory from offset 0, give simple forms.
+- A read of a range that a write does not touch gives the bytes before the write.
+- A read across two adjacent writes gives the two values in order.
+- A read that ends where a write ends gives the bytes before the write, then the value.
+- Two writes to disjoint ranges commute.
+- A read across two adjacent writes in either order gives the values in order.
 -/
 
 @[expose] public section
@@ -225,5 +230,95 @@ theorem memoryReadBytes_whole {memory : ByteArray} :
   · simp
   · rename_i hi
     rw [Base.byteAt_of_size_le (by omega)]
+
+/-- A read of a range that a write within memory does not touch gives the bytes before the write.
+
+The ranges are disjoint: the read ends before the write starts, or starts after it ends. -/
+theorem memoryReadBytes_memoryWrite_of_disjoint {memory value : ByteArray} {start size s : Nat}
+    (hw : s + value.size ≤ memory.size) (hd : start + size ≤ s ∨ s + value.size ≤ start) :
+    memoryReadBytes (memoryWrite memory s value) start size =
+      memoryReadBytes memory start size := by
+  have hs : (memoryWrite memory s value).size = memory.size := size_memoryWrite hw
+  unfold memoryReadBytes
+  split
+  · rfl
+  apply eq_of_byteAt (by simp [hs])
+  intro i
+  rw [byteAt_extract, byteAt_extract, hs]
+  split
+  · rw [byteAt_memoryWrite hw, ite_eq_right (by omega)]
+  · rfl
+
+/-- A read across two adjacent writes within memory gives the two values in order. -/
+theorem memoryReadBytes_memoryWrite_memoryWrite {memory a b : ByteArray} {s : Nat}
+    (hw : s + a.size + b.size ≤ memory.size) :
+    memoryReadBytes (memoryWrite (memoryWrite memory s a) (s + a.size) b) s (a.size + b.size) =
+      a ++ b := by
+  have h1 : (memoryWrite memory s a).size = memory.size := size_memoryWrite (by omega)
+  have h2 : (memoryWrite (memoryWrite memory s a) (s + a.size) b).size = memory.size := by
+    rw [size_memoryWrite (by omega), h1]
+  apply eq_of_byteAt
+  · rw [size_memoryReadBytes (by omega), ByteArray.size_append]
+  intro i
+  rw [byteAt_memoryReadBytes (by omega), byteAt_memoryWrite (by omega),
+    byteAt_memoryWrite (by omega), byteAt_append]
+  by_cases hi : i < a.size
+  · rw [ite_eq_left (by omega), ite_eq_right (by omega), ite_eq_left (by omega), ite_eq_left hi]
+    congr 1
+    omega
+  · by_cases hj : i < a.size + b.size
+    · rw [ite_eq_left hj, ite_eq_left (by omega), ite_eq_right hi]
+      congr 1
+      omega
+    · rw [ite_eq_right hj, ite_eq_right hi, byteAt_of_size_le (by omega)]
+
+/-- A read from `k` bytes before a write to its end gives those bytes, then the value.
+
+The write must lie within memory. -/
+theorem memoryReadBytes_memoryWrite_eq_append {memory value : ByteArray} {s k : Nat}
+    (hw : s + k + value.size ≤ memory.size) :
+    memoryReadBytes (memoryWrite memory (s + k) value) s (k + value.size) =
+      memoryReadBytes memory s k ++ value := by
+  have hs : (memoryWrite memory (s + k) value).size = memory.size := size_memoryWrite hw
+  apply eq_of_byteAt
+  · rw [size_memoryReadBytes (by omega), ByteArray.size_append, size_memoryReadBytes (by omega)]
+  · intro i
+    rw [byteAt_memoryReadBytes (by omega), byteAt_memoryWrite hw, byteAt_append,
+      size_memoryReadBytes (by omega)]
+    by_cases hi : i < k
+    · rw [ite_eq_left (by omega), ite_eq_left hi, byteAt_memoryReadBytes (by omega),
+        ite_eq_right (by omega), ite_eq_left hi]
+    · rw [ite_eq_right hi]
+      by_cases hj : i < k + value.size
+      · rw [ite_eq_left hj, ite_eq_left (by omega)]
+        congr 1
+        omega
+      · rw [ite_eq_right hj, byteAt_of_size_le (by omega)]
+
+/-- Two writes within memory to disjoint ranges give the same memory in either order. -/
+theorem memoryWrite_comm_of_disjoint {memory a b : ByteArray} {s t : Nat}
+    (ha : s + a.size ≤ memory.size) (hb : t + b.size ≤ memory.size)
+    (hd : s + a.size ≤ t ∨ t + b.size ≤ s) :
+    memoryWrite (memoryWrite memory s a) t b = memoryWrite (memoryWrite memory t b) s a := by
+  have hsa : (memoryWrite memory s a).size = memory.size := size_memoryWrite ha
+  have htb : (memoryWrite memory t b).size = memory.size := size_memoryWrite hb
+  apply eq_of_byteAt
+  · rw [size_memoryWrite (by omega), hsa, size_memoryWrite (by omega), htb]
+  intro i
+  rw [byteAt_memoryWrite (by omega), byteAt_memoryWrite ha, byteAt_memoryWrite (by omega),
+    byteAt_memoryWrite hb]
+  by_cases hi : t ≤ i ∧ i < t + b.size
+  · rw [ite_eq_left hi, ite_eq_right (by omega), ite_eq_left hi]
+  · rw [ite_eq_right hi, ite_eq_right hi]
+
+/-- A read across two adjacent writes within memory, made from the higher one, gives both values.
+
+The read gives the lower value, then the higher one. -/
+theorem memoryReadBytes_memoryWrite_memoryWrite_rev {memory a b : ByteArray} {s : Nat}
+    (hw : s + a.size + b.size ≤ memory.size) :
+    memoryReadBytes (memoryWrite (memoryWrite memory (s + a.size) b) s a) s (a.size + b.size) =
+      a ++ b := by
+  rw [← memoryWrite_comm_of_disjoint (by omega) (by omega) (.inl (Nat.le_refl _))]
+  exact memoryReadBytes_memoryWrite_memoryWrite hw
 
 end EthLib.Execution.Evm
