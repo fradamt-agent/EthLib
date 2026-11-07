@@ -174,6 +174,20 @@ def FinalityCollisionFound (ss : List (FinalityState p)) (bs : List (FinalityBlo
   ∃ x y, findMessageCollision (finalityMessages ss bs) (finalityMessages ss bs) = some (x, y) ∧
     MessageCollision x y
 
+/-- An observed state has zero SSZ root, with the actual SHA-256 input that produces zero.
+
+Slot caching uses zero as the unfilled header-state-root sentinel.
+
+This alternative records the cryptographic event instead of assuming it cannot occur. -/
+def FinalityZeroRootFound (ss : List (FinalityState p)) (bs : List (FinalityBlock p)) : Prop :=
+  ∃ s ∈ ss, ∃ tree message,
+    hashTreeRoot s = .ok (Vector.replicate 32 0) ∧
+    valueTree (desc (FinalityState p)) (toValue s) = .ok tree ∧
+    message ∈ tree.messages ∧ message ∈ finalityMessages ss bs ∧
+    message.size = 64 ∧
+    Cryptography.Hash.Sha256.hash (ByteArray.mk message) =
+      ByteArray.mk (Vector.replicate 32 0).toArray
+
 /-- A concrete target query and its raw, floor-corrected two-thirds inequality. -/
 def FinalityThreshold (s : FinalityState p) (e : Epoch) (is : List ValidatorIndex) : Prop :=
   ∃ attestations,
