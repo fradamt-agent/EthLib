@@ -91,8 +91,10 @@ public import EthLib.Consensus.Proofs.Transition.Operations
 public import EthLib.Consensus.Proofs.Transition.ParentPayload
 public import EthLib.Consensus.Proofs.Transition.Payload
 public import EthLib.Consensus.Proofs.Transition.Provenance.Ancestry
+public import EthLib.Consensus.Proofs.Transition.Provenance.Justification
 public import EthLib.Consensus.Proofs.Transition.Provenance.Kept
 public import EthLib.Consensus.Proofs.Transition.Provenance.Roots
+public import EthLib.Consensus.Proofs.Transition.Provenance.Weighing
 public import EthLib.Consensus.Proofs.Transition.Reachable
 public import EthLib.Consensus.Proofs.Transition.Requests
 public import EthLib.Consensus.Proofs.Transition.Slot
