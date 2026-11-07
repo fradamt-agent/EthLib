@@ -492,10 +492,11 @@ structure FrozenStep (state after : BeaconState preset fork) : Prop where
   fresh : after.validators.data.size < 2 ^ 64 → ∀ (position : Nat) (later : Validator),
     state.validators.data.size ≤ position → after.validators.data[position]? = some later →
       later.effectiveBalance = 0
+  deposit : after.depositBalanceToConsume = state.depositBalanceToConsume
 
 theorem FrozenStep.refl (state : BeaconState preset fork) : FrozenStep state state :=
   ⟨rfl, Nat.le_refl _, fun _ _ validator found => ⟨validator, found, .refl _ _⟩, fun _ => rfl,
-    fun _ _ _ outside found => absurd (Array.getElem?_eq_some_iff.mp found).1 (by omega)⟩
+    fun _ _ _ outside found => absurd (Array.getElem?_eq_some_iff.mp found).1 (by omega), rfl⟩
 
 theorem FrozenStep.trans {first second third : BeaconState preset fork}
     (one : FrozenStep first second) (two : FrozenStep second third) :
@@ -522,6 +523,7 @@ theorem FrozenStep.trans {first second third : BeaconState preset fork}
       rw [keep.effectiveBalance]
       exact one.fresh middleSmall position middle outside middleFound
     · exact two.fresh small position later (by omega) found
+  deposit := two.deposit.trans one.deposit
 
 /-- The validators that start to exit over two frozen steps in turn.
 
@@ -591,9 +593,11 @@ theorem FrozenStep.of_size (slot : after.slot = state.slot)
         after.validators.data[position]? = some later ∧
           KeepsStake (getCurrentEpoch state) validator later)
     (total : after.validators.data.size < 2 ^ 64 →
-      getTotalActiveBalance after = getTotalActiveBalance state) : FrozenStep state after :=
+      getTotalActiveBalance after = getTotalActiveBalance state)
+    (deposit : after.depositBalanceToConsume = state.depositBalanceToConsume) :
+    FrozenStep state after :=
   ⟨slot, Nat.le_of_eq size.symm, kept, total, fun _ _ _ outside found =>
-    absurd (Array.getElem?_eq_some_iff.mp found).1 (by omega)⟩
+    absurd (Array.getElem?_eq_some_iff.mp found).1 (by omega), deposit⟩
 
 /-- A frozen step keeps the churns and every effective balance within its bounds.
 
@@ -663,11 +667,12 @@ theorem trans {first second third : BeaconState preset fork}
     omega
 
 /-- A step that keeps the slot, the registry and both queues. -/
-theorem of_eq (same : (after.slot, after.validators, churnQueues after) =
-      (state.slot, state.validators, churnQueues state)) :
+theorem of_eq (same : (after.slot, after.validators, churnQueues after,
+        after.depositBalanceToConsume) =
+      (state.slot, state.validators, churnQueues state, state.depositBalanceToConsume)) :
     ChargedStep config capExit capConsolidation largest electra state after := by
   simp only [Prod.mk.injEq] at same
-  obtain ⟨slot, validators, queues⟩ := same
+  obtain ⟨slot, validators, queues, deposit⟩ := same
   have exits : exitsBetween state after = exitsBetween state state := by
     funext lower upTo
     simp only [exitsBetween, validators]
@@ -681,7 +686,7 @@ theorem of_eq (same : (after.slot, after.validators, churnQueues after) =
     simp only [firstExitEpoch, getCurrentEpoch, slot]
   have frozen : FrozenStep state after := .of_size slot (by rw [validators])
     (fun _ _ validator found => ⟨validator, by rw [validators]; exact found, .refl _ _⟩)
-    (fun _ => total)
+    (fun _ => total) deposit
   refine ⟨frozen, fun small within => ⟨.of_frozen frozen small within
     (exitLeft ▸ within.exitLeft) (consolidationLeft ▸ within.consolidationLeft),
     fun lower upTo => ?_⟩⟩
@@ -727,6 +732,7 @@ variable {capExit capConsolidation largest : Nat} {electra : .pectra ≤ fork}
 
 Each validator keeps its stake. -/
 theorem of_keeps (slot : after.slot = state.slot) (queues : churnQueues after = churnQueues state)
+    (deposit : after.depositBalanceToConsume = state.depositBalanceToConsume)
     (size : after.validators.data.size = state.validators.data.size)
     (keeps : ∀ (position : Nat) (validator : Validator),
       state.validators.data[position]? = some validator → ∃ later,
@@ -752,7 +758,7 @@ theorem of_keeps (slot : after.slot = state.slot) (queues : churnQueues after = 
   have frozen : FrozenStep state after := .of_size slot size
     (fun _ position validator found =>
       have ⟨later, laterFound, keep, _⟩ := keeps position validator found
-      ⟨later, laterFound, keep⟩) (fun _ => total)
+      ⟨later, laterFound, keep⟩) (fun _ => total) deposit
   refine ⟨frozen, fun small within => ⟨.of_frozen frozen small within
     (exitLeft ▸ within.exitLeft) (consolidationLeft ▸ within.consolidationLeft),
     fun lower upTo => ?_⟩⟩
@@ -774,7 +780,8 @@ theorem setValidator {index : ValidatorIndex} {old validator : Validator}
       cases found
       exact read
     · cases found
-  refine of_keeps rfl rfl (by simp [BeaconState.putValidator]) fun position other otherFound => ?_
+  refine of_keeps rfl rfl rfl (by simp [BeaconState.putValidator])
+    fun position other otherFound => ?_
   simp only [BeaconState.putValidator, RootedForkList.data_set, Array.getElem?_set]
   split
   · rename_i equal
@@ -841,6 +848,7 @@ The validator had no exit epoch, and keeps its stake. -/
 theorem ChargedStep.of_put {capExit capConsolidation largest : Nat} {electra : .pectra ≤ fork}
     {mid : BeaconState preset fork} {index : Nat} {old validator : Validator}
     (validators : mid.validators = state.validators) (slot : mid.slot = state.slot)
+    (deposit : mid.depositBalanceToConsume = state.depositBalanceToConsume)
     (inside : index < mid.validators.data.size)
     (found : state.validators.data[index]? = some old)
     (keep : KeepsStake (getCurrentEpoch state) old validator)
@@ -873,7 +881,7 @@ theorem ChargedStep.of_put {capExit capConsolidation largest : Nat} {electra : .
     getTotalActiveBalance_of_keeps slot (by simp [BeaconState.putValidator, validators]) keeps
   have frozen : FrozenStep state (mid.putValidator index inside validator) :=
     .of_size slot (by simp [BeaconState.putValidator, validators]) (fun _ => keeps)
-      (fun _ => total)
+      (fun _ => total) deposit
   refine ⟨frozen, fun small within => ?_⟩
   obtain ⟨exitLeft, consolidationLeft, rises⟩ := spent within
   refine ⟨.of_frozen frozen small within exitLeft consolidationLeft, fun lower upTo => ?_⟩
@@ -931,7 +939,7 @@ theorem ChargedStep.initiateValidatorExit {capExit capConsolidation largest : Na
     omega
   refine ChargedStep.of_put (state := state) (mid := { state with
     exitBalanceToConsume := fun _ => left, earliestExitEpoch := fun _ => exitEpoch })
-    rfl rfl inside read ?_ far fun within => ?_
+    rfl rfl rfl inside read ?_ far fun within => ?_
   · -- The validator leaves after the current epoch, so its activity now is the same.
     refine ⟨rfl, ?_, .inr far⟩
     have below := exitEpoch.toNat_lt
@@ -957,14 +965,16 @@ theorem ChargedStep.initiateValidatorExit {capExit capConsolidation largest : Na
 All its facts hold only below `2^64`. -/
 theorem ChargedStep.of_big {capExit capConsolidation largest : Nat} {electra : .pectra ≤ fork}
     (big : 2 ^ 64 ≤ state.validators.data.size) (slot : after.slot = state.slot)
-    (size : state.validators.data.size ≤ after.validators.data.size) :
+    (size : state.validators.data.size ≤ after.validators.data.size)
+    (deposit : after.depositBalanceToConsume = state.depositBalanceToConsume) :
     ChargedStep config capExit capConsolidation largest electra state after :=
   ⟨⟨slot, size, fun small => absurd small (by omega), fun small => absurd small (by omega),
-    fun small => absurd small (by omega)⟩, fun small => absurd small (by omega)⟩
+    fun small => absurd small (by omega), deposit⟩, fun small => absurd small (by omega)⟩
 
 /-- A request that spends churn and starts no exit, such as a partial withdrawal. -/
 theorem ChargedStep.of_rise {capExit capConsolidation largest : Nat} {electra : .pectra ≤ fork}
     (validators : after.validators = state.validators) (slot : after.slot = state.slot)
+    (deposit : after.depositBalanceToConsume = state.depositBalanceToConsume)
     (spent : ChurnsWithin config capExit capConsolidation largest state electra →
       (after.exitBalanceToConsume electra).toNat ≤ capExit ∧
         (after.consolidationBalanceToConsume electra).toNat ≤ capConsolidation ∧
@@ -980,7 +990,7 @@ theorem ChargedStep.of_rise {capExit capConsolidation largest : Nat} {electra : 
     exact exitsBetween_self state lower upTo
   have frozen : FrozenStep state after := .of_size slot (by rw [validators])
     (fun _ _ validator found => ⟨validator, by rw [validators]; exact found, .refl _ _⟩)
-    (fun _ => total)
+    (fun _ => total) deposit
   refine ⟨frozen, fun small within => ?_⟩
   obtain ⟨exitLeft, consolidationLeft, rises⟩ := spent within
   exact ⟨.of_frozen frozen small within exitLeft consolidationLeft, fun lower upTo => by
@@ -1003,7 +1013,7 @@ theorem ChargedStep.requestPartialWithdrawal {capExit capConsolidation largest :
       computeExitEpochAndUpdateChurn_eq churned
     obtain ⟨-, firstValue⟩ := computeActivationExitEpoch_ok_iff.mp firstOk
     have firstIs : firstEpoch.toNat = firstExitEpoch preset state := firstValue
-    refine ChargedStep.of_rise rfl rfl fun within => ?_
+    refine ChargedStep.of_rise rfl rfl rfl fun within => ?_
     have churnLe := within.exitChurn churn churnOk
     obtain ⟨leftLe, _, rises⟩ := churnQueue_potential within.exitLeft churnLe placed
     refine ⟨leftLe, within.consolidationLeft, fun lower upTo => ?_⟩
@@ -1045,7 +1055,7 @@ theorem ChargedStep.queueConsolidation {capExit capConsolidation largest : Nat}
         { middle with pendingConsolidations := fun _ => ‹_› } := fun _ => .of_eq rfl
   refine ChargedStep.trans ?_ (lastStep (fork' := fork) _)
   by_cases big : 2 ^ 64 ≤ state.validators.data.size
-  · exact .of_big big rfl (by simp [BeaconState.putValidator])
+  · exact .of_big big rfl (by simp [BeaconState.putValidator]) rfl
   have exact : sourcePosition.toUInt64.toNat = sourcePosition := by
     rw [Nat.toUInt64_eq, UInt64.toNat_ofNat_of_lt' (show sourcePosition < 2 ^ 64 by
       have := (Array.getElem?_eq_some_iff.mp found).1
@@ -1064,7 +1074,7 @@ theorem ChargedStep.queueConsolidation {capExit capConsolidation largest : Nat}
   refine ChargedStep.of_put (state := state) (mid := { state with
     consolidationBalanceToConsume := fun _ => left,
     earliestConsolidationEpoch := fun _ => exitEpoch })
-    rfl rfl inside read ?_ far fun within => ?_
+    rfl rfl rfl inside read ?_ far fun within => ?_
   · -- The source leaves after the current epoch, so its activity now is the same.
     refine ⟨rfl, ?_, .inr far⟩
     have below := exitEpoch.toNat_lt
@@ -1091,7 +1101,8 @@ theorem ChargedStep.of_push {capExit capConsolidation largest : Nat} {electra : 
     (pushed : after.validators.data = state.validators.data.push validator)
     (inactive : isActiveValidator validator (getCurrentEpoch state) = false)
     (zero : validator.effectiveBalance = 0)
-    (slot : after.slot = state.slot) (queues : churnQueues after = churnQueues state) :
+    (slot : after.slot = state.slot) (queues : churnQueues after = churnQueues state)
+    (deposit : after.depositBalanceToConsume = state.depositBalanceToConsume) :
     ChargedStep config capExit capConsolidation largest electra state after := by
   have keeps : ∀ (position : Nat) (other : Validator),
       state.validators.data[position]? = some other →
@@ -1120,7 +1131,7 @@ theorem ChargedStep.of_push {capExit capConsolidation largest : Nat} {electra : 
       split at found
       · cases found
         exact zero
-      · exact absurd (Array.getElem?_eq_some_iff.mp found).1 (by omega)⟩
+      · exact absurd (Array.getElem?_eq_some_iff.mp found).1 (by omega), deposit⟩
   refine ⟨frozen, fun small within => ⟨.of_frozen frozen small within
     (exitLeft ▸ within.exitLeft) (consolidationLeft ▸ within.consolidationLeft),
     fun lower upTo => ?_⟩⟩
@@ -1274,7 +1285,7 @@ theorem chargedStep_addValidatorToRegistry {pubkey : BLSPubkey}
     simp only [liftAccessor_ok, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at computed
     obtain ⟨validators, validatorsOk, _, _, _, _, _, _, _, _, rfl⟩ := computed
     by_cases big : 2 ^ 64 ≤ state.validators.data.size
-    · refine .of_big big rfl ?_
+    · refine .of_big big rfl ?_ rfl
       have := setOrAppendRooted_size validatorsOk
       simp only at this ⊢
       split at this <;> omega
@@ -1283,7 +1294,7 @@ theorem chargedStep_addValidatorToRegistry {pubkey : BLSPubkey}
           subst zero
           simp only [getValidatorFromDeposit, UInt64.zero_mod, UInt64.sub_self, UInt64.min_def,
             UInt64.zero_le, ↓reduceIte])
-        rfl rfl
+        rfl rfl rfl
   · rename_i notAltair
     exact absurd (Nat.le_trans (by decide) electra) notAltair
 
@@ -2426,6 +2437,53 @@ def LeftBounded (capExit capConsolidation : Nat) (forked : ForkedBeaconState pre
   ∀ electra : .pectra ≤ forked.fork,
     (forked.state.exitBalanceToConsume electra).toNat ≤ capExit ∧
       (forked.state.consolidationBalanceToConsume electra).toNat ≤ capConsolidation
+
+/-- A cap on every churn of exits, from a bound on the total active balance.
+
+It takes the larger of two shares, one for the forks before Gloas and one for those from Gloas.
+
+The quotients are `CHURN_LIMIT_QUOTIENT` and `CHURN_LIMIT_QUOTIENT_GLOAS`. -/
+def exitCapOfTotal (config : Config) (total : Nat) : Nat :=
+  max config.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA.toNat
+    (max (total / config.CHURN_LIMIT_QUOTIENT.toNat)
+      (total / config.CHURN_LIMIT_QUOTIENT_GLOAS.toNat))
+
+/-- A cap on every churn of consolidations, from a bound on the total active balance.
+
+Before Gloas the churn of consolidations is a part of the whole churn.
+
+From Gloas it is the share `CONSOLIDATION_CHURN_LIMIT_QUOTIENT`. -/
+def consolidationCapOfTotal (config : Config) (total : Nat) : Nat :=
+  max (max config.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA.toNat
+      (total / config.CHURN_LIMIT_QUOTIENT.toNat))
+    (total / config.CONSOLIDATION_CHURN_LIMIT_QUOTIENT.toNat)
+
+/-- A bound on the total active balance of a state bounds both of its churns, at every fork. -/
+theorem ChurnsBounded.of_total {largest total : Nat} {forked : ForkedBeaconState preset}
+    (totalLe : ∀ balance, getTotalActiveBalance forked.state = .ok balance →
+      balance.toNat ≤ total)
+    (effective : ∀ (position : Nat) (validator : Validator),
+      forked.state.validators.data[position]? = some validator →
+        validator.effectiveBalance.toNat ≤ largest) :
+    ChurnsBounded config (exitCapOfTotal config total) (consolidationCapOfTotal config total)
+      largest forked := by
+  intro _
+  refine ⟨fun churn computed => ?_, fun churn computed => ?_, effective⟩
+  · obtain ⟨balance, balanceOk⟩ := exitChurnLimit_total computed
+    have le := exitChurnLimit_le_total balanceOk computed
+    have share := totalLe balance balanceOk
+    -- A share of a smaller balance is no larger.
+    have one := Nat.div_le_div_right (c := config.CHURN_LIMIT_QUOTIENT.toNat) share
+    have two := Nat.div_le_div_right (c := config.CHURN_LIMIT_QUOTIENT_GLOAS.toNat) share
+    unfold exitCapOfTotal
+    split at le <;> omega
+  · obtain ⟨balance, balanceOk⟩ := getConsolidationChurnLimit_total computed
+    have le := getConsolidationChurnLimit_le_total balanceOk computed
+    have share := totalLe balance balanceOk
+    have one := Nat.div_le_div_right (c := config.CHURN_LIMIT_QUOTIENT.toNat) share
+    have two := Nat.div_le_div_right (c := config.CONSOLIDATION_CHURN_LIMIT_QUOTIENT.toNat) share
+    unfold consolidationCapOfTotal
+    split at le <;> omega
 
 /-- An upgrade from Electra on keeps the registry, the slot and both queues. -/
 theorem upgradeNext_keeps {pre : ForkedBeaconState preset}
