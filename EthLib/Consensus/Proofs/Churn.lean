@@ -29,6 +29,16 @@ So their difference does not wrap.
 From Gloas, the churn of exits is a whole number of increments.
 
 The churn of activations is the churn of exits up to a maximum, and pending deposits take it.
+
+Requests in turn may each have their own churn, since they come from different states.
+
+Take a cap on every churn and on the churn left at the start.
+
+The churn left then stays within the cap.
+
+The balance placed up to an epoch is at most the churn left, plus one cap per later epoch.
+
+In a range of epochs, every request but the first takes at most one cap per epoch.
 -/
 
 @[expose] public section
@@ -332,6 +342,498 @@ theorem computeExitEpochAndUpdateChurn_first {config : Config}
   have placed := UInt64.le_iff_toNat_le.mp (churnQueue_spend queue).1
   rw [UInt64.max_def] at placed
   split at placed <;> rename_i order <;> simp only [UInt64.le_iff_toNat_le] at order ⊢ <;>
+    omega
+
+/-! ## Requests in turn, each with its own churn
+
+The requests to one queue come from different states.
+
+So the first epoch allowed and the churn of an epoch may change from one request to the next.
+
+Take a cap that bounds the churn of every request, and the churn left at the start.
+
+Each epoch then adds at most one cap to the churn available, since the queue opens it once.
+
+So the balance placed up to an epoch is at most the churn left, plus one cap per later epoch.
+
+The churn left stays at most the cap, so this holds again from every later state of the queue.
+
+In a range of `n` epochs, every request but the first takes at most `n` caps.
+
+The first request in the range may also take churn from epochs before the range.
+
+The cap must bound the churn of earlier requests too, not only the current one.
+
+The churn left at an epoch comes from the request that opened it, whose churn may be larger.
+
+[EIP-7251] specifies the queue of exits and the queue of consolidations this way.
+
+[EIP-7251]: https://eips.ethereum.org/EIPS/eip-7251#consensus-layer-1
+-/
+
+/-- One request to a queue: the first epoch it may take, the churn of an epoch, and the amount.
+-/
+structure ChurnRequest where
+  firstEpoch : Epoch
+  perEpochChurn : Gwei
+  amount : Gwei
+
+/-- Requests that a queue places in turn, each with the epoch it gets.
+
+The queue starts at an earliest open epoch with some churn left there.
+
+It ends at the epoch and the churn left of its last request. -/
+inductive ChurnTrace : Epoch → Gwei → List (ChurnRequest × Epoch) → Epoch → Gwei → Prop where
+  | nil (earliestEpoch : Epoch) (churnLeft : Gwei) :
+    ChurnTrace earliestEpoch churnLeft [] earliestEpoch churnLeft
+  | cons {earliestEpoch churnLeft epoch left lastEpoch lastLeft : UInt64}
+    {request : ChurnRequest} {rest : List (ChurnRequest × Epoch)}
+    (placed : churnQueue earliestEpoch request.firstEpoch request.perEpochChurn churnLeft
+      request.amount = .ok (epoch, left))
+    (tail : ChurnTrace epoch left rest lastEpoch lastLeft) :
+    ChurnTrace earliestEpoch churnLeft ((request, epoch) :: rest) lastEpoch lastLeft
+
+/-- The balance of the requests whose epoch passes a test, in Gwei. -/
+def placedBalance (placements : List (ChurnRequest × Epoch)) (within : Epoch → Bool) : Nat :=
+  ((placements.filter fun placement => within placement.2).map
+    fun placement => placement.1.amount.toNat).sum
+
+/-- One request, bounded by a cap.
+
+The churn left after it stays at most the cap, and the queue never moves back.
+
+The amount plus the churn left after it, at the epoch it gets, is at most the churn left before.
+
+Each epoch that the queue moves past adds one cap to that bound. -/
+theorem churnQueue_cap {earliestEpoch firstEpoch perEpochChurn churnLeft amount epoch left :
+    UInt64} {cap : Nat} (leftLe : churnLeft.toNat ≤ cap) (churnLe : perEpochChurn.toNat ≤ cap)
+    (computed :
+      churnQueue earliestEpoch firstEpoch perEpochChurn churnLeft amount = .ok (epoch, left)) :
+    left.toNat ≤ cap ∧ earliestEpoch ≤ epoch ∧
+      amount.toNat + left.toNat + earliestEpoch.toNat * cap ≤
+        churnLeft.toNat + epoch.toNat * cap := by
+  obtain ⟨placed, spent, last⟩ := churnQueue_spend computed
+  have earliestLe : earliestEpoch ≤ max earliestEpoch firstEpoch := by
+    rw [UInt64.max_def]
+    split
+    · assumption
+    · exact UInt64.le_refl _
+  refine ⟨?_, UInt64.le_trans earliestLe placed, ?_⟩ <;>
+    generalize max earliestEpoch firstEpoch = first at placed spent last earliestLe <;>
+    have placedNat := UInt64.le_iff_toNat_le.mp placed <;>
+    have earliestNat := UInt64.le_iff_toNat_le.mp earliestLe
+  · -- The last epoch keeps at most the churn available there, or less than one churn.
+    rcases last with rfl | below
+    · simp only [Nat.sub_self, Nat.zero_mul, Nat.add_zero] at spent
+      split at spent <;> omega
+    · omega
+  · -- Each added epoch contributes at most one cap.
+    have added := Nat.mul_le_mul_left (epoch.toNat - first.toNat) churnLe
+    have whole : first.toNat * cap + (epoch.toNat - first.toNat) * cap = epoch.toNat * cap := by
+      rw [← Nat.add_mul, Nat.add_sub_cancel' placedNat]
+    split at spent
+    · -- A new epoch opens with its churn, at most one cap past the earliest open epoch.
+      rename_i opened
+      have opens : earliestEpoch.toNat * cap + cap ≤ first.toNat * cap := by
+        have := Nat.mul_le_mul_right cap (UInt64.lt_iff_toNat_lt.mp opened)
+        rwa [Nat.succ_mul] at this
+      omega
+    · -- The earliest open epoch is the first one, with the churn left there.
+      rename_i stays
+      have same : first = earliestEpoch :=
+        UInt64.le_antisymm (UInt64.not_lt.mp stays) earliestLe
+      subst same
+      omega
+
+/-- Each request takes an epoch no earlier than the queue's earliest open epoch.
+
+The queue never moves back, so the last request's epoch bounds them all. -/
+theorem ChurnTrace.epochs {earliestEpoch churnLeft lastEpoch lastLeft : UInt64}
+    {placements : List (ChurnRequest × Epoch)}
+    (trace : ChurnTrace earliestEpoch churnLeft placements lastEpoch lastLeft) :
+    earliestEpoch ≤ lastEpoch ∧
+      ∀ placement ∈ placements, earliestEpoch ≤ placement.2 ∧ placement.2 ≤ lastEpoch := by
+  induction trace with
+  | nil => exact ⟨UInt64.le_refl _, fun _ member => nomatch member⟩
+  | cons placed _ more =>
+    have stays := (churnQueue_cap (cap := 2 ^ 64) (Nat.le_of_lt (UInt64.toNat_lt _))
+      (Nat.le_of_lt (UInt64.toNat_lt _)) placed).2.1
+    refine ⟨UInt64.le_trans stays more.1, fun placement member => ?_⟩
+    rcases List.mem_cons.mp member with rfl | member
+    · exact ⟨stays, more.1⟩
+    · have later := more.2 placement member
+      exact ⟨UInt64.le_trans stays later.1, later.2⟩
+
+/-- The churn left stays at most a cap that bounds it at the start and every request's churn. -/
+theorem ChurnTrace.left_le {earliestEpoch churnLeft lastEpoch lastLeft : UInt64}
+    {placements : List (ChurnRequest × Epoch)} {cap : Nat}
+    (trace : ChurnTrace earliestEpoch churnLeft placements lastEpoch lastLeft)
+    (leftLe : churnLeft.toNat ≤ cap)
+    (churns : ∀ placement ∈ placements, placement.1.perEpochChurn.toNat ≤ cap) :
+    lastLeft.toNat ≤ cap := by
+  induction trace with
+  | nil => exact leftLe
+  | cons placed _ more =>
+    exact more (churnQueue_cap leftLe (churns _ List.mem_cons_self) placed).1
+      fun placement member => churns placement (List.mem_cons_of_mem _ member)
+
+/-- The balance placed up to an epoch, bounded by a cap on the churn.
+
+It is at most the churn left at the start, plus one cap per epoch past the earliest open one.
+
+An amount counts at the epoch it gets, even when it takes churn from earlier epochs. -/
+theorem ChurnTrace.placedBalance_le {earliestEpoch churnLeft lastEpoch lastLeft : UInt64}
+    {placements : List (ChurnRequest × Epoch)} {cap : Nat}
+    (trace : ChurnTrace earliestEpoch churnLeft placements lastEpoch lastLeft)
+    (leftLe : churnLeft.toNat ≤ cap)
+    (churns : ∀ placement ∈ placements, placement.1.perEpochChurn.toNat ≤ cap) (upTo : Epoch) :
+    placedBalance placements (fun epoch => decide (epoch ≤ upTo)) ≤
+      churnLeft.toNat + (upTo.toNat - earliestEpoch.toNat) * cap := by
+  induction trace with
+  | nil => simp [placedBalance]
+  | @cons earliestEpoch churnLeft epoch left _ _ request rest placed tail more =>
+    obtain ⟨leftAfter, _, step⟩ := churnQueue_cap leftLe (churns _ List.mem_cons_self) placed
+    have restBound := more leftAfter fun placement member =>
+      churns placement (List.mem_cons_of_mem _ member)
+    have stays := UInt64.le_iff_toNat_le.mp (churnQueue_cap (cap := 2 ^ 64)
+      (Nat.le_of_lt (UInt64.toNat_lt _)) (Nat.le_of_lt (UInt64.toNat_lt _)) placed).2.1
+    by_cases within : epoch ≤ upTo
+    · have withinNat := UInt64.le_iff_toNat_le.mp within
+      -- The cap of each epoch from the earliest open one to the bound, split at this request.
+      have split : (upTo.toNat - earliestEpoch.toNat) * cap =
+          (upTo.toNat - epoch.toNat) * cap + (epoch.toNat - earliestEpoch.toNat) * cap := by
+        rw [← Nat.add_mul]
+        congr 1
+        omega
+      have reach : earliestEpoch.toNat * cap + (epoch.toNat - earliestEpoch.toNat) * cap =
+          epoch.toNat * cap := by
+        rw [← Nat.add_mul, Nat.add_sub_cancel' stays]
+      simp only [placedBalance, List.filter_cons, within, decide_true, ↓reduceIte, List.map_cons,
+        List.sum_cons] at restBound ⊢
+      omega
+    · -- Every later request takes this epoch or a later one, so none is up to the bound.
+      have none : rest.filter (fun placement => decide (placement.2 ≤ upTo)) = [] := by
+        refine List.filter_eq_nil_iff.mpr fun placement member => ?_
+        have later := (tail.epochs.2 placement member).1
+        simp only [decide_eq_true_eq]
+        exact fun le => within (UInt64.le_trans later le)
+      simp [placedBalance, within, none]
+
+/-- A list's sum of a function is the value at its head, plus the sum over its tail. -/
+private theorem sum_map_head_tail {α : Type} (items : List α) (value : α → Nat) :
+    (items.map value).sum = ((items.head?.map value).getD 0) + (items.tail.map value).sum := by
+  cases items <;> simp
+
+/-- The balance placed in a range of epochs, bounded by a cap on the churn.
+
+The range runs from just after `start` to `stop`, so it has `stop - start` epochs.
+
+Every request in it but the first takes at most one cap per epoch of the range.
+
+The first request may also take churn from epochs before the range.
+
+So one large amount can fill an epoch past the cap. -/
+theorem ChurnTrace.window_tail_le {earliestEpoch churnLeft lastEpoch lastLeft : UInt64}
+    {placements : List (ChurnRequest × Epoch)} {cap : Nat}
+    (trace : ChurnTrace earliestEpoch churnLeft placements lastEpoch lastLeft)
+    (leftLe : churnLeft.toNat ≤ cap)
+    (churns : ∀ placement ∈ placements, placement.1.perEpochChurn.toNat ≤ cap)
+    (start stop : Epoch) :
+    (((placements.filter fun placement =>
+        decide (start < placement.2) && decide (placement.2 ≤ stop)).tail).map
+      fun placement => placement.1.amount.toNat).sum ≤ (stop.toNat - start.toNat) * cap := by
+  induction trace with
+  | nil => simp
+  | @cons earliestEpoch churnLeft epoch left _ _ request rest placed tail more =>
+    obtain ⟨leftAfter, _, _⟩ := churnQueue_cap leftLe (churns _ List.mem_cons_self) placed
+    have restChurns : ∀ placement ∈ rest, placement.1.perEpochChurn.toNat ≤ cap :=
+      fun placement member => churns placement (List.mem_cons_of_mem _ member)
+    by_cases after : start < epoch
+    · by_cases within : epoch ≤ stop
+      · -- This request is the first in the range, and every later one is past the start.
+        have past : rest.filter (fun placement =>
+              decide (start < placement.2) && decide (placement.2 ≤ stop)) =
+            rest.filter (fun placement => decide (placement.2 ≤ stop)) := by
+          refine List.filter_congr fun placement member => ?_
+          have later := (tail.epochs.2 placement member).1
+          simp [UInt64.lt_of_lt_of_le after later]
+        have bound := tail.placedBalance_le leftAfter restChurns stop
+        have afterNat := UInt64.lt_iff_toNat_lt.mp after
+        have withinNat := UInt64.le_iff_toNat_le.mp within
+        -- The churn left here and the epochs after it fit in the epochs of the range.
+        have fits : (stop.toNat - epoch.toNat) * cap + cap ≤ (stop.toNat - start.toNat) * cap := by
+          rw [← Nat.succ_mul]
+          exact Nat.mul_le_mul_right cap (by omega)
+        simp only [List.filter_cons, after, within, decide_true, Bool.and_self, ↓reduceIte,
+          List.tail_cons, past]
+        simp only [placedBalance] at bound
+        omega
+      · -- Every request from here on is past the range.
+        have none : rest.filter (fun placement =>
+            decide (start < placement.2) && decide (placement.2 ≤ stop)) = [] := by
+          refine List.filter_eq_nil_iff.mpr fun placement member => ?_
+          have later := (tail.epochs.2 placement member).1
+          simp only [Bool.and_eq_true, decide_eq_true_eq, not_and]
+          exact fun _ le => within (UInt64.le_trans later le)
+        simp [within, none]
+    · -- This request is before the range, so the range starts with the later ones.
+      simp only [List.filter_cons, after, decide_false, Bool.false_and, Bool.false_eq_true,
+        ↓reduceIte]
+      exact more leftAfter restChurns
+
+/-- The balance placed in a range of `stop - start` epochs, bounded by a cap on the churn.
+
+It is at most one cap per epoch of the range, plus the first amount placed in the range. -/
+theorem ChurnTrace.window_le {earliestEpoch churnLeft lastEpoch lastLeft : UInt64}
+    {placements : List (ChurnRequest × Epoch)} {cap : Nat}
+    (trace : ChurnTrace earliestEpoch churnLeft placements lastEpoch lastLeft)
+    (leftLe : churnLeft.toNat ≤ cap)
+    (churns : ∀ placement ∈ placements, placement.1.perEpochChurn.toNat ≤ cap)
+    (start stop : Epoch) :
+    placedBalance placements (fun epoch => decide (start < epoch) && decide (epoch ≤ stop)) ≤
+      (stop.toNat - start.toNat) * cap +
+        (((placements.filter fun placement =>
+            decide (start < placement.2) && decide (placement.2 ≤ stop)).head?.map
+          fun placement => placement.1.amount.toNat).getD 0) := by
+  have tailLe := trace.window_tail_le leftLe churns start stop
+  simp only [placedBalance]
+  rw [sum_map_head_tail]
+  omega
+
+/-- Two traces in turn are one trace. -/
+theorem ChurnTrace.append {earliestEpoch churnLeft middleEpoch middleLeft lastEpoch lastLeft :
+    UInt64} {first second : List (ChurnRequest × Epoch)}
+    (head : ChurnTrace earliestEpoch churnLeft first middleEpoch middleLeft)
+    (tail : ChurnTrace middleEpoch middleLeft second lastEpoch lastLeft) :
+    ChurnTrace earliestEpoch churnLeft (first ++ second) lastEpoch lastLeft := by
+  induction head with
+  | nil => exact tail
+  | cons placed _ more => exact .cons placed (more tail)
+
+/-- An amount of 2048 with 256 of churn per epoch and none left takes eight epochs.
+
+All 2048 leave at the last of them, epoch 18.
+
+So one epoch receives eight times the churn, which the first amount of a range may do. -/
+theorem churnQueue_large_amount : churnQueue 10 10 256 0 2048 = .ok (18, 0) := rfl
+
+/-- Two requests to one epoch, with 256 of churn and then 128.
+
+The first opens epoch 10 with 256 and takes 56, so 200 is left.
+
+The second has only 128 of churn per epoch, but takes the 200 left at epoch 10.
+
+So epoch 10 receives 256, above the churn of the second request.
+
+A cap must bound the churn of the request that opened an epoch, not only the current churn. -/
+theorem churnTrace_carry_above_churn :
+    ChurnTrace 9 0 [(⟨10, 256, 56⟩, 10), (⟨10, 128, 200⟩, 10)] 10 0 :=
+  .cons (left := 200) rfl (.cons rfl (.nil _ _))
+
+/-! ## The queues of the state -/
+
+/-- The churn that activations and exits share is at most its configured maximum. -/
+theorem getActivationExitChurnLimit_le {config : Config} {state : BeaconState preset fork}
+    {churn : Gwei} (computed : getActivationExitChurnLimit config state = .ok churn) :
+    churn ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT := by
+  simp only [getActivationExitChurnLimit, bind_ok_iff, pure, Except.pure,
+    Except.ok.injEq] at computed
+  obtain ⟨_, _, rfl⟩ := computed
+  rw [UInt64.min_def]
+  split
+  · exact UInt64.le_refl _
+  · exact UInt64.le_of_lt (UInt64.not_le.mp ‹_›)
+
+/-- Before Gloas, the churn of exits is at most the configured maximum of activations and exits.
+-/
+theorem exitChurnLimit_le_of_lt {config : Config} {state : BeaconState preset fork}
+    {churn : Gwei} (before : fork < .glamsterdam)
+    (computed : exitChurnLimit config state = .ok churn) :
+    churn ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT := by
+  have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt before
+  simp only [exitChurnLimit, notGloas, ↓reduceIte] at computed
+  exact getActivationExitChurnLimit_le computed
+
+/-- An exit is one request to the queue of exits.
+
+Its first epoch is the activation exit epoch of the current epoch.
+
+Its churn is the churn of exits of the state.
+
+The state changes only in the earliest exit epoch and the churn left there. -/
+theorem computeExitEpochAndUpdateChurn_eq {config : Config}
+    {state after : BeaconState preset fork} {electra : .pectra ≤ fork} {exitBalance : Gwei}
+    {epoch : Epoch}
+    (computed :
+      computeExitEpochAndUpdateChurn config state electra exitBalance = .ok (after, epoch)) :
+    ∃ firstEpoch perEpochChurn left,
+      computeActivationExitEpoch preset (getCurrentEpoch state) = .ok firstEpoch ∧
+      exitChurnLimit config state = .ok perEpochChurn ∧
+      churnQueue (state.earliestExitEpoch electra) firstEpoch perEpochChurn
+        (state.exitBalanceToConsume electra) exitBalance = .ok (epoch, left) ∧
+      after = { state with
+        exitBalanceToConsume := fun _ => left, earliestExitEpoch := fun _ => epoch } := by
+  simp only [computeExitEpochAndUpdateChurn, bind_ok_iff, liftArith, mapError_ok_iff, pure,
+    Except.pure, Except.ok.injEq] at computed
+  obtain ⟨firstEpoch, first, perEpochChurn, churn, ⟨placedEpoch, left⟩, queued, final⟩ :=
+    computed
+  simp only [Prod.mk.injEq] at final
+  obtain ⟨rfl, rfl⟩ := final
+  exact ⟨firstEpoch, perEpochChurn, left, first, churn, queued, rfl⟩
+
+/-- A consolidation is one request to the queue of consolidations.
+
+Its first epoch is the activation exit epoch of the current epoch.
+
+Its churn is the churn of consolidations of the state.
+
+The state changes only in the earliest consolidation epoch and the churn left there. -/
+theorem computeConsolidationEpochAndUpdateChurn_eq {config : Config}
+    {state after : BeaconState preset fork} {electra : .pectra ≤ fork} {balance : Gwei}
+    {epoch : Epoch}
+    (computed :
+      computeConsolidationEpochAndUpdateChurn config state electra balance = .ok (after, epoch)) :
+    ∃ firstEpoch perEpochChurn left,
+      computeActivationExitEpoch preset (getCurrentEpoch state) = .ok firstEpoch ∧
+      getConsolidationChurnLimit config state = .ok perEpochChurn ∧
+      churnQueue (state.earliestConsolidationEpoch electra) firstEpoch perEpochChurn
+        (state.consolidationBalanceToConsume electra) balance = .ok (epoch, left) ∧
+      after = { state with
+        consolidationBalanceToConsume := fun _ => left,
+        earliestConsolidationEpoch := fun _ => epoch } := by
+  simp only [computeConsolidationEpochAndUpdateChurn, bind_ok_iff, liftArith, mapError_ok_iff,
+    pure, Except.pure, Except.ok.injEq] at computed
+  obtain ⟨firstEpoch, first, perEpochChurn, churn, ⟨placedEpoch, left⟩, queued, final⟩ :=
+    computed
+  simp only [Prod.mk.injEq] at final
+  obtain ⟨rfl, rfl⟩ := final
+  exact ⟨firstEpoch, perEpochChurn, left, first, churn, queued, rfl⟩
+
+/-- An exit is a trace of one request, from the queue of exits before it to the queue after it.
+
+Its amount is the balance of the exit, and its churn is the churn of exits of the state. -/
+theorem computeExitEpochAndUpdateChurn_trace {config : Config}
+    {state after : BeaconState preset fork} {electra : .pectra ≤ fork} {exitBalance : Gwei}
+    {epoch : Epoch}
+    (computed :
+      computeExitEpochAndUpdateChurn config state electra exitBalance = .ok (after, epoch)) :
+    ∃ request : ChurnRequest, request.amount = exitBalance ∧
+      exitChurnLimit config state = .ok request.perEpochChurn ∧
+      ChurnTrace (state.earliestExitEpoch electra) (state.exitBalanceToConsume electra)
+        [(request, epoch)] (after.earliestExitEpoch electra) (after.exitBalanceToConsume electra)
+    := by
+  obtain ⟨firstEpoch, perEpochChurn, left, _, churn, queued, rfl⟩ :=
+    computeExitEpochAndUpdateChurn_eq computed
+  exact ⟨⟨firstEpoch, perEpochChurn, exitBalance⟩, rfl, churn, .cons queued (.nil _ _)⟩
+
+/-- A consolidation is a trace of one request, in the queue of consolidations.
+
+Its amount is the balance consolidated, and its churn is the churn of consolidations. -/
+theorem computeConsolidationEpochAndUpdateChurn_trace {config : Config}
+    {state after : BeaconState preset fork} {electra : .pectra ≤ fork} {balance : Gwei}
+    {epoch : Epoch}
+    (computed :
+      computeConsolidationEpochAndUpdateChurn config state electra balance = .ok (after, epoch)) :
+    ∃ request : ChurnRequest, request.amount = balance ∧
+      getConsolidationChurnLimit config state = .ok request.perEpochChurn ∧
+      ChurnTrace (state.earliestConsolidationEpoch electra)
+        (state.consolidationBalanceToConsume electra) [(request, epoch)]
+        (after.earliestConsolidationEpoch electra) (after.consolidationBalanceToConsume electra)
+    := by
+  obtain ⟨firstEpoch, perEpochChurn, left, _, churn, queued, rfl⟩ :=
+    computeConsolidationEpochAndUpdateChurn_eq computed
+  exact ⟨⟨firstEpoch, perEpochChurn, balance⟩, rfl, churn, .cons queued (.nil _ _)⟩
+
+/-! ## The churns as functions of the total active balance -/
+
+/-- Rounding down to an increment never raises an amount. -/
+theorem roundToIncrement_le (preset : Preset) (amount : Gwei) :
+    (roundToIncrement preset amount).toNat ≤ amount.toNat := by
+  unfold roundToIncrement
+  have le : amount % preset.EFFECTIVE_BALANCE_INCREMENT ≤ amount := by
+    rw [UInt64.le_iff_toNat_le, UInt64.toNat_mod]
+    exact Nat.mod_le _ _
+  rw [UInt64.toNat_sub_of_le _ _ le]
+  omega
+
+/-- The whole churn is at most the minimum churn or a share of the total active balance. -/
+theorem getBalanceChurnLimit_le {config : Config} {state : BeaconState preset fork}
+    {total churn : Gwei} (totalOk : getTotalActiveBalance state = .ok total)
+    (computed : getBalanceChurnLimit config state = .ok churn) :
+    churn.toNat ≤
+      max config.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA.toNat
+        (total.toNat / config.CHURN_LIMIT_QUOTIENT.toNat) := by
+  simp only [getBalanceChurnLimit, totalOk, bind, Except.bind, pure, Except.pure,
+    Except.ok.injEq] at computed
+  subst computed
+  refine Nat.le_trans (roundToIncrement_le _ _) ?_
+  rw [UInt64.max_def]
+  split
+  · rw [UInt64.toNat_div]
+    omega
+  · omega
+
+/-- The churn of exits is at most the minimum churn or a share of the total active balance.
+
+The share is `CHURN_LIMIT_QUOTIENT` before Gloas and `CHURN_LIMIT_QUOTIENT_GLOAS` from Gloas. -/
+theorem exitChurnLimit_le_total {config : Config} {state : BeaconState preset fork}
+    {total churn : Gwei} (totalOk : getTotalActiveBalance state = .ok total)
+    (computed : exitChurnLimit config state = .ok churn) :
+    churn.toNat ≤ max config.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA.toNat (total.toNat /
+      (if .glamsterdam ≤ fork then config.CHURN_LIMIT_QUOTIENT_GLOAS
+        else config.CHURN_LIMIT_QUOTIENT).toNat) := by
+  unfold exitChurnLimit at computed
+  split at computed
+  · rename_i gloas
+    simp only [getExitChurnLimit, totalOk, bind, Except.bind, pure, Except.pure,
+      Except.ok.injEq] at computed
+    subst computed
+    simp only [gloas, ↓reduceIte]
+    refine Nat.le_trans (roundToIncrement_le _ _) ?_
+    rw [UInt64.max_def]
+    split
+    · rw [UInt64.toNat_div]
+      omega
+    · omega
+  · rename_i notGloas
+    simp only [notGloas, ↓reduceIte]
+    simp only [getActivationExitChurnLimit, bind_ok_iff, pure, Except.pure,
+      Except.ok.injEq] at computed
+    obtain ⟨whole, wholeOk, rfl⟩ := computed
+    have := getBalanceChurnLimit_le totalOk wholeOk
+    rw [UInt64.min_def]
+    split
+    · rename_i le
+      have := UInt64.le_iff_toNat_le.mp le
+      omega
+    · exact this
+
+/-- The churn of consolidations is at most a share of the total active balance.
+
+Before Gloas the share is that of the whole churn, which the minimum churn may raise.
+
+From Gloas it is `CONSOLIDATION_CHURN_LIMIT_QUOTIENT`. -/
+theorem getConsolidationChurnLimit_le_total {config : Config} {state : BeaconState preset fork}
+    {total churn : Gwei} (totalOk : getTotalActiveBalance state = .ok total)
+    (computed : getConsolidationChurnLimit config state = .ok churn) :
+    churn.toNat ≤ if .glamsterdam ≤ fork then
+        total.toNat / config.CONSOLIDATION_CHURN_LIMIT_QUOTIENT.toNat
+      else max config.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA.toNat
+        (total.toNat / config.CHURN_LIMIT_QUOTIENT.toNat) := by
+  by_cases gloas : .glamsterdam ≤ fork
+  · simp only [getConsolidationChurnLimit, gloas, ↓reduceIte, totalOk, bind, Except.bind, pure,
+      Except.pure, Except.ok.injEq] at computed
+    subst computed
+    simp only [gloas, ↓reduceIte]
+    refine Nat.le_trans (roundToIncrement_le _ _) ?_
+    simp only [UInt64.toNat_div, Nat.le_refl]
+  · simp only [gloas, ↓reduceIte]
+    -- Before Gloas the churn of consolidations is a part of the whole churn.
+    have whole := computed
+    simp only [getConsolidationChurnLimit, gloas, ↓reduceIte, bind_ok_iff] at whole
+    obtain ⟨wholeChurn, wholeOk, part, partOk, _⟩ := whole
+    have sum := getConsolidationChurnLimit_add (Nat.lt_of_not_le gloas) computed partOk wholeOk
+    have := getBalanceChurnLimit_le totalOk wholeOk
     omega
 
 end EthLib.Consensus

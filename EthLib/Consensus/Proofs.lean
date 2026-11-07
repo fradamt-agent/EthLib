@@ -79,17 +79,28 @@ public import EthLib.Consensus.Proofs.SlashingProtection
 public import EthLib.Consensus.Proofs.ShufflePermutation
 public import EthLib.Consensus.Proofs.Signing
 public import EthLib.Consensus.Proofs.Time
+public import EthLib.Consensus.Proofs.Transition.BalanceLedger
 public import EthLib.Consensus.Proofs.Transition.Block
+public import EthLib.Consensus.Proofs.Transition.BlockLedger
+public import EthLib.Consensus.Proofs.Transition.BlockDebits
+public import EthLib.Consensus.Proofs.Transition.BlockRewards
 public import EthLib.Consensus.Proofs.Transition.ChurnWindows
 public import EthLib.Consensus.Proofs.Transition.Cohorts
 public import EthLib.Consensus.Proofs.Transition.BuilderPayments
 public import EthLib.Consensus.Proofs.Transition.BuilderRequests
 public import EthLib.Consensus.Proofs.Transition.EffectiveBalanceCap
+public import EthLib.Consensus.Proofs.Transition.ChurnQueues
+public import EthLib.Consensus.Proofs.Transition.DepositChurn
+public import EthLib.Consensus.Proofs.Transition.DepositCredits
+public import EthLib.Consensus.Proofs.Transition.EffectiveBalanceCeiling
+public import EthLib.Consensus.Proofs.Transition.EffectiveBalanceDrift
+public import EthLib.Consensus.Proofs.Transition.EffectiveBalanceFloor
 public import EthLib.Consensus.Proofs.Transition.EpochJustification
 public import EthLib.Consensus.Proofs.Transition.EpochParticipation
 public import EthLib.Consensus.Proofs.Transition.EpochPending
 public import EthLib.Consensus.Proofs.Transition.EpochRewards
 public import EthLib.Consensus.Proofs.Transition.EpochUpdates
+public import EthLib.Consensus.Proofs.Transition.ExitStake
 public import EthLib.Consensus.Proofs.Transition.Execution
 public import EthLib.Consensus.Proofs.Transition.CommonState
 public import EthLib.Consensus.Proofs.Transition.FfgPreElectra
@@ -99,7 +110,10 @@ public import EthLib.Consensus.Proofs.Transition.FfgStore
 public import EthLib.Consensus.Proofs.Transition.FfgRefinement
 public import EthLib.Consensus.Proofs.Transition.FfgVotes
 public import EthLib.Consensus.Proofs.Transition.ForkBoundary
+public import EthLib.Consensus.Proofs.Transition.GainedBound
 public import EthLib.Consensus.Proofs.Transition.Genesis
+public import EthLib.Consensus.Proofs.Transition.InactivityPenalties
+public import EthLib.Consensus.Proofs.Transition.InactivityScores
 public import EthLib.Consensus.Proofs.Transition.Invariants
 public import EthLib.Consensus.Proofs.Transition.Lifecycle
 public import EthLib.Consensus.Proofs.Transition.Operations
@@ -126,11 +140,17 @@ public import EthLib.Consensus.Proofs.Transition.Provenance.Votes
 public import EthLib.Consensus.Proofs.Transition.Provenance.Weighing
 public import EthLib.Consensus.Proofs.Transition.Reachable
 public import EthLib.Consensus.Proofs.Transition.Requests
+public import EthLib.Consensus.Proofs.Transition.RewardDeltas
+public import EthLib.Consensus.Proofs.Transition.SlashingBalances
+public import EthLib.Consensus.Proofs.Transition.SlashingPayouts
+public import EthLib.Consensus.Proofs.Transition.StakeLoss
 public import EthLib.Consensus.Proofs.Transition.Slot
 public import EthLib.Consensus.Proofs.Transition.StateTransition
+public import EthLib.Consensus.Proofs.Transition.StepDebits
 public import EthLib.Consensus.Proofs.Transition.SyncAggregate
 public import EthLib.Consensus.Proofs.Transition.Upgrade
 public import EthLib.Consensus.Proofs.Transition.Withdrawals
+public import EthLib.Consensus.Proofs.Transition.WithdrawalAmounts
 public import EthLib.Consensus.Proofs.WeakSubjectivity
 
 /-!

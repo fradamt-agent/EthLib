@@ -339,6 +339,10 @@ This evidence tests the compiled code against the published value.
 `keyValidatePoint_eq_ok_iff` (`Proofs/Bls/KeyValidate.lean`) proves that key validation accepts exactly the encodings of the nonzero points of order `r` in G1.
 The G1 and G2 subgroup checks accept exactly the valid points that represent a multiple of the generator.
 Every output of the maps to G1 and G2 is a valid point of that subgroup (`Proofs/Bls/MapToCurve.lean`).
+`hashToG2_total_inSubgroup` (`Proofs/Bls/CofactorSubgroupLanding.lean`) proves that the hash to G2 succeeds on every input and returns a valid point of that subgroup.
+`toPoint_clearCofactor_eq_hEff` (`Proofs/Bls/CofactorEffective.lean`) proves that the cofactor clearing of RFC 9380 Appendix G.3 is the multiplication by the `h_eff` of §8.8.2, on every valid point of the twist.
+`hashToG2_eq_hEff_smul` proves that each output of the hash to G2 is `h_eff` times a valid point of the twist.
+No theorem yet compares the message expansion, the hash to the field, the SSWU map or the isogeny with a model of RFC 9380.
 
 `sign_ok` and `popProve_ok` (`Proofs/Bls/Signatures.lean`) prove that BLS signing never fails.
 Under the pairing law, an honest signature, an honest proof of possession and an aggregate of honest signatures verify (`verify_sign`, `popVerify_popProve`, `aggregateVerify_aggregate`, `Proofs/Bls/SignaturesCorrect.lean`).
@@ -773,6 +777,7 @@ It charges the prices of EIP-2929, and needs the state to hold the code of the a
 `Logic.calldatacopy` is its case for CALLDATACOPY.
 `Logic.codecopy` is its case for CODECOPY.
 `Logic.returndatacopy` is the rule for RETURNDATACOPY from Byzantium, for a range that ends within the return data.
+`Logic.returndatasize` is the rule for RETURNDATASIZE from Byzantium, which pushes the size of the return data and keeps it.
 `Logic.extcodecopy` is the rule for EXTCODECOPY from Berlin to before Glamsterdam.
 It charges the prices of EIP-2929 and 3 gas a word, and needs the state to hold the code of the account.
 `Logic.Holds` says that memory covers a range and that the range reads as given bytes.
@@ -809,6 +814,7 @@ Its message carries no value and is static.
 `Logic.staticcall` is its case with empty ranges of input and output.
 `Logic.callStep_child` gives the step of a call that sends no value of its own, for each kind of call.
 `Logic.callKindWith` is the rule for such a call from Berlin to before Glamsterdam.
+After the call, the return data is the output of the frame that ends the message.
 `Logic.delegatecallWith` is the rule for DELEGATECALL from Berlin to before Glamsterdam.
 Its message runs the code of the address on the current account, with the sender and the value of the current message.
 `Logic.callcodeWith` is the rule for CALLCODE with no value from Berlin to before Glamsterdam.
@@ -819,6 +825,7 @@ It needs the new address to hold no code and a nonce of 0, as EIP-684 asks.
 `Logic.createWith` is its case for CREATE.
 `Logic.create2With` is its case for CREATE2.
 `Logic.resumeCreate_eq` proves that the creator pushes the new address, or 0 when the frame that ends the creation has an error.
+After a creation with no error the return data is empty, and otherwise it is the output of that frame.
 `Logic.createMessageGas_of_tangerineWhistle` proves that from Tangerine Whistle a creation passes on all but one 64th of the gas left.
 `Logic.depositCode_of_ok` proves that from Berlin to before Glamsterdam a frame with no error deposits its output as code, at 200 gas a byte.
 It needs the output to hold at most 24576 bytes (EIP-170), and from London not to start with `0xEF` (EIP-3541).
@@ -852,11 +859,15 @@ The loop then needs the sum of those prices and the price of its exit.
 `Logic.holds_empty` proves that memory holds no bytes from an offset within it.
 `Logic.Stored` is a running frame that knows ranges of memory, the facts of some slots, and the refund counter.
 A fact of a slot gives its account, its key, its word before the transaction, its word now, and whether it is warm.
-`Logic.Agrees` says that a state and its accessed keys agree with a base outside a list of slots.
+`Logic.Agrees` says that a state and its accessed keys agree with a base outside a list of slots and two lists of addresses.
 There each word reads as in the base state, and each slot is warm exactly when the base keys hold it.
-The words before the transaction, the accounts, the codes and the block are those of the base state.
-A `Stored` frame agrees with its base outside the slots of its facts.
-`Logic.Agrees.trans` proves that agreement composes, outside both lists of slots.
+The words before the transaction and the block are those of the base state.
+Outside the addresses of both lists each account is that of the base state.
+Outside the second list, of remade addresses, an account exists exactly when it does in the base state.
+There it also has the nonce, the code hash and the code of the base state.
+A `Stored` frame agrees with its base outside the slots of its facts, and at every address.
+`Logic.Agrees.trans` proves that agreement composes, outside both lists of slots and both lists of addresses of each kind.
+`Logic.Agrees.getAccount` proves that outside both lists of addresses an account is that of the base state.
 `Logic.Stored.of_known` proves that a rule that keeps the state and the substate keeps every fact.
 `Logic.Stored.of_at` proves the same for a rule that also keeps memory.
 `Logic.sload_stored` proves that from Berlin, SLOAD of the key of a fact of the frame's account pushes its word now.
@@ -866,20 +877,64 @@ It needs a frame that may change the state, more than 2300 gas, and the account 
 It pays the price of EIP-2200 with the prices of EIP-2929 from the facts of the slot, and adds the refund of the write.
 `Logic.StoppedStored.of_known` proves that a rule that halts and keeps the state and the substate keeps every fact.
 `Logic.stop_stored` proves that STOP keeps every fact.
+`Logic.returndatasize_stored` proves that from Byzantium RETURNDATASIZE pushes the size of the return data and keeps every fact.
+`Logic.returndatacopy_stored` proves that from Byzantium RETURNDATACOPY of a range within the return data writes it as a fact of memory.
 These frames say nothing of the logs, the accessed addresses and the other fields of the substate.
-`Logic.Effect` (`Logic/Effect.lean`) is the effect of a message on storage, from the frame that sends it.
-Outside the slots it touches, the state after agrees with the state before, and a failed message touches no slot.
-A message that succeeds gives the facts of some slots and adds a refund.
-`Logic.effects_rollbackOnError` proves that a callee whose stopped frame agrees with its start outside some slots has such an effect after the rollback.
-`Logic.call_stored` proves that from Berlin to before Glamsterdam, CALL with no value keeps the facts of a `Stored` frame.
+`Logic.AccountFact` gives the address, the nonce, the balance and the code of an account that exists.
+`Logic.Change` names the slots that a message may touch and the addresses whose balances it may move.
+It also names the addresses whose accounts it may remake, by a creation or a change of a nonce or a code.
+It also names the facts of slots, the balances, the facts of accounts and the refund that the message gives on success.
+`Logic.Effect` (`Logic/Effect.lean`) is the effect of a message on storage and accounts, from the frame that sends it.
+Outside the slots and the addresses of its change, the state after agrees with the state before.
+A failed message touches no slot, moves no balance and remakes no account.
+A message that succeeds gives the facts of some slots, some balances and some accounts, and adds a refund.
+`Logic.effects_rollbackOnError` proves that a callee whose stopped frame agrees with the state of its caller outside a change has its effect after the rollback.
+`Logic.agrees_moveEther` proves that a move of a value that is not 0 between two accounts changes only their balances.
+It needs the two accounts to exist and the sender to have a nonce or a code.
+`Logic.agrees_modifyState` proves that a change of one account that keeps it alive changes only that account and keeps every code.
+`Logic.CallMessage` is the message that a call sends when it sends no value of its own, by the kind of the call.
+`Logic.callKind_stored` proves that from Berlin to before Glamsterdam, such a call keeps the facts of a `Stored` frame.
 It keeps each fact of a slot that the effect of the callee does not touch.
-It needs an input range that a fact of memory holds, an empty output range, and the gas of a cold call.
+It needs an input range that a fact of memory holds, an output range within memory, and the gas of a cold call.
 It also needs an assumption that gives the effect of each frame that ends the message.
-On success the frame gains the facts and the refund of the effect.
-On failure it keeps its facts, and the assumption may rule a failure out.
+The assumption also gives the output of such a frame when it succeeds.
+On success the frame gains the facts and the refund of the effect, and that output as its return data.
+It also gains the fact of the start of that output in the output range.
+On failure it keeps its facts of slots, and the assumption may rule a failure out.
+Either way it keeps each fact of memory apart from the output range.
 Its new base agrees with the old one outside the touched slots and the slots of the facts.
+`Logic.call_stored` proves this for CALL with no value.
+`Logic.staticcall_stored` proves this for STATICCALL.
+`Logic.delegatecall_stored` proves this for DELEGATECALL.
+`Logic.callcode_stored` proves this for CALLCODE with no value.
+`Logic.ValueMessage` is the message that CALL sends with a value.
+`Logic.callValue_stored` proves that from Berlin to before Glamsterdam, CALL with a value that is not 0 keeps the facts of a `Stored` frame in the same way.
+It needs a frame that may change the state, and its account must hold the value in the base state.
+It needs the gas of a cold call, 9000 for the value, and 25000 more when the callee is dead in the base state.
+On success the new base also holds the balances and the facts of accounts of the effect.
+The new base agrees with the old one outside the addresses whose balances the effect moves or whose accounts it remakes, too.
+`Logic.CreateMessage` is the message that a creation sends, to run its init code at the new address.
+`Logic.AfterCreate` is the frame after a creation from a `Stored` frame.
+`Logic.createKind_stored` proves that from Berlin to before Glamsterdam, CREATE or CREATE2 keeps the facts of a `Stored` frame.
+It needs init code that a fact of memory holds, and a frame that may change the state.
+The creator must hold the value in the base state.
+Its nonce in the base state must not be the greatest, and its depth must leave room for one more frame.
+From Shanghai the init code must hold at most the greatest size of EIP-3860.
+It needs the new address from the base state to hold no code and a nonce of 0, and the price of the creation.
+It also needs an assumption that gives the effect of each frame that ends the creation.
+On success the frame pushes the new address, gains the facts and the refund of the effect, and its return data is empty.
+On success the new base holds the balances and the facts of accounts of the effect.
+On failure the frame pushes 0 and keeps its facts of slots, and the assumption may rule a failure out.
+The new base gives the creator its grown nonce, unless the effect remakes the creator.
+Its new base agrees with the old one outside the touched slots, the moved and remade addresses, and the creator.
+`Logic.create_stored` proves this for CREATE.
+`Logic.create2_stored` proves this for CREATE2.
+`Logic.nonce_of_shape` proves that an account with the nonce and the code hash of an account that exists has its nonce.
+`Logic.Entered` gives the state and the substate that the frame of a message starts from, after the move of its value.
+`Logic.Entered.of_not_transfers` proves that a message that moves no value starts from the start state and the substate of its caller.
 `Logic.meets_runsAll` proves that the runner of the interpreter meets the specifications of a family of codes that call each other, at every bound.
 Each specification is a triple under the assumption that the whole family runs as specified, so a callee may call its caller back.
+Each specification holds from every frame that a message with its code enters, so a message may move a value.
 The proof is an induction on the bound on the gas of messages.
 `HoareUnder.of_exists` proves a triple from a precondition that gives a witness, with a triple for each witness.
 `StepBy` (`Logic/Message.lean`) adds the steps that send a message, which a runner of messages ends with a frame.
@@ -921,6 +976,7 @@ That assumption says that a message with no code, to an account that is no preco
 The frame must be one that may change the state.
 It pays the access of EIP-2929, 9000 for the value, 25000 more when the callee is dead by EIP-161, and the growth of memory.
 The message gets the gas that EIP-150 allows and the stipend of 2300, and carries the value.
+The message is not static.
 `Logic.callValueLow` is the rule for such a CALL when the current account holds less than the value.
 It sends no message, pushes 0, and gives back the gas it would pass on with the stipend.
 `Logic.callStep_value_low` also proves that this step empties the return data.
@@ -1077,7 +1133,7 @@ With these distinct keys, `indexedRoot_binding_key` shows that two lists with on
 Otherwise `findCollision` returns a collision in the proofs of that key.
 `indexedRoot_binding` concludes that the two lists are equal, or `findIndexedCollision` returns a collision in the proofs of one index.
 Two transactions, or two withdrawals, with the same bytes are equal, so `transactionsRoot_binding` and `withdrawalsRoot_binding` conclude the same for the lists themselves.
-`receiptsRoot_binding` does so for receipts whose types are 0 or types that the fork has, as the receipt decoder requires.
+`receiptsRoot_binding` does so for receipts whose types are below `0xc0`, which holds for type 0 and for every type that a fork adds.
 No theorem bounds the probability of finding a collision.
 
 An answer of `eth_getProof` (EIP-1186) is checked against a state root by `AccountProof.verify` (`Execution/State/AccountProof.lean`).
@@ -1616,12 +1672,12 @@ A proof is unaffected unless it uses one of the tactics of C2.
 Between the Lean exports and Python sits a layer of hand-written C.
 
 <!-- generated: exports -->
-Lean exports 287 operations and 41 size constants.
-The Python extension calls 287 of the operations and 41 of the constants.
+Lean exports 290 operations and 41 size constants.
+The Python extension calls 290 of the operations and 41 of the constants.
 <!-- end generated -->
 
 <!-- generated: c-lines -->
-9732 lines of hand-written C sit between them and Python: `aes.c` (119), `blocks.c` (432), `bls.c` (378), `chain.c` (79), `consensus.c` (2650), `crc32.c` (38), `crc32c.c` (38), `devp2p.c` (59), `discv4.c` (78), `discv5.c` (345), `engine.c` (88), `enr.c` (205), `eth.c` (225), `ethash.c` (112), `evm.c` (140), `fees.c` (101), `forkid.c` (90), `gossip.c` (66), `hmac.c` (102), `keccak.c` (85), `kzg.c` (511), `module.c` (1211), `pow.c` (105), `precompile.c` (95), `reqresp.c` (85), `rlp.c` (162), `rlpx.c` (194), `secp256k1.c` (169), `secp256r1.c` (42), `sha256.c` (38), `snap.c` (114), `snappy.c` (146), `sphincs.c` (85), `ssz.c` (88), `state.c` (108), `transactions.c` (251), `trie.c` (120), `vrf.c` (119), `wrappers.h` (525), `xmss.c` (134).
+10196 lines of hand-written C sit between them and Python: `aes.c` (119), `blocks.c` (432), `bls.c` (378), `chain.c` (79), `consensus.c` (2650), `crc32.c` (38), `crc32c.c` (38), `devp2p.c` (59), `discv4.c` (78), `discv5.c` (345), `engine.c` (88), `enr.c` (205), `eth.c` (225), `ethash.c` (112), `evm.c` (140), `fees.c` (101), `forkid.c` (90), `gossip.c` (66), `hmac.c` (102), `keccak.c` (85), `kzg.c` (511), `module.c` (1223), `pow.c` (105), `precompile.c` (95), `pyvalue.c` (420), `reqresp.c` (85), `rlp.c` (162), `rlpx.c` (194), `secp256k1.c` (169), `secp256r1.c` (42), `sha256.c` (38), `snap.c` (114), `snappy.c` (146), `sphincs.c` (85), `ssz.c` (88), `state.c` (108), `transactions.c` (251), `trie.c` (120), `vrf.c` (119), `wrappers.h` (557), `xmss.c` (134).
 <!-- end generated -->
 
 That C converts arguments, owns and frees Lean objects, and turns errors into Python exceptions.
@@ -1632,6 +1688,23 @@ The C layer raises them as an exception of `ethlib.errors`, one class for each p
 C reads the code from the pair that the export returns.
 A wrong field offset in C would give a wrong code, and no theorem covers that read.
 Some wrong argument sizes are caught in C first, and raise `ValueError` with no code.
+
+One generic converter in `pyvalue.c` passes typed values between Python and Lean.
+It knows the constructors of one Lean type of Python values, and the type of no export.
+Such an export needs only a short C wrapper that passes its Lean function and its arity to the generic caller, and no byte format of its own.
+The C code repeats the order of the constructors of the Lean type, and no theorem checks it.
+A change to that order needs the same change in C.
+
+On the Lean side, every typed export requires a theorem for the type of its result.
+That theorem says that reading back the value of a result gives that result, so two results never become one value of the Lean type.
+The converter refuses a Lean `dict` with a repeated key, which would drop a value.
+It counts the parts and the bytes of each call from Python, and refuses more than a million parts or 512 MiB.
+However much a call shares between its lists, the converter then builds at most a million parts and 512 MiB.
+A property test sends random nested values through Lean and back, with integers of thousands of bits.
+A separate test passes a value at the deepest level allowed.
+Another property test sends values that the converter must refuse, and checks that each raises `TypeError` or `ValueError`, never a crash.
+The converter refuses an `int` wider than 65536 bits, because Lean reads the digits of a large `int` in time quadratic in their number.
+Each export that moves to typed values removes its own C, and the line count above shows it.
 
 ### B5. Compiler substitutions in this repository
 

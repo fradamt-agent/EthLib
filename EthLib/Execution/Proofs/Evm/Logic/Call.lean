@@ -302,7 +302,8 @@ theorem callStep_value (hfork : .berlin ≤ fork) (hglam : fork < .glamsterdam)
       msg.code = calleeCode ∧
       msg.data = memoryReadBytes (memoryExtend evm.memory
         (extendMemory evm.memory.size [(i, isz), (o, osz)]).expandBy) i.toNat isz.toNat ∧
-      msg.value = v ∧ msg.shouldTransferValue = true ∧ msg.depth = evm.message.depth + 1 := by
+      msg.value = v ∧ msg.shouldTransferValue = true ∧ msg.depth = evm.message.depth + 1 ∧
+      msg.isStatic = false := by
   have hng : ¬fork ≥ .glamsterdam := Nat.not_le_of_lt hglam
   rcases evm with ⟨pc, ⟨l, hl⟩, memory, code, valid, gas, running, message, output, returnData,
     state, substate, error⟩
@@ -342,7 +343,7 @@ theorem callStep_value (hfork : .berlin ≤ fork) (hglam : fork < .glamsterdam)
     GasMeter.gasLeft, GasMeter.drain, GasMeter.reservoir, Nat.not_lt.mpr hdepth, hstatic, hE,
     hgas', Nat.not_lt.mpr hmin, hbal']
   exact ⟨_, _, ⟨rfl, rfl, rfl⟩, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl,
-    rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
+    rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
 
 /-- The step of CALL with more value than the current account holds sends no message.
 
@@ -441,7 +442,8 @@ theorem resumeCall_eq {caller child : Evm fork Nat} {o osz : U256}
       after.gas = caller.gas + child.gas ∧
       after.running = caller.running ∧ after.error = caller.error ∧ after.output = caller.output ∧
       after.state = (incorporateChild fork caller child).state ∧
-      after.substate = (incorporateChild fork caller child).substate := by
+      after.substate = (incorporateChild fork caller child).substate ∧
+      after.returnData = child.output := by
   have hne : caller.stack.val.length ≠ STACK_LIMIT := Nat.ne_of_lt hlen
   unfold resumeCall incorporateChild
   split <;>
@@ -544,7 +546,7 @@ theorem callKindWith (hfork : .berlin ≤ fork) (hglam : fork < .glamsterdam) {k
             (extendMemory memory.size [(inputStart, inputSize), (outputStart, outputSize)]).cost) +
             child.gas)
           (incorporateChild fork caller child).state (incorporateChild fork caller child).substate
-          after := by
+          after ∧ after.returnData = child.output := by
   apply HoareUnder.of_child
   rintro evm ⟨hc, hj, hm, hpc, hst, hmem, hg, hrun', herr, hout, hs, hss⟩
   have hcost := callBaseCost_of_berlin hfork hglam cold
@@ -562,14 +564,14 @@ theorem callKindWith (hfork : .berlin ≤ fork) (hglam : fork < .glamsterdam) {k
       rw [hst] at this
       rw [c5]
       cases kind <;> simp [CallKind.sendsValue] at this <;> omega
-    obtain ⟨after, hres, a1, a2, a3, a4, a5, a6, a7, a8, a9, ao, a10, a11⟩ :=
+    obtain ⟨after, hres, a1, a2, a3, a4, a5, a6, a7, a8, a9, ao, a10, a11, a12⟩ :=
       resumeCall_eq (child := child) (o := outputStart) (osz := outputSize) hlen
     refine .inl ⟨after, hres, caller, msg, child, hcallee, hchild, c10, c11, ?_, m2, m3, mt, mca,
       m4, md, m5, m6, m7, ?_⟩
     · rw [m1, hcost]
-    · refine ⟨by rw [a1, c1, hc], by rw [a2, c2, hj], by rw [a3, c3], by rw [a4, c4, hpc],
+    · refine ⟨⟨by rw [a1, c1, hc], by rw [a2, c2, hj], by rw [a3, c3], by rw [a4, c4, hpc],
         by rw [a5, c5], by rw [a6, c6], ?_, by rw [a8, c8, hrun'], by rw [a9, c9, herr],
-        by rw [ao, co, hout], a10, a11⟩
+        by rw [ao, co, hout], a10, a11⟩, a12⟩
       rw [a7, c7, hcost]
 
 /-- CALL with no value, to the address `to`, with a range of input and a range of output.
@@ -633,7 +635,7 @@ theorem callWith (hfork : .berlin ≤ fork) (hglam : fork < .glamsterdam)
             (extendMemory memory.size [(inputStart, inputSize), (outputStart, outputSize)]).cost) +
             child.gas)
           (incorporateChild fork caller child).state (incorporateChild fork caller child).substate
-          after :=
+          after ∧ after.returnData = child.output :=
   callKindWith (kind := .call) hfork hglam hlt hbyte
     (ofByte_of_decode (op := .call) rfl (Fork.frontier_le _)) instruction_call
     messageInstruction_call hcode hdel hdepth hcold hgas
@@ -678,7 +680,7 @@ theorem call (hfork : .berlin ≤ fork) (hglam : fork < .glamsterdam)
           (gas - (messageCallGas fork 0 asked.toNat gas 0 (if cold then 2600 else 100)).cost +
             child.gas)
           (incorporateChild fork caller child).state (incorporateChild fork caller child).substate
-          after := by
+          after ∧ after.returnData = child.output := by
   have hext : extendMemory memory.size [(inputStart, 0), (outputStart, 0)] = ⟨0, 0⟩ := by
     simp [extendMemory]
   have h := callWith (callee := callee) (asked := asked) (inputSize := 0) (outputSize := 0)
@@ -690,7 +692,7 @@ theorem call (hfork : .berlin ≤ fork) (hglam : fork < .glamsterdam)
   obtain ⟨m1, m2, m3, m4, m5, md, m6, m7, m8, hat⟩ := rest'
   refine ⟨m1, m2, m3, m4, m5, by simpa [memoryExtend_zero, memoryReadBytes] using md, m6, m7, m8,
     ?_⟩
-  simpa [memoryExtend_zero, memoryWrite] using hat
+  exact ⟨by simpa [memoryExtend_zero, memoryWrite] using hat.1, hat.2⟩
 
 /-- STATICCALL is no instruction of the frame alone: it sends a message. -/
 theorem instruction_staticcall : instruction (Meter := Nat) fork .staticcall = none := by
@@ -764,7 +766,7 @@ theorem staticcallWith (hfork : .berlin ≤ fork) (hglam : fork < .glamsterdam)
             (extendMemory memory.size [(inputStart, inputSize), (outputStart, outputSize)]).cost) +
             child.gas)
           (incorporateChild fork caller child).state (incorporateChild fork caller child).substate
-          after :=
+          after ∧ after.returnData = child.output :=
   callKindWith (kind := .staticcall) hfork hglam hlt hbyte
     (ofByte_of_decode rfl (Nat.le_trans (by decide) hfork)) instruction_staticcall
     (messageInstruction_staticcall (Nat.le_trans (by decide) hfork)) hcode hdel hdepth hcold hgas
@@ -809,7 +811,7 @@ theorem staticcall (hfork : .berlin ≤ fork) (hglam : fork < .glamsterdam)
           (gas - (messageCallGas fork 0 asked.toNat gas 0 (if cold then 2600 else 100)).cost +
             child.gas)
           (incorporateChild fork caller child).state (incorporateChild fork caller child).substate
-          after := by
+          after ∧ after.returnData = child.output := by
   have hext : extendMemory memory.size [(inputStart, 0), (outputStart, 0)] = ⟨0, 0⟩ := by
     simp [extendMemory]
   have h := staticcallWith (callee := callee) (asked := asked) (inputSize := 0) (outputSize := 0)
@@ -821,7 +823,7 @@ theorem staticcall (hfork : .berlin ≤ fork) (hglam : fork < .glamsterdam)
   obtain ⟨m1, m2, m3, m4, m5, md, m6, m7, m8, hat⟩ := rest'
   refine ⟨m1, m2, m3, m4, m5, by simpa [memoryExtend_zero, memoryReadBytes] using md, m6, m7, m8,
     ?_⟩
-  simpa [memoryExtend_zero, memoryWrite] using hat
+  exact ⟨by simpa [memoryExtend_zero, memoryWrite] using hat.1, hat.2⟩
 
 /-- DELEGATECALL is no instruction of the frame alone: it sends a message. -/
 theorem instruction_delegatecall : instruction (Meter := Nat) fork .delegatecall = none := by
@@ -900,7 +902,7 @@ theorem delegatecallWith (hfork : .berlin ≤ fork) (hglam : fork < .glamsterdam
             (extendMemory memory.size [(inputStart, inputSize), (outputStart, outputSize)]).cost) +
             child.gas)
           (incorporateChild fork caller child).state (incorporateChild fork caller child).substate
-          after :=
+          after ∧ after.returnData = child.output :=
   callKindWith (kind := .delegatecall) hfork hglam hlt hbyte
     (ofByte_of_decode rfl (Nat.le_trans (by decide) hfork)) instruction_delegatecall
     (messageInstruction_delegatecall (Nat.le_trans (by decide) hfork)) hcode hdel hdepth hcold hgas
@@ -982,7 +984,7 @@ theorem callcodeWith (hfork : .berlin ≤ fork) (hglam : fork < .glamsterdam)
             (extendMemory memory.size [(inputStart, inputSize), (outputStart, outputSize)]).cost) +
             child.gas)
           (incorporateChild fork caller child).state (incorporateChild fork caller child).substate
-          after :=
+          after ∧ after.returnData = child.output :=
   callKindWith (kind := .callcode) hfork hglam hlt hbyte
     (ofByte_of_decode (op := .callcode) rfl (Fork.frontier_le _)) instruction_callcode
     messageInstruction_callcode hcode hdel hdepth hcold hgas
@@ -1002,6 +1004,8 @@ It adds 25000 when the callee is dead, by EIP-161 from Spurious Dragon.
 It passes on the gas it asks for, at most all but one 64th of the gas left, by EIP-150.
 
 The message gets that gas and the stipend of 2300, and carries the value.
+
+The message is not static.
 
 The rule holds for every frame that ends the message and meets the assumption.
 
@@ -1041,6 +1045,7 @@ theorem callValue (hfork : .berlin ≤ fork) (hglam : fork < .glamsterdam)
           (extendMemory memory.size [(inputStart, inputSize), (outputStart, outputSize)]).expandBy)
           inputStart.toNat inputSize.toNat ∧
         msg.value = v ∧ msg.shouldTransferValue = true ∧ msg.depth = message.depth + 1 ∧
+        msg.isStatic = false ∧
         At code message (pc + 1) ((if child.error.isNone then 1 else 0) :: rest)
           (memoryWrite (memoryExtend memory
             (extendMemory memory.size
@@ -1053,12 +1058,12 @@ theorem callValue (hfork : .berlin ≤ fork) (hglam : fork < .glamsterdam)
             (extendMemory memory.size [(inputStart, inputSize), (outputStart, outputSize)]).cost) +
             child.gas)
           (incorporateChild fork caller child).state (incorporateChild fork caller child).substate
-          after := by
+          after ∧ after.returnData = child.output := by
   apply HoareUnder.of_child
   rintro evm ⟨hc, hj, hm, hpc, hst, hmem, hg, hrun, herr, hout, hs, hss⟩
   subst hm hg hs hss hcold hmem
   obtain ⟨caller, msg, hstep, c1, c2, c3, c4, c5, c6, c7, c8, c9, co, c10, c11, m1, m2, m3, mt,
-      mca, m4, md, m5, m6, m7⟩ :=
+      mca, m4, md, m5, m6, m7, m8⟩ :=
     callStep_value hfork hglam hst hv hstatic hbal hcode hdel hdepth hgas
   refine ⟨hrun, caller, msg, resumeCall fork caller 0 outputStart outputSize, ?_, ?_⟩
   · rw [step_of_messageInstruction (by rw [hc, hpc]; exact hlt)
@@ -1072,13 +1077,13 @@ theorem callValue (hfork : .berlin ≤ fork) (hglam : fork < .glamsterdam)
       rw [c5]
       simp at this
       omega
-    obtain ⟨after, hres, a1, a2, a3, a4, a5, a6, a7, a8, a9, ao, a10, a11⟩ :=
+    obtain ⟨after, hres, a1, a2, a3, a4, a5, a6, a7, a8, a9, ao, a10, a11, a12⟩ :=
       resumeCall_eq (child := child) (o := outputStart) (osz := outputSize) hlen
     refine .inl ⟨after, hres, caller, msg, child, hcallee, hchild, c10, c11, m1, m2, m3, mt, mca,
-      m4, md, m5, m6, m7, ?_⟩
-    exact ⟨by rw [a1, c1, hc], by rw [a2, c2, hj], by rw [a3, c3], by rw [a4, c4, hpc],
+      m4, md, m5, m6, m7, m8, ?_⟩
+    exact ⟨⟨by rw [a1, c1, hc], by rw [a2, c2, hj], by rw [a3, c3], by rw [a4, c4, hpc],
       by rw [a5, c5], by rw [a6, c6], by rw [a7, c7], by rw [a8, c8, hrun], by rw [a9, c9, herr],
-      by rw [ao, co, hout], a10, a11⟩
+      by rw [ao, co, hout], a10, a11⟩, a12⟩
 
 /-- CALL with more value than the current account holds sends no message, and pushes 0.
 

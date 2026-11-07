@@ -1,6 +1,7 @@
 module
 
 public import EthLib.Execution.Proofs.Evm.Logic.Known
+public import EthLib.Execution.Proofs.Evm.Logic.Copy
 public import EthLib.Execution.Proofs.State.Tracker
 
 /-!
@@ -22,6 +23,14 @@ There it reads the words of the base state, and it is warm exactly when the base
 
 It also has the words before the transaction, the accounts, the codes and the block of the base.
 
+Agreement in general may leave out the accounts of some addresses, whose balances may move.
+
+Each of those still exists exactly when it does in the base, with its nonce and its code hash.
+
+It may also leave out the accounts of other addresses, which may change in every way.
+
+Every other account still exists exactly when it does in the base, with its nonce and its code.
+
 - A rule that keeps the state and the substate, for every state and substate, keeps every fact.
 - From Berlin, SLOAD of the key of a fact of the account of the frame pushes its word now.
 - It makes the slot warm, and pays 2100 for a cold slot and 100 for a warm one.
@@ -29,6 +38,9 @@ It also has the words before the transaction, the accounts, the codes and the bl
 - It needs a frame that may change the state, more than 2300 gas, and its account in the base state.
 - It pays the price of EIP-2200 with the prices of EIP-2929, from the facts of the slot.
 - It adds the refund of the write, from the same facts, to the refund counter.
+- From Byzantium, RETURNDATASIZE of a frame that holds some return data pushes its size.
+- RETURNDATACOPY of a range within that return data writes its bytes as a fact of memory.
+- Both keep the return data and every fact of a slot.
 - A rule that halts and keeps the state and the substate keeps every fact in the halted frame.
 
 These frames say nothing of the logs, the accessed addresses and the other fields of the substate.
@@ -38,8 +50,8 @@ These frames say nothing of the logs, the accessed addresses and the other field
 
 namespace EthLib.Execution.Evm.Logic
 
-open EthLib.Base (Fork U256 Address Bytes32)
-open EthLib.Execution.State (TransactionState)
+open EthLib.Base (Fork U256 Address Bytes32 Hash32)
+open EthLib.Execution.State (TransactionState Account)
 open GasCosts
 
 variable {fork : Fork}
@@ -71,14 +83,24 @@ def SlotFact.Holds (fact : SlotFact) (state : TransactionState) (substate : Subs
 def Untouched (touched : List (Address × U256)) (address : Address) (key : Bytes32) : Prop :=
   ∀ slot ∈ touched, slot.1 ≠ address ∨ U256.toBeBytes slot.2 ≠ key
 
+/-- The nonce and the code hash of an account, which are all of it but its balance. -/
+def nonceAndCode (account : Account) : Nat × Hash32 := (account.nonce, account.codeHash)
+
 /-- A state and its accessed keys agree with a base state and base keys outside some slots.
 
 Outside the slots of `touched`, each word reads as in `base`, and is warm when `accessed` holds it.
 
-The words before the transaction, the accounts, the codes and the block are those of `base`. -/
-structure Agrees (touched : List (Address × U256)) (base : TransactionState)
-    (accessed : Std.ExtTreeMap Address (Std.ExtTreeSet Bytes32)) (state : TransactionState)
-    (keys : Std.ExtTreeMap Address (Std.ExtTreeSet Bytes32)) : Prop where
+Outside the addresses of `moved` and of `remade`, each account is that of `base`.
+
+Outside the addresses of `remade`, the account exists exactly when it does in `base`.
+
+There it has the nonce and the code hash of `base`, and the code of `base`.
+
+The words before the transaction and the block are those of `base`. -/
+structure Agrees (touched : List (Address × U256)) (moved remade : List Address)
+    (base : TransactionState) (accessed : Std.ExtTreeMap Address (Std.ExtTreeSet Bytes32))
+    (state : TransactionState) (keys : Std.ExtTreeMap Address (Std.ExtTreeSet Bytes32)) :
+    Prop where
   /-- Each word outside the slots reads as in the base state. -/
   storage : ∀ address key, Untouched touched address key →
     state.getStorage address key = base.getStorage address key
@@ -87,35 +109,51 @@ structure Agrees (touched : List (Address × U256)) (base : TransactionState)
     (key ∈ keys.getD address ∅ ↔ key ∈ accessed.getD address ∅)
   /-- The words before the transaction are those of the base state. -/
   original : state.getStorageOriginal = base.getStorageOriginal
-  /-- The accounts are those of the base state. -/
-  account : ∀ address, state.getAccountOptional address = base.getAccountOptional address
-  /-- The codes are those of the base state. -/
-  code : ∀ hash, state.getCode hash = base.getCode hash
+  /-- The accounts outside the moved and the remade addresses are those of the base state. -/
+  account : ∀ address, address ∉ moved → address ∉ remade →
+    state.getAccountOptional address = base.getAccountOptional address
+  /-- Outside the remade addresses, an account has the nonce and the code hash of the base.
+
+  Or it is missing in both. -/
+  shape : ∀ address, address ∉ remade → (state.getAccountOptional address).map nonceAndCode =
+    (base.getAccountOptional address).map nonceAndCode
+  /-- Outside the remade addresses, an account has the code of the base state. -/
+  code : ∀ address, address ∉ remade → state.getCode (state.getAccount address).codeHash =
+    base.getCode (base.getAccount address).codeHash
   /-- The block is that of the base state. -/
   parent : state.parent = base.parent
 
 namespace Agrees
 
-variable {touched touched' : List (Address × U256)} {base state state' : TransactionState}
+variable {touched touched' : List (Address × U256)} {moved moved' remade remade' : List Address}
+  {base state state' : TransactionState}
   {accessed keys keys' : Std.ExtTreeMap Address (Std.ExtTreeSet Bytes32)}
 
-/-- A state agrees with itself outside every list of slots. -/
-theorem refl (touched : List (Address × U256)) (state : TransactionState)
-    (keys : Std.ExtTreeMap Address (Std.ExtTreeSet Bytes32)) :
-    Agrees touched state keys state keys :=
-  ⟨fun _ _ _ => rfl, fun _ _ _ => .rfl, rfl, fun _ => rfl, fun _ => rfl, rfl⟩
+/-- A state agrees with itself outside every list of slots and of addresses. -/
+theorem refl (touched : List (Address × U256)) (moved remade : List Address)
+    (state : TransactionState) (keys : Std.ExtTreeMap Address (Std.ExtTreeSet Bytes32)) :
+    Agrees touched moved remade state keys state keys :=
+  ⟨fun _ _ _ => rfl, fun _ _ _ => .rfl, rfl, fun _ _ _ => rfl, fun _ _ => rfl, fun _ _ => rfl,
+    rfl⟩
 
-/-- Agreement holds outside a list that contains the first one. -/
-theorem mono (h : Agrees touched base accessed state keys)
-    (sub : ∀ slot ∈ touched, slot ∈ touched') : Agrees touched' base accessed state keys :=
+/-- Agreement holds outside lists that contain the first ones. -/
+theorem mono (h : Agrees touched moved remade base accessed state keys)
+    (sub : ∀ slot ∈ touched, slot ∈ touched') (subMoved : ∀ address ∈ moved, address ∈ moved')
+    (subRemade : ∀ address ∈ remade, address ∈ remade') :
+    Agrees touched' moved' remade' base accessed state keys :=
   ⟨fun address key hu => h.storage address key fun slot hs => hu slot (sub slot hs),
     fun address key hu => h.warm address key fun slot hs => hu slot (sub slot hs),
-    h.original, h.account, h.code, h.parent⟩
+    h.original,
+    fun address hm hr => h.account address (fun hm' => hm (subMoved address hm'))
+      fun hr' => hr (subRemade address hr'),
+    fun address hr => h.shape address fun hr' => hr (subRemade address hr'),
+    fun address hr => h.code address fun hr' => hr (subRemade address hr'), h.parent⟩
 
-/-- Agreement composes, outside both lists of slots. -/
-theorem trans (h : Agrees touched base accessed state keys)
-    (h' : Agrees touched' state keys state' keys') :
-    Agrees (touched' ++ touched) base accessed state' keys' := by
+/-- Agreement composes, outside both lists of slots and both lists of addresses of each kind. -/
+theorem trans (h : Agrees touched moved remade base accessed state keys)
+    (h' : Agrees touched' moved' remade' state keys state' keys') :
+    Agrees (touched' ++ touched) (moved' ++ moved) (remade' ++ remade) base accessed state'
+      keys' := by
   have left : ∀ {address key}, Untouched (touched' ++ touched) address key →
       Untouched touched' address key := fun hu slot hs => hu slot (List.mem_append_left _ hs)
   have right : ∀ {address key}, Untouched (touched' ++ touched) address key →
@@ -123,8 +161,38 @@ theorem trans (h : Agrees touched base accessed state keys)
   exact ⟨fun address key hu => (h'.storage address key (left hu)).trans
       (h.storage address key (right hu)),
     fun address key hu => (h'.warm address key (left hu)).trans (h.warm address key (right hu)),
-    h'.original.trans h.original, fun address => (h'.account address).trans (h.account address),
-    fun hash => (h'.code hash).trans (h.code hash), h'.parent.trans h.parent⟩
+    h'.original.trans h.original,
+    fun address hm hr => (h'.account address (fun hm' => hm (List.mem_append_left _ hm'))
+        fun hr' => hr (List.mem_append_left _ hr')).trans
+      (h.account address (fun hm' => hm (List.mem_append_right _ hm'))
+        fun hr' => hr (List.mem_append_right _ hr')),
+    fun address hr => (h'.shape address fun hr' => hr (List.mem_append_left _ hr')).trans
+      (h.shape address fun hr' => hr (List.mem_append_right _ hr')),
+    fun address hr => (h'.code address fun hr' => hr (List.mem_append_left _ hr')).trans
+      (h.code address fun hr' => hr (List.mem_append_right _ hr')),
+    h'.parent.trans h.parent⟩
+
+/-- Outside the remade addresses, an account exists exactly when it does in the base state. -/
+theorem isSome (h : Agrees touched moved remade base accessed state keys) {address : Address}
+    (hr : address ∉ remade) :
+    (state.getAccountOptional address).isSome = (base.getAccountOptional address).isSome := by
+  have := congrArg Option.isSome (h.shape address hr)
+  simpa using this
+
+/-- Outside the remade addresses, an account has the code hash of the base state. -/
+theorem codeHash (h : Agrees touched moved remade base accessed state keys) {address : Address}
+    (hr : address ∉ remade) :
+    (state.getAccount address).codeHash = (base.getAccount address).codeHash := by
+  have := h.shape address hr
+  unfold TransactionState.getAccount
+  cases hs : state.getAccountOptional address <;> cases hb : base.getAccountOptional address <;>
+    simp_all [nonceAndCode]
+
+/-- Outside the moved and the remade addresses, an account is that of the base state. -/
+theorem getAccount (h : Agrees touched moved remade base accessed state keys) {address : Address}
+    (hm : address ∉ moved) (hr : address ∉ remade) :
+    state.getAccount address = base.getAccount address := by
+  rw [TransactionState.getAccount, h.account address hm hr, TransactionState.getAccount]
 
 end Agrees
 
@@ -138,7 +206,8 @@ def Stored (code : ByteArray) (message : Message fork) (pc : Nat) (stack : List 
   Known code message pc stack size facts gas evm.state evm.substate evm ∧
     (∀ fact ∈ slots, fact.Holds evm.state evm.substate) ∧
     evm.substate.refundCounter = refund ∧
-    Agrees (slots.map SlotFact.slot) base accessed evm.state evm.substate.accessedStorageKeys
+    Agrees (slots.map SlotFact.slot) [] [] base accessed evm.state
+      evm.substate.accessedStorageKeys
 
 variable {code : ByteArray} {message : Message fork} {pc pc' : Nat} {stack stack' : List U256}
   {size size' : Nat} {facts facts' : List (Nat × ByteArray)} {gas gas' : Nat}
@@ -150,7 +219,8 @@ theorem stored_of_known {evm : Evm fork Nat} {state : TransactionState} {substat
     (h : Known code message pc stack size facts gas state substate evm)
     (hslots : ∀ fact ∈ slots, fact.Holds state substate)
     (hrefund : substate.refundCounter = refund)
-    (hagree : Agrees (slots.map SlotFact.slot) base accessed state substate.accessedStorageKeys) :
+    (hagree : Agrees (slots.map SlotFact.slot) [] [] base accessed state
+      substate.accessedStorageKeys) :
     Stored code message pc stack size facts gas slots refund base accessed evm := by
   have hs : evm.state = state := h.1.2.2.2.2.2.2.2.2.2.2.1
   have hss : evm.substate = substate := h.1.2.2.2.2.2.2.2.2.2.2.2
@@ -244,9 +314,9 @@ theorem untouched_of_touch {fact' : SlotFact} {address : Address} {key : Bytes32
 /-- After an access to the slot of `fact'`, the state still agrees with the base.
 
 The access changes only the word and the warmth of that slot. -/
-theorem Agrees.touch {fact' : SlotFact} {state state' : TransactionState}
-    {keys keys' : Std.ExtTreeMap Address (Std.ExtTreeSet Bytes32)}
-    (h : Agrees (slots.map SlotFact.slot) base accessed state keys)
+theorem Agrees.touch {fact' : SlotFact} {moved remade : List Address}
+    {state state' : TransactionState} {keys keys' : Std.ExtTreeMap Address (Std.ExtTreeSet Bytes32)}
+    (h : Agrees (slots.map SlotFact.slot) moved remade base accessed state keys)
     (hread : ∀ address key, fact'.address ≠ address ∨ U256.toBeBytes fact'.key ≠ key →
       state'.getStorage address key = state.getStorage address key)
     (hwarm : ∀ address key, fact'.address ≠ address ∨ U256.toBeBytes fact'.key ≠ key →
@@ -255,7 +325,7 @@ theorem Agrees.touch {fact' : SlotFact} {state state' : TransactionState}
     (haccount : ∀ address, state'.getAccountOptional address = state.getAccountOptional address)
     (hcode : ∀ hash, state'.getCode hash = state.getCode hash)
     (hparent : state'.parent = state.parent) :
-    Agrees ((touch fact' slots).map SlotFact.slot) base accessed state' keys' :=
+    Agrees ((touch fact' slots).map SlotFact.slot) moved remade base accessed state' keys' :=
   ⟨fun address key hu => by
       obtain ⟨hhead, hrest⟩ := untouched_of_touch hu
       rw [hread address key hhead]
@@ -263,8 +333,13 @@ theorem Agrees.touch {fact' : SlotFact} {state state' : TransactionState}
     fun address key hu => by
       obtain ⟨hhead, hrest⟩ := untouched_of_touch hu
       exact (hwarm address key hhead).trans (h.warm address key hrest),
-    horiginal.trans h.original, fun address => (haccount address).trans (h.account address),
-    fun hash => (hcode hash).trans (h.code hash), hparent.trans h.parent⟩
+    horiginal.trans h.original,
+    fun address hm hr => (haccount address).trans (h.account address hm hr),
+    fun address hr => by rw [haccount]; exact h.shape address hr,
+    fun address hr => by
+      rw [TransactionState.getAccount, haccount, hcode]
+      exact h.code address hr,
+    hparent.trans h.parent⟩
 
 /-- From Berlin, SLOAD of the key of a fact of the account of the frame pushes its word now.
 
@@ -343,7 +418,7 @@ theorem sstore_stored (hfork : .berlin ≤ fork) (hglam : fork < .glamsterdam) {
     rw [← hw]
     simp
   have hacc : (evm.state.getAccountOptional message.currentTarget).isSome = true := by
-    rw [hagree.account]; exact hbase
+    rw [hagree.isSome (List.not_mem_nil)]; exact hbase
   obtain ⟨state', hnew, hothers, horig, haccount, hcode, hparent, hrule⟩ := sstore_of_account
     hfork hglam hlt hbyte hstatic hcold hstipend (by rw [ho, hc]; exact hgas) hacc
   obtain ⟨after, hreach, hat'⟩ := hrule evm hat
@@ -378,6 +453,49 @@ theorem sstore_stored (hfork : .berlin ≤ fork) (hglam : fork < .glamsterdam) {
         ((by rw [← haddress]; exact h : _ ∨ _).imp Ne.symm Ne.symm))
       horig haccount hcode hparent)⟩
 
+/-- From Byzantium, RETURNDATASIZE pushes the size of the return data `data`, for 2 gas.
+
+The frame keeps the return data and every fact. -/
+theorem returndatasize_stored (hfork : .byzantium ≤ fork) {data : ByteArray}
+    (hlt : pc < code.size) (hbyte : code[pc] = 0x3d) (hgas : 2 ≤ gas)
+    (hstack : stack.length < STACK_LIMIT) :
+    Hoare fork
+      (fun evm => Stored code message pc stack size facts gas slots refund base accessed evm ∧
+        evm.returnData = data)
+      (fun evm => Stored code message (pc + 1) (BitVec.ofNat 256 data.size :: stack) size facts
+        (gas - 2) slots refund base accessed evm ∧ evm.returnData = data) := by
+  rintro evm ⟨⟨⟨hat, hsize, hmod, hall⟩, hslots, hrefund, hagree⟩, hrd⟩
+  obtain ⟨after, hreach, hat', hrd'⟩ := returndatasize hfork hlt hbyte hgas hstack evm ⟨hat, hrd⟩
+  have hm := hat'.2.2.2.2.2.1
+  exact ⟨after, hreach, stored_of_known
+    ⟨by rw [hm]; exact hat', by rw [hm]; exact hsize, hmod, by rw [hm]; exact hall⟩
+    hslots hrefund hagree, hrd'⟩
+
+/-- From Byzantium, RETURNDATACOPY of a range of the return data `data` writes a fact.
+
+The range ends within the return data.
+
+It keeps the facts of memory apart from the range, the return data and every fact of a slot.
+
+It pays 3, 3 gas a word and the growth of memory, which depends on its size. -/
+theorem returndatacopy_stored (hfork : .byzantium ≤ fork) {data : ByteArray}
+    {start offset length : U256} {rest : List U256} (hlt : pc < code.size)
+    (hbyte : code[pc] = 0x3e) (hz : length ≠ 0) (fit : offset.toNat + length.toNat ≤ data.size)
+    (hgas : 3 + 3 * wordCount length.toNat + (extendMemory size [(start, length)]).cost ≤ gas) :
+    Hoare fork
+      (fun evm => Stored code message pc (start :: offset :: length :: rest) size facts gas slots
+        refund base accessed evm ∧ evm.returnData = data)
+      (fun evm => Stored code message (pc + 1) rest
+        (size + (extendMemory size [(start, length)]).expandBy)
+        ((start.toNat, memoryReadBytes data offset.toNat length.toNat) ::
+          facts.filter (Apart start.toNat length.toNat))
+        (gas - (3 + 3 * wordCount length.toNat + (extendMemory size [(start, length)]).cost))
+        slots refund base accessed evm ∧ evm.returnData = data) := by
+  rintro evm ⟨⟨hk, hslots, hrefund, hagree⟩, hrd⟩
+  obtain ⟨after, hreach, hk', hrd'⟩ :=
+    returndatacopy_known hfork hlt hbyte hz fit hgas evm ⟨hk, hrd⟩
+  exact ⟨after, hreach, stored_of_known hk' hslots hrefund hagree, hrd'⟩
+
 /-- A halted frame with its error, output and gas, and the facts of its slots.
 
 It also holds the refund counter, and agrees with the base outside the slots of its facts. -/
@@ -388,7 +506,8 @@ def StoppedStored (reverted : Bool) (output : ByteArray) (gas : Nat) (slots : Li
     evm.output = output ∧ evm.gas = gas ∧
     (∀ fact ∈ slots, fact.Holds evm.state evm.substate) ∧
     evm.substate.refundCounter = refund ∧
-    Agrees (slots.map SlotFact.slot) base accessed evm.state evm.substate.accessedStorageKeys
+    Agrees (slots.map SlotFact.slot) [] [] base accessed evm.state
+      evm.substate.accessedStorageKeys
 
 /-- A rule that halts and keeps the state and the substate, for every one, keeps every fact. -/
 theorem StoppedStored.of_known {reverted : Bool} {output : ByteArray}
