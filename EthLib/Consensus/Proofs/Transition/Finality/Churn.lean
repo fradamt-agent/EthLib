@@ -554,6 +554,497 @@ theorem finality_processRegistryUpdates_cohort {cfg : Config} {s t : FinalitySta
   rw [same]
   exact middleBound epoch finite
 
+/-- Slashing preserves the finite exit-cohort cap after allocating the validator's exit.
+
+The later flag, withdrawability and reward writes do not change exit epochs. -/
+theorem finality_slashValidator_cohort {cfg : Config} {s t : FinalityState p}
+    {i : ValidatorIndex} {whistleblower : Option ValidatorIndex} {cap : Nat}
+    (bounded : ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
+      (s.validators.data.toList.filter (·.exitEpoch == epoch)).length ≤ cap)
+    (limit : max 1 (getValidatorChurnLimit cfg s).toNat ≤ cap)
+    (ran : slashValidator cfg s i whistleblower = .ok t) :
+    ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
+      (t.validators.data.toList.filter (·.exitEpoch == epoch)).length ≤ cap := by
+  unfold slashValidator at ran
+  simp only [bind_ok_iff, liftArith, mapError_ok_iff] at ran
+  obtain ⟨exited, exitedOk, validator, found, withdrawable, _, _, _, _, _, _, lowered,
+    _, _, _, _, _, raised, _, final, done⟩ := ran
+  have same := (slashValidator_last done).1.trans ((increaseBalance_validators final).trans
+    ((increaseBalance_validators raised).trans (decreaseBalance_validators lowered)))
+  have read : exited.validators.data[i.toNat]? = some validator := by
+    unfold getValidator at found
+    split at found
+    · cases found
+      assumption
+    · cases found
+  intro epoch finite
+  let marked := { validator with
+    slashed := true
+    withdrawableEpoch := max validator.withdrawableEpoch withdrawable }
+  rw [same, finality_exitCohort_setValidator_eq read marked rfl epoch]
+  exact finality_initiateValidatorExit_cohort bounded limit exitedOk epoch finite
+
+/-- Depositing a new validator changes no finite exit cohort. -/
+theorem finality_applyDeposit_exitCohort {cfg : Config} {checks : SignatureChecks}
+    {s t : FinalityState p} {key : BLSPubkey} {credentials : Bytes32}
+    {amount : Gwei} {signature : BLSSignature}
+    (ran : applyDeposit cfg checks s key credentials amount signature = .ok t)
+    {epoch : Epoch} (finite : epoch ≠ FAR_FUTURE_EPOCH) :
+    (t.validators.data.toList.filter (·.exitEpoch == epoch)).length =
+      (s.validators.data.toList.filter (·.exitEpoch == epoch)).length := by
+  simp only [applyDeposit, show ¬Fork.pectra ≤ Fork.phase0 by decide, ↓reduceDIte,
+    applyPendingDeposit] at ran
+  split at ran
+  · simp only [bind_ok_iff] at ran
+    obtain ⟨_, _, ran⟩ := ran
+    split at ran
+    · simp only [addValidatorToRegistry, show ¬Fork.altair ≤ Fork.phase0 by decide,
+        ↓reduceDIte] at ran
+      split at ran
+      · cases ran
+        simp [Array.toList_push, getValidatorFromDeposit, Ne.symm finite]
+      · cases ran
+    · cases ran
+      rfl
+  · rw [increaseBalance_validators (liftAccessor_ok.mp ran)]
+
+/-- A successful deposit cursor update preserves every finite exit cohort. -/
+theorem finality_processDeposit_exitCohort {cfg : Config} {checks : SignatureChecks}
+    {s t : FinalityState p} {deposit : Deposit}
+    (ran : processDeposit cfg checks (by decide) s deposit = .ok t)
+    {epoch : Epoch} (finite : epoch ≠ FAR_FUTURE_EPOCH) :
+    (t.validators.data.toList.filter (·.exitEpoch == epoch)).length =
+      (s.validators.data.toList.filter (·.exitEpoch == epoch)).length := by
+  obtain ⟨_, _, _, _, applied⟩ := processDeposit_ok ran
+  exact finality_applyDeposit_exitCohort applied finite
+
+/-- A proposer slashing respects the finite exit-cohort cap. -/
+theorem finality_processProposerSlashing_cohort {cfg : Config} {checks : SignatureChecks}
+    {s t : FinalityState p} {a : ProposerSlashing} {cap : Nat}
+    (bounded : ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
+      (s.validators.data.toList.filter (·.exitEpoch == epoch)).length ≤ cap)
+    (limit : max 1 (getValidatorChurnLimit cfg s).toNat ≤ cap)
+    (ran : processProposerSlashing cfg checks s a = .ok t) :
+    ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
+      (t.validators.data.toList.filter (·.exitEpoch == epoch)).length ≤ cap := by
+  simp only [processProposerSlashing, bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at ran
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, slashed⟩ := ran
+  exact finality_slashValidator_cohort bounded limit slashed
+
+/-- Each attester-slashing index either preserves the state or allocates one exit. -/
+theorem finality_slashIfSlashable_cohort {cfg : Config}
+    {s t : FinalityState p × Bool} {i : ValidatorIndex} {cap : Nat}
+    (bounded : ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
+      (s.1.validators.data.toList.filter (·.exitEpoch == epoch)).length ≤ cap)
+    (limit : max 1 (getValidatorChurnLimit cfg s.1).toNat ≤ cap)
+    (ran : slashIfSlashable cfg s i = .ok t) :
+    ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
+      (t.1.validators.data.toList.filter (·.exitEpoch == epoch)).length ≤ cap := by
+  obtain ⟨s, flag⟩ := s
+  simp only [slashIfSlashable, bind_ok_iff, liftAccessor_ok] at ran
+  obtain ⟨_, _, ran⟩ := ran
+  split at ran
+  · simp only [bind_ok_iff, liftAccessor_ok, pure, Except.pure, Except.ok.injEq] at ran
+    obtain ⟨_, slashed, rfl⟩ := ran
+    exact finality_slashValidator_cohort bounded limit slashed
+  · cases ran
+    exact bounded
+
+/-- An attester slashing composes finite-cohort bounds over its actual index fold. -/
+theorem finality_processAttesterSlashing_cohort {cfg : Config} {checks : SignatureChecks}
+    {s t : FinalityState p} {a : AttesterSlashing p .phase0} {cap : Nat}
+    (bounded : ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
+      (s.validators.data.toList.filter (·.exitEpoch == epoch)).length ≤ cap)
+    (limit : ∀ u : FinalityState p, u.validators.data.size = s.validators.data.size →
+      max 1 (getValidatorChurnLimit cfg u).toNat ≤ cap)
+    (ran : processAttesterSlashing cfg checks s a = .ok t) :
+    ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
+      (t.validators.data.toList.filter (·.exitEpoch == epoch)).length ≤ cap := by
+  simp only [processAttesterSlashing, bind_ok_iff, ensure_ok_iff, pure, Except.pure,
+    Except.ok.injEq] at ran
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, folded, _, _, rfl⟩ := ran
+  have kept := foldlM_ok_invariant
+    (fun u : FinalityState p × Bool =>
+      u.1.validators.data.size = s.validators.data.size ∧
+      ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
+        (u.1.validators.data.toList.filter (·.exitEpoch == epoch)).length ≤ cap)
+    (fun _ _ _ prior ok =>
+      ⟨((slashIfSlashable_ok ok).1.1).trans prior.1,
+        finality_slashIfSlashable_cohort prior.2 (limit _ prior.1) ok⟩)
+    ⟨rfl, bounded⟩ folded
+  exact kept.2
+
+/-- A voluntary exit respects the finite exit-cohort cap. -/
+theorem finality_processVoluntaryExit_cohort {cfg : Config} {checks : SignatureChecks}
+    {s t : FinalityState p} {a : SignedVoluntaryExit} {cap : Nat}
+    (bounded : ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
+      (s.validators.data.toList.filter (·.exitEpoch == epoch)).length ≤ cap)
+    (limit : max 1 (getValidatorChurnLimit cfg s).toNat ≤ cap)
+    (ran : processVoluntaryExit cfg checks s a = .ok t) :
+    ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
+      (t.validators.data.toList.filter (·.exitEpoch == epoch)).length ≤ cap := by
+  simp only [processVoluntaryExit, show ¬Fork.pectra ≤ Fork.phase0 by decide,
+    ↓reduceIte, bind_ok_iff, ensure_ok_iff, liftAccessor_ok, liftSsz_ok] at ran
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, exited⟩ := ran
+  exact finality_initiateValidatorExit_cohort bounded limit exited
+
+/-- An effective-balance write leaves every exit cohort unchanged. -/
+theorem finality_updateEffectiveBalance_exitCohort {s t : FinalityState p} {i : Nat}
+    (inside : i < s.validators.data.size)
+    (ran : updateEffectiveBalance s i = .ok t) (epoch : Epoch) :
+    (t.validators.data.toList.filter (·.exitEpoch == epoch)).length =
+      (s.validators.data.toList.filter (·.exitEpoch == epoch)).length := by
+  have exactIndex := toNat_toUInt64_of_lt (s.validators.bound (by decide)) inside
+  simp only [updateEffectiveBalance, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+    Except.ok.injEq] at ran
+  obtain ⟨v, read, _, _, balance, _, rfl⟩ := ran
+  have found : s.validators.data[i]? = some v := by
+    rw [← exactIndex]
+    unfold getValidator at read
+    split at read
+    · cases read
+      assumption
+    · cases read
+  exact finality_exitCohort_setValidator_eq found
+    { v with effectiveBalance := balance } rfl epoch
+
+/-- Effective-balance hysteresis preserves every exit cohort. -/
+theorem finality_processEffectiveBalanceUpdates_exitCohort {s t : FinalityState p}
+    (ran : processEffectiveBalanceUpdates s = .ok t) (epoch : Epoch) :
+    (t.validators.data.toList.filter (·.exitEpoch == epoch)).length =
+      (s.validators.data.toList.filter (·.exitEpoch == epoch)).length := by
+  simp only [processEffectiveBalanceUpdates, show ¬Fork.pectra ≤ Fork.phase0 by decide,
+    ↓reduceIte] at ran
+  have pass : ∀ (indices : List Nat) (a b : FinalityState p),
+      (∀ i ∈ indices, i < a.validators.data.size) →
+      indices.foldlM updateEffectiveBalance a = .ok b →
+      (b.validators.data.toList.filter (·.exitEpoch == epoch)).length =
+        (a.validators.data.toList.filter (·.exitEpoch == epoch)).length := by
+    intro indices
+    induction indices with
+    | nil => intro a b _ ok; cases ok; rfl
+    | cons i rest ih =>
+      intro a b inside ok
+      obtain ⟨middle, first, tail⟩ := bind_ok_iff.mp ok
+      have same := finality_updateEffectiveBalance_exitCohort (inside i List.mem_cons_self)
+        first epoch
+      have sizes := (sameSizes_updateEffectiveBalance first).1
+      exact (ih middle b (fun j member => by
+        rw [sizes]
+        exact inside j (List.mem_cons_of_mem _ member)) tail).trans same
+  exact pass _ s t (fun _ member => List.mem_range.mp member) ran
+
+/-- Epoch processing preserves a uniform finite exit-cohort cap. -/
+theorem finality_processEpoch_cohort {cfg : Config} {s t : FinalityState p} {cap : Nat}
+    (inv : Invariant s)
+    (bounded : ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
+      (s.validators.data.toList.filter (·.exitEpoch == epoch)).length ≤ cap)
+    (limit : ∀ u : FinalityState p, u.validators.data.size = s.validators.data.size →
+      max 1 (getValidatorChurnLimit cfg u).toNat ≤ cap)
+    (ran : processEpoch cfg s = .ok t) :
+    ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
+      (t.validators.data.toList.filter (·.exitEpoch == epoch)).length ≤ cap := by
+  simp only [processEpoch, show ¬Fork.altair ≤ Fork.phase0 by decide, ↓reduceDIte,
+    bind_ok_iff] at ran
+  obtain ⟨justified, justifiedOk, rewarded, rewardedOk, registered, registeredOk, slashed,
+    slashedOk, reset, resetOk, balanced, balancedOk, cleared, clearedOk, mixed, mixedOk, rooted,
+    rootedOk, rotated⟩ := ran
+  have justifiedRegistry :=
+    (processJustificationAndFinalization_invariant inv.ordered inv.settled justifiedOk).2.2.2.2.1
+  have rewardedRegistry :=
+    (processRewardsAndPenalties_validators rewardedOk).trans justifiedRegistry
+  have registeredBound := finality_processRegistryUpdates_cohort
+    (s := rewarded) (by simpa only [rewardedRegistry] using bounded)
+    (fun u same => limit u (by simpa only [rewardedRegistry] using same)) registeredOk
+  have clearedRegistry : cleared.validators = balanced.validators := by
+    obtain ⟨_, _, rfl⟩ := processSlashingsReset_eq clearedOk
+    rfl
+  have mixedRegistry : mixed.validators = cleared.validators := by
+    obtain ⟨_, _, _, _, rfl⟩ := processRandaoMixesReset_eq mixedOk
+    rfl
+  intro epoch finite
+  rw [processParticipationRecordUpdates_validators rotated,
+    processHistoricalRootsUpdate_validators rootedOk, mixedRegistry, clearedRegistry,
+    finality_processEffectiveBalanceUpdates_exitCohort balancedOk epoch,
+    processEth1DataReset_validators resetOk, processSlashings_validators slashedOk]
+  exact registeredBound epoch finite
+
+/-- Attestation processing changes no exit cohort. -/
+theorem finality_processAttestation_exitCohort {cfg : Config} {checks : SignatureChecks}
+    {s t : FinalityState p} {a : Attestation p .phase0}
+    (ran : processAttestation cfg checks s a = .ok t) (epoch : Epoch) :
+    (t.validators.data.toList.filter (·.exitEpoch == epoch)).length =
+      (s.validators.data.toList.filter (·.exitEpoch == epoch)).length := by
+  obtain ⟨_, _, _, _, _, recorded, _, _, _⟩ := processAttestation_records (by decide) ran
+  cases current : a.data.target.epoch == getCurrentEpoch s <;>
+    simp only [recordPendingAttestation, current, Bool.false_eq_true, ↓reduceIte] at recorded <;>
+    split at recorded <;> cases recorded <;> rfl
+
+/-- Block operations preserve finite exit-cohort caps under a population envelope.
+
+The same envelope covers intermediate deposits as well as each exit allocation. -/
+theorem finality_processOperations_cohort {cfg : Config} {checks : SignatureChecks}
+    {s t : FinalityState p} {body : BeaconBlockBody p .phase0} {population cap : Nat}
+    (bounded : ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
+      (s.validators.data.toList.filter (·.exitEpoch == epoch)).length ≤ cap)
+    (size : t.validators.data.size ≤ population)
+    (limit : ∀ u : FinalityState p, u.validators.data.size ≤ population →
+      max 1 (getValidatorChurnLimit cfg u).toNat ≤ cap)
+    (ran : processOperations cfg checks s body = .ok t) :
+    ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
+      (t.validators.data.toList.filter (·.exitEpoch == epoch)).length ≤ cap := by
+  unfold processOperations at ran
+  split at ran
+  · cases ran
+  simp only [bind_ok_iff, ensure_ok_iff, ← Array.foldlM_toList] at ran
+  obtain ⟨_, _, _, _, proposers, proposersOk, attesters, attestersOk, attested, attestedOk,
+    deposited, depositedOk, exited, exitsOk, changesOk⟩ := ran
+  simp only [show ¬Fork.shapella ≤ Fork.phase0 by decide, ↓reduceDIte,
+    pure, Except.pure, Except.ok.injEq] at changesOk
+  subst t
+  have oneSize := foldlM_ok_invariant (SameSizes s)
+    (fun _ _ _ prior ok => prior.trans (sameSizes_processProposerSlashing ok))
+    (SameSizes.refl s) proposersOk
+  have twoSize := foldlM_ok_invariant (SameSizes proposers)
+    (fun _ _ _ prior ok => prior.trans (sameSizes_processAttesterSlashing ok))
+    (SameSizes.refl proposers) attestersOk
+  have threeSize := foldlM_ok_invariant (SameSizes attesters)
+    (fun _ _ _ prior ok => prior.trans (sameSizes_processAttestation ok))
+    (SameSizes.refl attesters) attestedOk
+  have fourSize := (FinalityRegistryExtends.foldlM
+    (fun _ _ _ ok => finality_processDeposit_registry ok) depositedOk).1
+  have fiveSize := foldlM_ok_invariant (SameSizes deposited)
+    (fun _ _ _ prior ok => prior.trans (sameSizes_processVoluntaryExit ok))
+    (SameSizes.refl deposited) exitsOk
+  have depositedSize : deposited.validators.data.size ≤ population := by
+    rwa [fiveSize.1] at size
+  have startSize : s.validators.data.size ≤ population := by
+    rw [threeSize.1, twoSize.1, oneSize.1] at fourSize
+    exact Nat.le_trans fourSize depositedSize
+  have one := foldlM_ok_invariant
+    (fun u : FinalityState p => u.validators.data.size = s.validators.data.size ∧
+      ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
+        (u.validators.data.toList.filter (·.exitEpoch == epoch)).length ≤ cap)
+    (fun _ _ _ prior ok => ⟨(sameSizes_processProposerSlashing ok).1.trans prior.1,
+      finality_processProposerSlashing_cohort prior.2
+        (limit _ (prior.1 ▸ startSize)) ok⟩) ⟨rfl, bounded⟩ proposersOk
+  have two := foldlM_ok_invariant
+    (fun u : FinalityState p => u.validators.data.size = s.validators.data.size ∧
+      ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
+        (u.validators.data.toList.filter (·.exitEpoch == epoch)).length ≤ cap)
+    (fun _ _ _ prior ok => ⟨(sameSizes_processAttesterSlashing ok).1.trans prior.1,
+      finality_processAttesterSlashing_cohort prior.2
+        (fun u same => limit u ((same.trans prior.1) ▸ startSize)) ok⟩) one attestersOk
+  have three := foldlM_ok_invariant
+    (fun u : FinalityState p => ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
+      (u.validators.data.toList.filter (·.exitEpoch == epoch)).length ≤ cap)
+    (fun _ _ _ prior ok epoch finite => by
+      rw [finality_processAttestation_exitCohort ok epoch]
+      exact prior epoch finite) two.2 attestedOk
+  have four := foldlM_ok_invariant
+    (fun u : FinalityState p => ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
+      (u.validators.data.toList.filter (·.exitEpoch == epoch)).length ≤ cap)
+    (fun _ _ _ prior ok epoch finite => by
+      rw [finality_processDeposit_exitCohort ok finite]
+      exact prior epoch finite) three depositedOk
+  have five := foldlM_ok_invariant
+    (fun u : FinalityState p => u.validators.data.size = deposited.validators.data.size ∧
+      ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
+        (u.validators.data.toList.filter (·.exitEpoch == epoch)).length ≤ cap)
+    (fun _ _ _ prior ok => ⟨(sameSizes_processVoluntaryExit ok).1.trans prior.1,
+      finality_processVoluntaryExit_cohort prior.2
+        (limit _ (prior.1 ▸ depositedSize)) ok⟩)
+    ⟨rfl, four⟩ exitsOk
+  exact five.2
+
+/-- A block preserves finite exit-cohort caps under a population envelope. -/
+theorem finality_processBlock_cohort {cfg : Config} {checks : SignatureChecks}
+    {eng : ExecutionEngine p .phase0} {s t : FinalityState p} {b : BeaconBlock p .phase0}
+    {population cap : Nat}
+    (bounded : ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
+      (s.validators.data.toList.filter (·.exitEpoch == epoch)).length ≤ cap)
+    (size : t.validators.data.size ≤ population)
+    (limit : ∀ u : FinalityState p, u.validators.data.size ≤ population →
+      max 1 (getValidatorChurnLimit cfg u).toNat ≤ cap)
+    (ran : processBlock cfg checks eng s b = .ok t) :
+    ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
+      (t.validators.data.toList.filter (·.exitEpoch == epoch)).length ≤ cap := by
+  simp only [processBlock, show ¬Fork.altair ≤ Fork.phase0 by decide, ↓reduceDIte,
+    bind_ok_iff] at ran
+  obtain ⟨header, headerOk, randao, randaoOk, eth1, eth1Ok, operationsOk⟩ := ran
+  have headerRegistry : header.validators = s.validators := by
+    obtain ⟨_, _, rfl⟩ := processBlockHeader_eq headerOk
+    rfl
+  have randaoRegistry : randao.validators = header.validators := by
+    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq randaoOk
+    rfl
+  have eth1Registry : eth1.validators = randao.validators :=
+    congrArg (fun u => u.validators) (processEth1Data_eq eth1Ok).2.2
+  exact finality_processOperations_cohort
+    (by simpa only [eth1Registry, randaoRegistry, headerRegistry] using bounded)
+    size limit operationsOk
+
+/-- One slot preserves finite exit-cohort caps under a fixed population envelope. -/
+theorem finality_advanceSlot_cohort {cfg : Config} {s t : FinalityState p} {cap : Nat}
+    (inv : Invariant s)
+    (bounded : ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
+      (s.validators.data.toList.filter (·.exitEpoch == epoch)).length ≤ cap)
+    (limit : ∀ u : FinalityState p, u.validators.data.size = s.validators.data.size →
+      max 1 (getValidatorChurnLimit cfg u).toNat ≤ cap)
+    (ran : advanceSlot cfg s = .ok t) :
+    ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
+      (t.validators.data.toList.filter (·.exitEpoch == epoch)).length ≤ cap := by
+  simp only [advanceSlot, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ran
+  obtain ⟨_, _, cached, cachedOk, epoched, epochedOk, rfl⟩ := ran
+  have cacheRegistry : cached.validators = s.validators := by
+    obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+    rfl
+  change ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
+    (epoched.validators.data.toList.filter (·.exitEpoch == epoch)).length ≤ cap
+  unfold epochIfLast at epochedOk
+  split at epochedOk
+  · exact finality_processEpoch_cohort ((frame_processSlot cachedOk).invariant inv)
+      (by simpa only [cacheRegistry] using bounded)
+      (fun u same => limit u (by simpa only [cacheRegistry] using same)) epochedOk
+  · cases epochedOk
+    simpa only [cacheRegistry] using bounded
+
+/-- An empty-slot prefix preserves finite exit-cohort caps. -/
+theorem finality_advanceSlots_cohort {cfg : Config} {s t : FinalityState p}
+    {count cap : Nat} (inv : Invariant s)
+    (bounded : ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
+      (s.validators.data.toList.filter (·.exitEpoch == epoch)).length ≤ cap)
+    (limit : ∀ u : FinalityState p, u.validators.data.size = s.validators.data.size →
+      max 1 (getValidatorChurnLimit cfg u).toNat ≤ cap)
+    (ran : advanceSlots cfg count s = .ok t) :
+    ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
+      (t.validators.data.toList.filter (·.exitEpoch == epoch)).length ≤ cap := by
+  induction count generalizing s with
+  | zero => cases ran; exact bounded
+  | succ count ih =>
+    obtain ⟨middle, first, tail⟩ := bind_ok_iff.mp ran
+    exact ih (advanceSlot_invariant (by decide) inv first).1
+      (finality_advanceSlot_cohort inv bounded limit first)
+      (fun u same => limit u (same.trans (finality_advanceSlot_size first))) tail
+
+/-- A validated block transition preserves finite exit-cohort caps. -/
+theorem finality_stateTransition_cohort {cfg : Config} {checks : SignatureChecks}
+    {eng : ExecutionEngine p .phase0} {s t : FinalityState p} {b : FinalityBlock p}
+    {population cap : Nat} (inv : Invariant s)
+    (bounded : ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
+      (s.validators.data.toList.filter (·.exitEpoch == epoch)).length ≤ cap)
+    (size : t.validators.data.size ≤ population)
+    (limit : ∀ u : FinalityState p, u.validators.data.size ≤ population →
+      max 1 (getValidatorChurnLimit cfg u).toNat ≤ cap)
+    (ran : stateTransition cfg checks eng s b true = .ok t) :
+    ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
+      (t.validators.data.toList.filter (·.exitEpoch == epoch)).length ≤ cap := by
+  have startSize := Nat.le_trans (finality_stateTransition_registry inv ran).1 size
+  obtain ⟨advanced, slotsOk, _, _, blockOk, _⟩ := stateTransition_ok ran
+  have slots := slotsOk
+  simp only [processSlots, bind_ok_iff, ensure_ok_iff] at slots
+  obtain ⟨_, _, advancedOk⟩ := slots
+  have advancedBound := finality_advanceSlots_cohort inv bounded
+    (fun u same => limit u (same ▸ startSize)) advancedOk
+  exact finality_processBlock_cohort advancedBound size limit blockOk
+
+/-- A validated chain preserves finite exit-cohort caps under its final population bound. -/
+theorem finality_runs_cohort {cfg : Config} {checks : SignatureChecks}
+    {eng : ExecutionEngine p .phase0} {s t : FinalityState p} {bs : List (FinalityBlock p)}
+    {population cap : Nat} (inv : Invariant s)
+    (bounded : ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
+      (s.validators.data.toList.filter (·.exitEpoch == epoch)).length ≤ cap)
+    (size : t.validators.data.size ≤ population)
+    (limit : ∀ u : FinalityState p, u.validators.data.size ≤ population →
+      max 1 (getValidatorChurnLimit cfg u).toNat ≤ cap)
+    (ran : finalityRuns cfg checks eng s bs t) :
+    ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
+      (t.validators.data.toList.filter (·.exitEpoch == epoch)).length ≤ cap := by
+  induction bs generalizing s with
+  | nil => cases ran; exact bounded
+  | cons b bs ih =>
+    obtain ⟨middle, first, tail⟩ := bind_ok_iff.mp ran
+    have middleInv := finality_runs_invariant inv (bs := [b])
+      (by simpa [finalityRuns] using first)
+    have middleSize := Nat.le_trans (finality_runs_registry middleInv tail).1 size
+    exact ih middleInv (finality_stateTransition_cohort inv bounded middleSize limit first)
+      tail
+
+/-- Genesis effective-balance and activation writes preserve every exit cohort. -/
+theorem finality_activateAtGenesis_exitCohort {s t : FinalityState p} {i : Nat}
+    (ran : activateAtGenesis s i = .ok t) (epoch : Epoch) :
+    (t.validators.data.toList.filter (·.exitEpoch == epoch)).length =
+      (s.validators.data.toList.filter (·.exitEpoch == epoch)).length := by
+  simp only [activateAtGenesis, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+    Except.ok.injEq] at ran
+  obtain ⟨v, read, _, _, rfl⟩ := ran
+  have found : s.validators.data[i.toUInt64.toNat]? = some v := by
+    unfold getValidator at read
+    split at read
+    · cases read
+      assumption
+    · cases read
+  by_cases inside : i < s.validators.data.size
+  · rw [toNat_toUInt64_of_lt (s.validators.bound (by decide)) inside] at found
+    split <;> apply finality_exitCohort_setValidator_eq found <;> rfl
+  · simp only [BeaconState.setValidator, Array.toList_set!]
+    rw [List.set_eq_of_length_le (by simpa using Nat.le_of_not_gt inside)]
+
+/-- A successfully initialized Phase 0 state has no finite exit cohorts.
+
+Deposits create far-future exits, and genesis activation leaves them unchanged. -/
+theorem finality_initialized_exitCohort {cfg : Config} {checks : SignatureChecks}
+    {g : FinalityState p} (initialized : finalityInitialized cfg checks g)
+    {epoch : Epoch} (finite : epoch ≠ FAR_FUTURE_EPOCH) :
+    (g.validators.data.toList.filter (·.exitEpoch == epoch)).length = 0 := by
+  obtain ⟨⟨hash, time, deposits, ran⟩, _⟩ := initialized
+  simp only [initializeBeaconStateFromEth1, show ¬Fork.altair ≤ Fork.phase0 by decide,
+    ↓reduceDIte, bind_ok_iff, ensure_ok_iff, liftSsz_ok, pure, Except.pure,
+    Except.ok.injEq] at ran
+  obtain ⟨_, _, _, _, _, _, deposited, depositedOk, activated, activatedOk, _, _, rfl⟩ := ran
+  have initial : ∀ (a b : FinalityState p) entry,
+      genesisDeposit cfg checks (by decide) (deposits.map (·.data)) a entry = .ok b →
+      (b.validators.data.toList.filter (·.exitEpoch == epoch)).length =
+        (a.validators.data.toList.filter (·.exitEpoch == epoch)).length := by
+    intro a b entry ok
+    simp only [genesisDeposit, bind_ok_iff] at ok
+    obtain ⟨_, _, applied⟩ := ok
+    exact finality_processDeposit_exitCohort applied finite
+  have depositedZero := foldlM_ok_invariant
+    (fun u : FinalityState p => (u.validators.data.toList.filter (·.exitEpoch == epoch)).length = 0)
+    (fun _ _ _ previous ok => (initial _ _ _ ok).trans previous)
+    (by simp [emptyGenesisState]) depositedOk
+  change (activated.validators.data.toList.filter (·.exitEpoch == epoch)).length = 0
+  exact foldlM_ok_invariant
+    (fun u : FinalityState p => (u.validators.data.toList.filter (·.exitEpoch == epoch)).length = 0)
+    (fun _ _ _ previous ok => (finality_activateAtGenesis_exitCohort ok epoch).trans previous)
+    depositedZero activatedOk
+
+/-- Every finite exit cohort of a reachable state fits its population-based churn cap.
+
+Registry growth is monotone, so the final population bounds every earlier allocation. -/
+theorem finality_reachable_exitCohort {cfg : Config} {checks : SignatureChecks}
+    {eng : ExecutionEngine p .phase0} {g t : FinalityState p}
+    {bs : List (FinalityBlock p)} {population : Nat}
+    (initialized : finalityInitialized cfg checks g)
+    (ran : finalityRuns cfg checks eng g bs t)
+    (size : t.validators.data.size ≤ population) :
+    ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
+      (t.validators.data.toList.filter (·.exitEpoch == epoch)).length ≤
+        max 1 (max cfg.MIN_PER_EPOCH_CHURN_LIMIT.toNat
+          (population / cfg.CHURN_LIMIT_QUOTIENT.toNat)) := by
+  obtain ⟨_, _, _, genesis⟩ := initialized.1
+  have inv := (initializeBeaconStateFromEth1_invariant genesis).2
+  apply finality_runs_cohort inv ?_ size ?_ ran
+  · intro epoch finite
+    rw [finality_initialized_exitCohort initialized finite]
+    exact Nat.zero_le _
+  · intro u envelope
+    apply Nat.max_le.mpr
+    exact ⟨Nat.le_max_left _ _, Nat.le_trans
+      (finality_churnLimit_le (u.validators.bound (by decide)) envelope)
+      (Nat.le_max_right _ _)⟩
+
 /-- A zero slot divisor makes both the current and previous epoch zero. -/
 theorem finality_epochs_zero {s : FinalityState p} (zero : p.SLOTS_PER_EPOCH = 0) :
     getCurrentEpoch s = 0 ∧ getPreviousEpoch s = 0 := by
