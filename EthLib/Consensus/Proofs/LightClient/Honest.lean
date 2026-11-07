@@ -25,6 +25,8 @@ This holds under the hypotheses that the protocol asks, with or without a finali
 
 The store must know the committee of the signing period and finalize an earlier slot.
 
+The finality update and the optimistic update of such an update pass the same checks.
+
 The signature must verify, and a built branch must not be all zero.
 
 Only a SHA-256 output of zero could make such a branch all zero.
@@ -759,6 +761,174 @@ theorem createLightClientUpdate_accepted [LawfulSszType (BeaconState preset fork
           computeSyncCommitteePeriodAtSlot preset store.finalizedHeader.beacon.slot
       · simp [period, committee proving, same, agrees proving same known]
       · simp [period, committee proving, same]
+
+/-- A store accepts the finality update of an update that a full node builds.
+
+The finality update keeps the headers, the finality branch, the aggregate and the signature slot.
+
+It needs the hypotheses of an update, without those on the next committee. -/
+theorem createLightClientFinalityUpdate_accepted [LawfulSszType (BeaconState preset fork)]
+    {config : Config} {checks : SignatureChecks} {signatureFork finalizedFork : Fork}
+    {state : BeaconState preset signatureFork} {block : SignedBeaconBlock preset signatureFork}
+    {attestedState : BeaconState preset fork} {attestedBlock : SignedBeaconBlock preset fork}
+    {finalizedBlock : Option (SignedBeaconBlock preset finalizedFork)}
+    {finalizedEarlier : finalizedFork ≤ fork} {update : LightClientUpdate preset fork}
+    {store : LightClientStore preset fork} {currentSlot : Slot} {genesisValidatorsRoot : Root}
+    (attestedScheduled : config.SlotOfFork preset fork attestedBlock.message.slot)
+    (attestedAtSlot : attestedBlock.message.slot = attestedState.slot)
+    (attestedRooted : SszType.hashTreeRoot attestedState = .ok attestedBlock.message.stateRoot)
+    (finalizedScheduled : ∀ finalized, finalizedBlock = some finalized →
+      config.SlotOfFork preset finalizedFork finalized.message.slot ∧
+        finalized.message.slot ≤ attestedBlock.message.slot)
+    (ordered : config.CAPELLA_FORK_EPOCH ≤ config.DENEB_FORK_EPOCH)
+    (signedLater : attestedBlock.message.slot < block.message.slot)
+    (arrived : block.message.slot ≤ currentSlot)
+    (finalityProved : finalizedBlock.isSome → update.isFinalityUpdate = true)
+    (knownPeriod : computeSyncCommitteePeriodAtSlot preset block.message.slot =
+        computeSyncCommitteePeriodAtSlot preset store.finalizedHeader.beacon.slot ∨
+      store.isNextSyncCommitteeKnown = true ∧
+        computeSyncCommitteePeriodAtSlot preset block.message.slot =
+          computeSyncCommitteePeriodAtSlot preset store.finalizedHeader.beacon.slot + 1)
+    (newer : store.finalizedHeader.beacon.slot < attestedBlock.message.slot)
+    (signed : ∃ signingRoot,
+      syncCommitteeSigningRoot config update genesisValidatorsRoot = .ok signingRoot ∧
+      checks.fastAggregateVerify
+        (((store.signatureCommittee update).participantKeys update.syncAggregate).map packBytes)
+        (packBytes signingRoot) (packBytes update.syncAggregate.syncCommitteeSignature) = true)
+    (created : createLightClientUpdate config state block attestedState attestedBlock
+      finalizedBlock finalizedEarlier = .ok update) :
+    validateLightClientUpdate config checks store (createLightClientFinalityUpdate update).toUpdate
+      currentSlot genesisValidatorsRoot = .ok () := by
+  obtain ⟨altair, attestedMade, -, -, noneCase, someCase⟩ :=
+    createLightClientUpdate_shape created
+  obtain ⟨signatureSlot, participants⟩ := createLightClientUpdate_signature created
+  obtain ⟨bodyRoot, -, attestedBeacon⟩ := blockToLightClientHeader_beacon attestedMade
+  have attestedValid := blockToLightClientHeader_valid attestedScheduled attestedMade
+  have finality := createLightClientUpdate_finality attestedScheduled attestedAtSlot
+    attestedRooted (fun f picked => (finalizedScheduled f picked).1) ordered finalityProved created
+  -- The finalized slot is at most the attested slot: zero, or that of the finalized block.
+  have finalizedSlot : update.finalizedHeader.beacon.slot ≤ attestedBlock.message.slot := by
+    rcases finalizedBlock with _ | finalized
+    · rw [(noneCase rfl).1]
+      exact UInt64.zero_le
+    · rcases (someCase finalized rfl).2 with ⟨-, header, made, -, upgraded⟩ | ⟨-, -, empty⟩
+      · rw [LightClientHeader.upgrade_beacon upgraded]
+        obtain ⟨_, -, beacon⟩ := blockToLightClientHeader_beacon made
+        rw [beacon]
+        exact (finalizedScheduled finalized rfl).2
+      · rw [empty]
+        exact UInt64.zero_le
+  obtain ⟨signingRoot, signingOk, verified⟩ := signed
+  -- A finality update proves no committee, so it carries the zero committee.
+  have noBranch : (createLightClientFinalityUpdate update).toUpdate.isSyncCommitteeUpdate =
+      false := by
+    simp [LightClientFinalityUpdate.toUpdate, LightClientUpdate.isSyncCommitteeUpdate]
+  have ordering : currentSlot ≥ block.message.slot ∧
+      block.message.slot > attestedBlock.message.slot ∧
+      attestedBlock.message.slot ≥ update.finalizedHeader.beacon.slot :=
+    ⟨arrived, signedLater, finalizedSlot⟩
+  -- The finality update keeps every field that the checks read, except the committee.
+  set short := (createLightClientFinalityUpdate update).toUpdate with shortIs
+  have facts : validateFinality config short = .ok () ∧
+      syncCommitteeSigningRoot config short genesisValidatorsRoot = .ok signingRoot ∧
+      checks.fastAggregateVerify
+        (((store.signatureCommittee short).participantKeys short.syncAggregate).map packBytes)
+        (packBytes signingRoot) (packBytes short.syncAggregate.syncCommitteeSignature) = true ∧
+      short.syncAggregate.participants ≥ preset.MIN_SYNC_COMMITTEE_PARTICIPANTS.toNat ∧
+      isValidLightClientHeader config short.attestedHeader = .ok true ∧
+      short.attestedHeader.beacon.slot = attestedBlock.message.slot ∧
+      short.signatureSlot = block.message.slot ∧
+      short.finalizedHeader.beacon.slot = update.finalizedHeader.beacon.slot ∧
+      short.isSyncCommitteeUpdate = false ∧
+      short.nextSyncCommittee = SyncCommittee.empty preset :=
+    ⟨finality, signingOk, verified, participants, attestedValid,
+      congrArg BeaconBlockHeader.slot attestedBeacon, signatureSlot, rfl, noBranch, rfl⟩
+  obtain ⟨f1, f2, f3, f4, f5, f6, f7, f8, f9, f10⟩ := facts
+  unfold validateLightClientUpdate
+  cases known : store.isNextSyncCommitteeKnown
+  · have period := knownPeriod.resolve_right (by simp [known])
+    simp [LightClientError.requireFork, altair, LightClientError.require, period, f1, f2, f3, f4,
+      f5, f6, f7, f8, f9, f10, ordering, newer, bind, Except.bind]
+  · have period : computeSyncCommitteePeriodAtSlot preset block.message.slot =
+          computeSyncCommitteePeriodAtSlot preset store.finalizedHeader.beacon.slot ∨
+        computeSyncCommitteePeriodAtSlot preset block.message.slot =
+          computeSyncCommitteePeriodAtSlot preset store.finalizedHeader.beacon.slot + 1 :=
+      knownPeriod.imp_right And.right
+    simp [LightClientError.requireFork, altair, LightClientError.require, period, f1, f2, f3, f4,
+      f5, f6, f7, f8, f9, f10, ordering, newer, bind, Except.bind]
+
+/-- A store accepts the optimistic update of an update that a full node builds.
+
+The optimistic update keeps the attested header, the aggregate and the signature slot.
+
+It needs the hypotheses of an update on those fields alone. -/
+theorem createLightClientOptimisticUpdate_accepted
+    {config : Config} {checks : SignatureChecks} {signatureFork finalizedFork : Fork}
+    {state : BeaconState preset signatureFork} {block : SignedBeaconBlock preset signatureFork}
+    {attestedState : BeaconState preset fork} {attestedBlock : SignedBeaconBlock preset fork}
+    {finalizedBlock : Option (SignedBeaconBlock preset finalizedFork)}
+    {finalizedEarlier : finalizedFork ≤ fork} {update : LightClientUpdate preset fork}
+    {store : LightClientStore preset fork} {currentSlot : Slot} {genesisValidatorsRoot : Root}
+    (attestedScheduled : config.SlotOfFork preset fork attestedBlock.message.slot)
+    (signedLater : attestedBlock.message.slot < block.message.slot)
+    (arrived : block.message.slot ≤ currentSlot)
+    (knownPeriod : computeSyncCommitteePeriodAtSlot preset block.message.slot =
+        computeSyncCommitteePeriodAtSlot preset store.finalizedHeader.beacon.slot ∨
+      store.isNextSyncCommitteeKnown = true ∧
+        computeSyncCommitteePeriodAtSlot preset block.message.slot =
+          computeSyncCommitteePeriodAtSlot preset store.finalizedHeader.beacon.slot + 1)
+    (newer : store.finalizedHeader.beacon.slot < attestedBlock.message.slot)
+    (signed : ∃ signingRoot,
+      syncCommitteeSigningRoot config update genesisValidatorsRoot = .ok signingRoot ∧
+      checks.fastAggregateVerify
+        (((store.signatureCommittee update).participantKeys update.syncAggregate).map packBytes)
+        (packBytes signingRoot) (packBytes update.syncAggregate.syncCommitteeSignature) = true)
+    (created : createLightClientUpdate config state block attestedState attestedBlock
+      finalizedBlock finalizedEarlier = .ok update) :
+    validateLightClientUpdate config checks store
+      (createLightClientOptimisticUpdate update).toUpdate currentSlot genesisValidatorsRoot =
+      .ok () := by
+  obtain ⟨altair, attestedMade, -, -, -, -⟩ := createLightClientUpdate_shape created
+  obtain ⟨signatureSlot, participants⟩ := createLightClientUpdate_signature created
+  obtain ⟨bodyRoot, -, attestedBeacon⟩ := blockToLightClientHeader_beacon attestedMade
+  have attestedValid := blockToLightClientHeader_valid attestedScheduled attestedMade
+  obtain ⟨signingRoot, signingOk, verified⟩ := signed
+  -- The optimistic update keeps every field that the checks read, and proves nothing more.
+  set short := (createLightClientOptimisticUpdate update).toUpdate with shortIs
+  have facts : validateFinality config short = .ok () ∧
+      syncCommitteeSigningRoot config short genesisValidatorsRoot = .ok signingRoot ∧
+      checks.fastAggregateVerify
+        (((store.signatureCommittee short).participantKeys short.syncAggregate).map packBytes)
+        (packBytes signingRoot) (packBytes short.syncAggregate.syncCommitteeSignature) = true ∧
+      short.syncAggregate.participants ≥ preset.MIN_SYNC_COMMITTEE_PARTICIPANTS.toNat ∧
+      isValidLightClientHeader config short.attestedHeader = .ok true ∧
+      short.attestedHeader.beacon.slot = attestedBlock.message.slot ∧
+      short.signatureSlot = block.message.slot ∧
+      short.finalizedHeader.beacon.slot = 0 ∧
+      short.isSyncCommitteeUpdate = false ∧
+      short.nextSyncCommittee = SyncCommittee.empty preset := by
+    refine ⟨?_, signingOk, verified, participants, attestedValid,
+      congrArg BeaconBlockHeader.slot attestedBeacon, signatureSlot, rfl, ?_, rfl⟩
+    · simp [shortIs, validateFinality, LightClientOptimisticUpdate.toUpdate,
+        LightClientUpdate.isFinalityUpdate, sameSszValue, LightClientError.require]
+    · simp [shortIs, LightClientOptimisticUpdate.toUpdate,
+        LightClientUpdate.isSyncCommitteeUpdate]
+  obtain ⟨f1, f2, f3, f4, f5, f6, f7, f8, f9, f10⟩ := facts
+  unfold validateLightClientUpdate
+  have ordering : currentSlot ≥ block.message.slot ∧
+      block.message.slot > attestedBlock.message.slot ∧ attestedBlock.message.slot ≥ 0 :=
+    ⟨arrived, signedLater, UInt64.zero_le⟩
+  cases known : store.isNextSyncCommitteeKnown
+  · have period := knownPeriod.resolve_right (by simp [known])
+    simp [LightClientError.requireFork, altair, LightClientError.require, period, f1, f2, f3, f4,
+      f5, f6, f7, f8, f9, f10, ordering, newer, bind, Except.bind]
+  · have period : computeSyncCommitteePeriodAtSlot preset block.message.slot =
+          computeSyncCommitteePeriodAtSlot preset store.finalizedHeader.beacon.slot ∨
+        computeSyncCommitteePeriodAtSlot preset block.message.slot =
+          computeSyncCommitteePeriodAtSlot preset store.finalizedHeader.beacon.slot + 1 :=
+      knownPeriod.imp_right And.right
+    simp [LightClientError.requireFork, altair, LightClientError.require, period, f1, f2, f3, f4,
+      f5, f6, f7, f8, f9, f10, ordering, newer, bind, Except.bind]
 
 omit [NeZero preset.BYTES_PER_LOGS_BLOOM.toNat] [NeZero preset.SYNC_COMMITTEE_SIZE.toNat]
   [NeZero preset.MAX_COMMITTEES_PER_SLOT.toNat] [NeZero preset.PTC_SIZE.toNat]

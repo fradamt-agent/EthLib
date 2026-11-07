@@ -1414,6 +1414,7 @@ It assumes the checks of the store that the protocol makes.
 The committee of the signing period must be known, the store must finalize an earlier slot, and a known next committee must match.
 It assumes that the signature check accepts the signers, as the signature theorems do.
 It also assumes that a branch the update carries is not all zero, which needs a SHA-256 output of zero above the leaves.
+`createLightClientFinalityUpdate_accepted` and `createLightClientOptimisticUpdate_accepted` show the same for the finality update and the optimistic update of such an update, with the hypotheses on the fields that each keeps.
 `blockToLightClientHeader_invalid_of_early` shows that the hypothesis on the fork of the slot is needed.
 A Gloas block at a slot before Capella gives an invalid header whenever its bid names a nonzero parent block hash.
 
