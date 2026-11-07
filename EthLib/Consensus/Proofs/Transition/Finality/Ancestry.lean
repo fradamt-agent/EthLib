@@ -269,6 +269,22 @@ theorem finality_observations_block_output {cfg : Config} {checks : SignatureChe
     simp only [blockOk, Except.toOption, Option.toList_some]
     exact List.mem_cons_self
 
+/-- The endpoint of every successful execution belongs to its observation pool. -/
+theorem finality_observations_endpoint {cfg : Config} {checks : SignatureChecks}
+    {eng : ExecutionEngine p .phase0} {s t : FinalityState p} {bs : List (FinalityBlock p)}
+    (ran : finalityRuns cfg checks eng s bs t) :
+    t ∈ finalityObservations cfg checks eng s bs := by
+  rcases List.eq_nil_or_concat bs with rfl | ⟨earlier, block, rfl⟩
+  · cases ran
+    exact List.mem_cons_self
+  · unfold finalityRuns at ran
+    rw [List.concat_eq_append, List.foldlM_append] at ran
+    obtain ⟨before, prefixOk, blockOk⟩ := bind_ok_iff.mp ran
+    simp only [List.foldlM_cons, List.foldlM_nil, bind_ok_iff] at blockOk
+    obtain ⟨after, processed, equal⟩ := blockOk
+    cases equal
+    exact finality_observations_block_output (later := []) (by simp) prefixOk processed
+
 /-- A zero-root observed state supplies the concrete SHA-256 input required by the alternative. -/
 theorem finality_zero_root_found {ss : List (FinalityState p)} {bs : List (FinalityBlock p)}
     {s : FinalityState p} (observed : s ∈ ss)
