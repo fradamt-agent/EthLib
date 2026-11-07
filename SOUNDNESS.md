@@ -1343,7 +1343,10 @@ Its `Dynamic.accountable_safety` measures the slashable stake in a reference wei
 It loses twice a bound on the drift from that reference, over the weighings between the two finalized epochs.
 With one static weighing it gives `accountable_safety`.
 
-No theorem links the model to the beacon chain, so neither theorem is yet about what a client runs.
+`FfgRefinement` (`Transition/FfgRefinement.lean`) lists, as structure fields, the facts that two histories of the beacon chain must provide for the dynamic model.
+`FfgRefinement.accountable_safety` proves that these fields give slashable stake, or hash evidence.
+No field is proved yet, and no theorem bounds the drift from the churn limits.
+So no theorem is yet about what a client runs.
 
 ### Engine API
 
