@@ -1320,6 +1320,136 @@ theorem finality_previousGap_le_of_finite {cfg : Config} {checks : SignatureChec
   exact Nat.le_trans (finality_previousGap_weight observed.1)
     (Nat.mul_le_mul_right _ (observed.2 _ (finite t member)))
 
+/-- A successful Phase 0 block needs a proposer active at a finite epoch. -/
+theorem finality_processBlock_epoch_finite {cfg : Config} {checks : SignatureChecks}
+    {eng : ExecutionEngine p .phase0} {s t : FinalityState p} {b : BeaconBlock p .phase0}
+    (ran : processBlock cfg checks eng s b = .ok t) :
+    getCurrentEpoch t ≠ FAR_FUTURE_EPOCH := by
+  have slot := (frame_processBlock (by decide) ran).slot
+  have sameEpoch : getCurrentEpoch t = getCurrentEpoch s := by
+    simp only [getCurrentEpoch, slot]
+  simp only [processBlock, show ¬Fork.altair ≤ Fork.phase0 by decide, ↓reduceDIte,
+    bind_ok_iff] at ran
+  obtain ⟨_, headerOk, _, _, _, _, _⟩ := ran
+  have proposer := (processBlockHeader_checks headerOk).2.2.1
+  have active := mem_getActiveValidatorIndices_of_getBeaconProposerIndex (by decide) proposer
+  obtain ⟨v, _, active⟩ :=
+    (mem_getActiveValidatorIndices (s.validators.bound (by decide))).mp active
+  intro far
+  rw [sameEpoch] at far
+  simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq] at active
+  have exit := UInt64.lt_iff_toNat_lt.mp active.2
+  rw [far] at exit
+  have top := v.exitEpoch.toNat_lt
+  change 18446744073709551615 < v.exitEpoch.toNat at exit
+  omega
+
+/-- A successful nonempty chain ends at a finite epoch. -/
+theorem finality_runs_epoch_finite {cfg : Config} {checks : SignatureChecks}
+    {eng : ExecutionEngine p .phase0} {s t : FinalityState p} {bs : List (FinalityBlock p)}
+    (initial : getCurrentEpoch s ≠ FAR_FUTURE_EPOCH)
+    (ran : finalityRuns cfg checks eng s bs t) : getCurrentEpoch t ≠ FAR_FUTURE_EPOCH := by
+  induction bs generalizing s with
+  | nil => cases ran; exact initial
+  | cons b bs ih =>
+    obtain ⟨middle, first, tail⟩ := bind_ok_iff.mp ran
+    obtain ⟨_, _, _, _, processed, _⟩ := stateTransition_ok first
+    exact ih (finality_processBlock_epoch_finite processed) tail
+
+/-- Initialization fixes the slot at genesis, hence the current epoch at zero. -/
+theorem finality_initialized_epoch {cfg : Config} {checks : SignatureChecks}
+    {g : FinalityState p} (initialized : finalityInitialized cfg checks g) :
+    getCurrentEpoch g = 0 := by
+  obtain ⟨⟨_, _, deposits, ran⟩, _⟩ := initialized
+  simp only [initializeBeaconStateFromEth1, show ¬Fork.altair ≤ Fork.phase0 by decide,
+    ↓reduceDIte, bind_ok_iff, ensure_ok_iff, liftSsz_ok, pure, Except.pure,
+    Except.ok.injEq] at ran
+  obtain ⟨_, _, _, _, _, _, deposited, depositedOk, activated, activatedOk, _, _, rfl⟩ := ran
+  have frame := (Frame.foldlM
+    (fun _ _ _ ok => frame_genesisDeposit (by decide : Fork.phase0 < .altair) ok)
+    depositedOk).trans (Frame.foldlM (fun _ _ _ ok => frame_activateAtGenesis ok) activatedOk)
+  apply UInt64.toNat_inj.mp
+  rw [getCurrentEpoch_toNat]
+  change activated.slot.toNat / p.SLOTS_PER_EPOCH.toNat = 0
+  rw [frame.slot]
+  simp [emptyGenesisState, GENESIS_SLOT]
+
+/-- A successful full run bounds every collected observation's slot by its final slot. -/
+theorem finality_observations_slot_le {cfg : Config} {checks : SignatureChecks}
+    {eng : ExecutionEngine p .phase0} {c t after : FinalityState p}
+    {bs : List (FinalityBlock p)}
+    (ran : finalityRuns cfg checks eng c bs after)
+    (member : t ∈ finalityObservations cfg checks eng c bs) :
+    t.slot.toNat ≤ after.slot.toNat := by
+  simp only [finalityObservations, List.mem_cons, List.mem_flatMap] at member
+  rcases member with rfl | ⟨⟨b, i⟩, listed, member⟩
+  · exact stateTransition_chain_slot_le (by decide) ran
+  have index := List.mk_mem_zipIdx_iff_getElem?.mp listed
+  obtain ⟨inside, equal⟩ := List.getElem?_eq_some_iff.mp index
+  have split : bs = bs.take i ++ b :: bs.drop (i + 1) := by
+    rw [← equal, ← List.drop_eq_getElem_cons inside, List.take_append_drop]
+  cases prefixOk : (bs.take i).foldlM (fun s b => stateTransition cfg checks eng s b true) c with
+  | error e => simp [prefixOk] at member
+  | ok before =>
+    have remaining := ran
+    unfold finalityRuns at remaining
+    rw [split, List.foldlM_append, prefixOk] at remaining
+    change (b :: bs.drop (i + 1)).foldlM
+      (fun s b => stateTransition cfg checks eng s b true) before = .ok after at remaining
+    obtain ⟨middle, blockOk, tailOk⟩ := bind_ok_iff.mp remaining
+    have endSlot := stateTransition_chain_slot_le (by decide) tailOk
+    obtain ⟨advanced, slotsOk, advancedSlot, _, processed, _⟩ := stateTransition_ok blockOk
+    have middleSlot := (frame_processBlock (by decide) processed).slot.trans advancedSlot
+    have beforeSlot := UInt64.lt_iff_toNat_lt.mp (processSlots_slot slotsOk).1
+    have middleNat := congrArg UInt64.toNat middleSlot
+    simp only [prefixOk, List.mem_append, List.mem_cons, List.mem_flatMap] at member
+    rcases member with output | rfl | ⟨n, count, member⟩
+    · simp only [blockOk, Except.toOption, Option.toList, List.mem_singleton] at output
+      subst t
+      exact endSlot
+    · omega
+    · have within := List.mem_range.mp count
+      cases slots : advanceSlots cfg n before with
+      | error e => simp [slots] at member
+      | ok atStep =>
+        have stepSlot := advanceSlots_slot n slots
+        simp only [slots, List.mem_cons] at member
+        rcases member with rfl | member
+        · omega
+        · cases cache : processSlot atStep with
+          | error e => simp [cache, Except.toOption] at member
+          | ok cached =>
+            simp only [cache, Except.toOption, Option.toList, List.mem_singleton] at member
+            subst t
+            have cachedSlot := (frame_processSlot cache).slot
+            rw [cachedSlot]
+            omega
+
+/-- All observations of a successful initialized chain have finite current epochs. -/
+theorem finality_observations_epoch_finite {cfg : Config} {checks : SignatureChecks}
+    {eng : ExecutionEngine p .phase0} {g c t after : FinalityState p}
+    {common bs : List (FinalityBlock p)}
+    (initialized : finalityInitialized cfg checks g)
+    (shared : finalityRuns cfg checks eng g common c)
+    (ran : finalityRuns cfg checks eng c bs after)
+    (member : t ∈ finalityObservations cfg checks eng c bs) :
+    getCurrentEpoch t ≠ FAR_FUTURE_EPOCH := by
+  have genesisFinite : getCurrentEpoch g ≠ FAR_FUTURE_EPOCH := by
+    rw [finality_initialized_epoch initialized]
+    decide
+  have endFinite := finality_runs_epoch_finite (finality_runs_epoch_finite genesisFinite shared) ran
+  have epochs := Nat.div_le_div_right (c := p.SLOTS_PER_EPOCH.toNat)
+    (finality_observations_slot_le ran member)
+  rw [← getCurrentEpoch_toNat, ← getCurrentEpoch_toNat] at epochs
+  intro far
+  rw [far] at epochs
+  have top := (getCurrentEpoch after).toNat_lt
+  have same : getCurrentEpoch after = FAR_FUTURE_EPOCH := UInt64.toNat_inj.mp (by
+    change (getCurrentEpoch after).toNat = 18446744073709551615
+    change 18446744073709551615 ≤ (getCurrentEpoch after).toNat at epochs
+    omega)
+  exact endFinite same
+
 /-- A zero slot divisor makes both the current and previous epoch zero. -/
 theorem finality_epochs_zero {s : FinalityState p} (zero : p.SLOTS_PER_EPOCH = 0) :
     getCurrentEpoch s = 0 ∧ getPreviousEpoch s = 0 := by
@@ -1402,5 +1532,30 @@ theorem finality_realized_churn_zero_slots {cfg : Config} {checks : SignatureChe
     obtain ⟨v, _, rfl⟩ := List.mem_map.mp inMap
     rw [(finality_epochs_zero zero).1, (finality_epochs_zero zero).2]
     cases isActiveValidator v 0 <;> rfl
+
+/-- The previous-epoch denominator gap fits one realized exit cohort.
+
+This includes zero slots per epoch and needs no extra preset hypothesis. -/
+theorem finality_previousGap_le {cfg : Config} {checks : SignatureChecks}
+    {eng : ExecutionEngine p .phase0} {g c after : FinalityState p}
+    {common bs : List (FinalityBlock p)} {n : Nat}
+    (initialized : finalityInitialized cfg checks g)
+    (shared : finalityRuns cfg checks eng g common c)
+    (ran : finalityRuns cfg checks eng c bs after)
+    (horizon : (getCurrentEpoch after).toNat - (getCurrentEpoch c).toNat ≤ n) :
+    finalityPreviousGap (finalityObservations cfg checks eng c bs) ≤
+      finalityChurnCap cfg c n * p.MAX_EFFECTIVE_BALANCE.toNat := by
+  by_cases zero : p.SLOTS_PER_EPOCH = 0
+  · obtain ⟨_, _, _, genesis⟩ := initialized.1
+    have inv := finality_runs_invariant (initializeBeaconStateFromEth1_invariant genesis).2 shared
+    rw [(finality_realized_churn_zero_slots zero inv).2.2]
+    exact Nat.zero_le _
+  · have positive : 0 < p.SLOTS_PER_EPOCH.toNat := by
+      have nonzero : p.SLOTS_PER_EPOCH.toNat ≠ 0 := by
+        intro h
+        exact zero (UInt64.toNat_inj.mp (by simpa using h))
+      omega
+    exact finality_previousGap_le_of_finite initialized shared ran positive horizon
+      (fun _ member => finality_observations_epoch_finite initialized shared ran member)
 
 end EthLib.Consensus
