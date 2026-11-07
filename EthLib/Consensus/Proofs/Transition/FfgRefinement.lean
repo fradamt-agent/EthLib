@@ -305,7 +305,8 @@ theorem accountable_safety {c₁ c₂ : Checkpoint} (h₁ : c₁ ∈ R.finalized
   have bound := Dynamic.accountable_safety (finalized_model hno h₁) (finalized_model hno h₂)
     hc ω₀ (D := D) ?_
   · refine bound.trans (Nat.add_le_add_right (Nat.mul_le_mul_left 3 (stake_mono ?_)) _)
-    exact Finset.monotone_filter_right _ fun _ _ => exists_isSlashableAttestationData_of_pairSlashable
+    exact Finset.monotone_filter_right _ fun _ _ =>
+      exists_isSlashableAttestationData_of_pairSlashable
   · rintro t ω ⟨r, hr, rfl, rfl⟩ hlo hhi
     exact hD r hr hlo hhi
 
@@ -330,7 +331,8 @@ theorem accountable_safety_justified {f j : Checkpoint} (hf : f ∈ R.finalized)
   have bound := (Dynamic.evidence_of_finalized_justified (finalized_model hno hf)
     (justified_model hno hj) hle hc).stake_le ω₀ (D := D) ?_
   · refine bound.trans (Nat.add_le_add_right (Nat.mul_le_mul_left 3 (stake_mono ?_)) _)
-    exact Finset.monotone_filter_right _ fun _ _ => exists_isSlashableAttestationData_of_pairSlashable
+    exact Finset.monotone_filter_right _ fun _ _ =>
+      exists_isSlashableAttestationData_of_pairSlashable
   · rintro t ω ⟨r, hr, rfl, rfl⟩ hlo hhi
     exact hD r hr hlo hhi
 
