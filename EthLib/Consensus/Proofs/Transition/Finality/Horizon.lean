@@ -40,12 +40,13 @@ theorem finalityMaxOn_append_le {a b : List (FinalityState p)}
 theorem finalityExits_append_le (c : FinalityState p) (a b : List (FinalityState p)) :
     finalityExits c (a ++ b) ≤ finalityExits c a + finalityExits c b := by
   unfold finalityExits
-  rw [← List.sum_map_add]
-  apply List.sum_le_sum
-  intro i _
-  simp only [List.any_append]
-  cases finalityActive c i <;> cases a.any (fun s => !finalityActive s i) <;>
-    cases b.any (fun s => !finalityActive s i) <;> simp
+  generalize List.range c.validators.data.size = indices
+  induction indices with
+  | nil => simp
+  | cons i indices ih =>
+    simp only [List.map_cons, List.sum_cons, List.any_append] at *
+    cases finalityActive c i <;> cases a.any (fun s => !finalityActive s i) <;>
+      cases b.any (fun s => !finalityActive s i) <;> simp_all <;> omega
 
 /-- The two-fork churn costs fit the frozen correction at every positive horizon.
 
@@ -59,7 +60,7 @@ theorem finality_horizon_arithmetic {cfg : Config} {c : FinalityState p} {n : Na
     2 * additions + 2 * exits + 6 * previousGap +
       6 * p.EFFECTIVE_BALANCE_INCREMENT.toNat ≤
         finalityHorizonCorrection cfg c n - 2 * finalityDeficit c := by
-  rw [finalityHorizonCorrection, if_neg (by omega)]
+  rw [finalityHorizonCorrection, ite_eq_right (by omega)]
   -- Expand the extra epoch before linear arithmetic; all products are natural numbers.
   simp only [Nat.mul_add, Nat.add_mul, Nat.mul_one]
   simp only [Nat.mul_assoc] at *
@@ -140,9 +141,8 @@ theorem finality_phase0_safety_horizon_of_main_and_churn
     have correction := finality_horizon_arithmetic (by omega) added exitBound gap
     -- Natural subtraction can be cancelled because the positive-horizon formula includes deficit.
     have deficit : 2 * finalityDeficit c ≤ finalityHorizonCorrection cfg c n := by
-      simp only [finalityHorizonCorrection, if_neg zero]
+      simp only [finalityHorizonCorrection, ite_eq_right zero]
       omega
-    dsimp only at bound ⊢
     omega
   · exact Or.inr collision
 
