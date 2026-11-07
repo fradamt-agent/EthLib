@@ -277,6 +277,31 @@ theorem accountable_safety {c₁ c₂ : Checkpoint} (h₁ : c₁ ∈ R.finalized
   · rintro t ω ⟨r, hr, rfl, rfl⟩ hlo hhi
     exact hD r hr hlo hhi
 
+open scoped Classical in
+/-- Accountable safety for a finalized and a justified checkpoint of the histories.
+
+The justified epoch is at least the finalized one, and the blocks conflict.
+
+The conclusion is the one of `accountable_safety`, over the epochs between the two. -/
+theorem accountable_safety_justified {f j : Checkpoint} (hf : f ∈ R.finalized)
+    (hj : j ∈ R.justified) (hle : f.epoch.toNat ≤ j.epoch.toNat)
+    (hc : Conflicting (R.block f.root) (R.block j.root)) (ω₀ : Weighing ValidatorIndex) {D : ℕ}
+    (hD : ∀ r ∈ R.records, f.epoch.toNat ≤ r.target.epoch.toNat →
+      r.target.epoch.toNat ≤ j.epoch.toNat → Weighing.drift ω₀ r.weighing ≤ D) :
+    stake ω₀.stake ω₀.active ≤
+      3 * stake ω₀.stake {i ∈ ω₀.active | ∃ data1 data2, (i, data1) ∈ R.signed ∧
+        (i, data2) ∈ R.signed ∧ isSlashableAttestationData data1 data2 = true} + 2 * D ∨
+      R.evidence := by
+  by_cases hno : R.evidence
+  · exact .inr hno
+  refine .inl ?_
+  have bound := (Dynamic.evidence_of_finalized_justified (finalized_model hno hf)
+    (justified_model hno hj) hle hc).stake_le ω₀ (D := D) ?_
+  · refine bound.trans (Nat.add_le_add_right (Nat.mul_le_mul_left 3 (stake_mono ?_)) _)
+    exact Finset.monotone_filter_right _ fun _ _ => exists_isSlashableAttestationData_of_slashable
+  · rintro t ω ⟨r, hr, rfl, rfl⟩ hlo hhi
+    exact hD r hr hlo hhi
+
 end FfgRefinement
 
 end EthLib.Consensus

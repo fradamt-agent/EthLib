@@ -369,6 +369,22 @@ theorem evidence_of_conflicting {c₁ c₂ : Checkpoint β}
   · exact ((h₂.le_or_evidence h₁.justified h).resolve_left hc.2).widen
       (min_le_right _ _) (le_max_left _ _)
 
+/-- A finalized checkpoint and a justified checkpoint of no smaller epoch whose blocks conflict.
+
+Then two supermajority links break a slashing condition for every validator that signs both.
+
+Both target epochs lie between the two epochs.
+
+A store can hold such a pair, with its justified and its finalized checkpoint from two branches. -/
+theorem evidence_of_finalized_justified {f j : Checkpoint β}
+    (hf : Finalized W genesis votes f) (hj : Justified W genesis votes j) (hle : f.epoch ≤ j.epoch)
+    (hc : Conflicting f.block j.block) : Evidence W votes f.epoch j.epoch := by
+  rcases hle.lt_or_eq with h | h
+  · exact (hf.le_or_evidence hj h).resolve_left hc.1
+  · rcases hf.justified.eq_or_evidence hj h with rfl | e
+    · exact absurd le_rfl hc.1
+    · exact e.widen le_rfl (by omega)
+
 open scoped Classical in
 /-- Evidence, measured in a reference weighing `ω₀`.
 
