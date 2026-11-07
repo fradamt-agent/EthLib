@@ -140,24 +140,33 @@ theorem countP_eq_of_getElem {α : Type} {test : α → Bool} :
 
 /-- A step of a block or an epoch that keeps the cohorts before Electra.
 
-The registry does not shrink.
+The registry does not shrink, and the slot stays.
 
-The exit cohorts stay within their cap, and no activation cohort changes. -/
+The exit cohorts stay within their cap, and no activation cohort changes.
+
+An exit cohort before the next activation epoch does not change either. -/
 structure CohortStep (config : Config) (state after : BeaconState preset fork) : Prop where
   size_le : state.validators.data.size ≤ after.validators.data.size
+  slot : after.slot = state.slot
   exits : ExitCohortsBounded config state → ExitCohortsBounded config after
+  exitsBelow : ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH → epoch.toNat < nextActivationEpoch state →
+    exitCohort after epoch = exitCohort state epoch
   activations : ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
     activationCohort after epoch = activationCohort state epoch
 
 namespace CohortStep
 
 theorem refl (state : BeaconState preset fork) : CohortStep config state state :=
-  ⟨Nat.le_refl _, id, fun _ _ => rfl⟩
+  ⟨Nat.le_refl _, rfl, id, fun _ _ _ => rfl, fun _ _ => rfl⟩
 
 theorem trans {first second third : BeaconState preset fork}
     (one : CohortStep config first second) (two : CohortStep config second third) :
     CohortStep config first third :=
-  ⟨Nat.le_trans one.size_le two.size_le, two.exits ∘ one.exits,
+  have next : nextActivationEpoch second = nextActivationEpoch first := by
+    simp [nextActivationEpoch, getCurrentEpoch, one.slot]
+  ⟨Nat.le_trans one.size_le two.size_le, two.slot.trans one.slot, two.exits ∘ one.exits,
+    fun epoch far below =>
+      (two.exitsBelow epoch far (next ▸ below)).trans (one.exitsBelow epoch far below),
     fun epoch far => (two.activations epoch far).trans (one.activations epoch far)⟩
 
 theorem foldlM {α ε : Type} {step : BeaconState preset fork → α → Except ε _}
@@ -171,6 +180,7 @@ theorem foldlM {α ε : Type} {step : BeaconState preset fork → α → Except 
 It may add validators with neither. -/
 theorem of_epochs
     (size_le : state.validators.data.size ≤ after.validators.data.size)
+    (slot : after.slot = state.slot)
     (kept : ∀ index (inside : index < state.validators.data.size)
       (inside' : index < after.validators.data.size),
       after.validators.data[index].exitEpoch = state.validators.data[index].exitEpoch ∧
@@ -191,7 +201,8 @@ theorem of_epochs
         simp only [Array.getElem_toList]
         rw [(added index (by simpa using inside) (by simpa using le)).1]
         simpa using Ne.symm far)
-  refine ⟨size_le, fun bounded epoch far => ?_, fun epoch far => ?_⟩
+  refine ⟨size_le, slot, fun bounded epoch far => ?_, fun epoch far _ => exits epoch far,
+    fun epoch far => ?_⟩
   · rw [exits epoch far]
     exact Nat.le_trans (bounded epoch far) (max_le_max_left (churnCap_mono size_le))
   · exact countP_eq_of_getElem (by simpa using size_le)
@@ -203,9 +214,9 @@ theorem of_epochs
         rw [(added index (by simpa using inside) (by simpa using le)).2]
         simpa using Ne.symm far)
 
-theorem of_data (same : after.validators.data = state.validators.data) :
-    CohortStep config state after :=
-  .of_epochs (Nat.le_of_eq (by rw [same])) (fun index _ _ => by simp [same])
+theorem of_data (same : after.validators.data = state.validators.data)
+    (slot : after.slot = state.slot) : CohortStep config state after :=
+  .of_epochs (Nat.le_of_eq (by rw [same])) slot (fun index _ _ => by simp [same])
     (fun index inside le => absurd inside (by rw [same]; omega))
 
 theorem setValidator {index : ValidatorIndex} {old validator : Validator}
@@ -222,7 +233,7 @@ theorem setValidator {index : ValidatorIndex} {old validator : Validator}
       cases found
       exact read
     · cases found
-  refine .of_epochs (by simp [BeaconState.putValidator]) (fun position _ _ => ?_)
+  refine .of_epochs (by simp [BeaconState.putValidator]) rfl (fun position _ _ => ?_)
     (fun position inside' le => absurd inside' (by simp [BeaconState.putValidator]; omega))
   simp only [BeaconState.putValidator, RootedForkList.data_set, Array.getElem_set]
   split
@@ -236,16 +247,41 @@ theorem setValidator {index : ValidatorIndex} {old validator : Validator}
 theorem increaseBalance {index : ValidatorIndex} {delta : Gwei}
     (computed : EthLib.Consensus.increaseBalance state index delta = .ok after) :
     CohortStep config state after :=
-  .of_data (by rw [increaseBalance_validators computed])
+  .of_data (by rw [increaseBalance_validators computed]) (by
+    obtain ⟨_, set⟩ := increaseBalance_ok computed
+    exact setBalance_slot set)
 
 theorem decreaseBalance {index : ValidatorIndex} {delta : Gwei}
     (computed : EthLib.Consensus.decreaseBalance state index delta = .ok after) :
     CohortStep config state after :=
-  .of_data (by rw [decreaseBalance_validators computed])
+  .of_data (by rw [decreaseBalance_validators computed]) (by
+    obtain ⟨_, set⟩ := decreaseBalance_ok computed
+    exact setBalance_slot set)
 
 end CohortStep
 
 /-! ## Mutators -/
+
+/-- Before Electra, the exit queue gives an epoch no earlier than the next activation epoch. -/
+theorem nextActivationEpoch_le_exitQueueEpoch {epoch : Epoch}
+    (computed : exitQueueEpoch config state = .ok epoch) :
+    nextActivationEpoch state ≤ epoch.toNat := by
+  simp only [exitQueueEpoch, bind, Except.bind, pure, Except.pure] at computed
+  split at computed
+  · cases computed
+  rename_i earliest earliestOk
+  have earliestValue := (computeActivationExitEpoch_ok_iff.mp
+    (mapError_ok_iff.mp earliestOk)).2
+  have atLeast := (le_foldl_maxExitEpoch
+    (state.validators.data.toList.filter (·.exitEpoch != FAR_FUTURE_EPOCH)) earliest).1
+  rw [UInt64.le_iff_toNat_le] at atLeast
+  unfold nextActivationEpoch
+  split at computed
+  · have sum := (addChecked_ok_iff.mp (mapError_ok_iff.mp computed)).2
+    rw [UInt64.toNat_one] at sum
+    omega
+  · cases computed
+    omega
 
 /-- Before Electra, an exit joins a cohort with room for it, and changes no other cohort. -/
 theorem cohortStep_initiateValidatorExit (before : fork < .pectra) {index : ValidatorIndex}
@@ -285,7 +321,9 @@ theorem cohortStep_initiateValidatorExit (before : fork < .pectra) {index : Vali
     rw [List.countP_set (by simpa using inside)]
     simp only [Array.getElem_toList, read, far, beq_iff_eq, Ne.symm finite, ↓reduceIte]
     split <;> omega
-  refine ⟨Nat.le_of_eq sizeSame.symm, fun bounded epoch finite => ?_, fun epoch _ => ?_⟩
+  have late := nextActivationEpoch_le_exitQueueEpoch allocatedOk
+  refine ⟨Nat.le_of_eq sizeSame.symm, rfl, fun bounded epoch finite => ?_,
+    fun epoch finite below => ?_, fun epoch _ => ?_⟩
   · rw [count epoch finite, sizeSame]
     split
     · rename_i same
@@ -296,6 +334,11 @@ theorem cohortStep_initiateValidatorExit (before : fork < .pectra) {index : Vali
       rw [← List.countP_eq_length_filter] at room
       omega
     · simpa using bounded epoch finite
+  · have other : allocated ≠ epoch := by
+      rintro rfl
+      omega
+    rw [count epoch finite]
+    simp [other]
   · exact countP_eq_of_getElem (by simp [BeaconState.putValidator])
       (fun position _ _ => by
         simp only [BeaconState.putValidator, RootedForkList.data_set, Array.toList_set,
@@ -316,30 +359,33 @@ theorem cohortStep_slashValidator (before : fork < .pectra) {slashedIndex : Vali
     lowered, loweredOk,
     proposer, _, _, _, raised, raisedOk, last, lastOk, done⟩ := computed
   exact (cohortStep_initiateValidatorExit before exitedOk).trans <|
-    ((CohortStep.setValidator found markedOk rfl rfl).trans (by exact .of_data rfl)).trans <|
+    ((CohortStep.setValidator found markedOk rfl rfl).trans (by exact .of_data rfl rfl)).trans <|
     (CohortStep.decreaseBalance loweredOk).trans <|
     (CohortStep.increaseBalance raisedOk).trans <|
     (CohortStep.increaseBalance lastOk).trans
-      (.of_data (by rw [(slashValidator_last done).1]))
+      (.of_data (by rw [(slashValidator_last done).1]) (by
+        simp only [pure, Except.pure, Except.ok.injEq] at done
+        subst done
+        split <;> rfl))
 
 /-! ## The steps of a block -/
 
 theorem cohortStep_processBlockHeader {block : BeaconBlock preset fork}
     (computed : processBlockHeader state block = .ok after) : CohortStep config state after := by
   obtain ⟨_, _, rfl⟩ := processBlockHeader_eq computed
-  exact .of_data rfl
+  exact .of_data rfl rfl
 
 theorem cohortStep_processRandao {body : BeaconBlockBody preset fork}
     (computed : processRandao config checks state body = .ok after) :
     CohortStep config state after := by
   obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq computed
-  exact .of_data rfl
+  exact .of_data rfl rfl
 
 theorem cohortStep_processEth1Data {before : fork < .hegota}
     {body : BeaconBlockBody preset fork}
     (computed : processEth1Data before state body = .ok after) : CohortStep config state after := by
   obtain ⟨_, _, rest⟩ := processEth1Data_eq computed
-  exact .of_data (by rw [← rest])
+  exact .of_data (by rw [← rest]) (by rw [← rest])
 
 theorem cohortStep_processProposerSlashing (early : fork < .pectra) {slashing : ProposerSlashing}
     (computed : processProposerSlashing config checks state slashing = .ok after) :
@@ -386,14 +432,14 @@ theorem cohortStep_processAttestation {attestation : Attestation preset fork}
     have last : CohortStep config raised after := by
       split at final
       · rw [recordPaymentWeight_eq final]
-        exact .of_data rfl
+        exact .of_data rfl rfl
       · cases final
         exact .refl _
     have flagged : ∀ (current : Bool) (participation : EpochParticipation preset fork),
         CohortStep config state (setEpochParticipation state current participation) := by
       intro current participation
       unfold setEpochParticipation
-      split <;> exact .of_data rfl
+      split <;> exact .of_data rfl rfl
     exact (flagged _ _).trans ((CohortStep.increaseBalance raisedOk).trans last)
   simp only [bind_ok_iff, ensure_ok_iff, liftAccessor_ok, pure, Except.pure,
     Except.ok.injEq] at computed
@@ -402,7 +448,7 @@ theorem cohortStep_processAttestation {attestation : Attestation preset fork}
   have kept := recordPendingAttestation_ok recorded
   split at kept <;>
   · obtain ⟨_, rest⟩ := kept
-    exact .of_data (by rw [← rest])
+    exact .of_data (by rw [← rest]) (by rw [← rest])
 
 /-- A new validator goes to the end of the registry, with no activation or exit epoch.
 
@@ -427,7 +473,7 @@ theorem cohortStep_addValidatorToRegistry (early : fork < .pectra) {pubkey : BLS
       have := read state.validators.data.size
       simp only [↓reduceIte] at this
       exact (Array.getElem?_eq_some_iff.mp this).1
-    refine .of_epochs (Nat.le_of_lt present) (fun index inside inside' => ?_)
+    refine .of_epochs (Nat.le_of_lt present) rfl (fun index inside inside' => ?_)
       (fun index inside le => ?_)
     · have same := read index
       rw [ite_eq_right_iff.mpr (fun equal => absurd equal (Nat.ne_of_lt inside)),
@@ -445,7 +491,7 @@ theorem cohortStep_addValidatorToRegistry (early : fork < .pectra) {pubkey : BLS
         cases same
   · split at computed
     · cases computed
-      refine .of_epochs (by simp [RootedForkList.data_push]) (fun index inside _ => ?_)
+      refine .of_epochs (by simp [RootedForkList.data_push]) rfl (fun index inside _ => ?_)
         (fun index inside le => ?_)
       · simp [RootedForkList.data_push, Array.getElem_push, inside]
       · have equal : index = state.validators.data.size := by
@@ -489,11 +535,11 @@ theorem cohortStep_applyDeposit (early : fork < .pectra) {pubkey : BLSPubkey}
       · simp only [bind_ok_iff, liftAccessor_ok] at computed
         obtain ⟨_, added, pushed⟩ := computed
         obtain ⟨_, rfl⟩ := addPendingDeposit_eq pushed
-        exact (cohortStep_addValidatorToRegistry early added).trans (.of_data rfl)
+        exact (cohortStep_addValidatorToRegistry early added).trans (.of_data rfl rfl)
       · cases computed
         exact .refl _
     · obtain ⟨_, rfl⟩ := addPendingDeposit_eq (liftAccessor_ok.mp computed)
-      exact .of_data rfl
+      exact .of_data rfl rfl
   · exact cohortStep_applyPendingDeposit early computed
 
 theorem cohortStep_processDeposit (early : fork < .pectra) {before : fork < .hegota}
@@ -502,7 +548,7 @@ theorem cohortStep_processDeposit (early : fork < .pectra) {before : fork < .heg
     CohortStep config state after := by
   obtain ⟨_, _, next, _, applied⟩ := processDeposit_ok computed
   exact (CohortStep.of_data (state := state)
-    (after := { state with eth1DepositIndex := fun _ => next }) rfl).trans
+    (after := { state with eth1DepositIndex := fun _ => next }) rfl rfl).trans
     (cohortStep_applyDeposit early applied)
 
 theorem cohortStep_processVoluntaryExit (early : fork < .pectra) {signed : SignedVoluntaryExit}
@@ -531,7 +577,7 @@ theorem cohortStep_applyWithdrawal {withdrawal : Withdrawal}
   · simp only [bind_ok_iff] at computed
     obtain ⟨_, _, set⟩ := computed
     obtain ⟨_, rfl⟩ := setBuilder_ok set
-    exact .of_data rfl
+    exact .of_data rfl rfl
   · exact .decreaseBalance computed
 
 theorem cohortStep_applyExpectedWithdrawals {capella : .shapella ≤ fork}
@@ -550,7 +596,7 @@ theorem cohortStep_applyExpectedWithdrawals {capella : .shapella ≤ fork}
     split at indexedOk
     · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at indexedOk
       obtain ⟨_, _, rfl⟩ := indexedOk
-      exact .of_data rfl
+      exact .of_data rfl rfl
     · cases indexedOk
       exact .refl _
   have queued : ∀ kept : BeaconState preset fork,
@@ -561,7 +607,7 @@ theorem cohortStep_applyExpectedWithdrawals {capella : .shapella ≤ fork}
       else kept) := by
     intro kept
     split
-    · exact .of_data rfl
+    · exact .of_data rfl rfl
     · exact .refl _
   have partials : ∀ kept : BeaconState preset fork,
       CohortStep config kept (if electra : .pectra ≤ fork then
@@ -569,7 +615,7 @@ theorem cohortStep_applyExpectedWithdrawals {capella : .shapella ≤ fork}
       else kept) := by
     intro kept
     split
-    · exact .of_data rfl
+    · exact .of_data rfl rfl
     · exact .refl _
   have swept : ∀ kept : BeaconState preset fork,
       (if gloas : .glamsterdam ≤ fork then
@@ -581,10 +627,10 @@ theorem cohortStep_applyExpectedWithdrawals {capella : .shapella ≤ fork}
       dsimp only at ok
       split at ok
       · cases ok
-        exact .of_data rfl
+        exact .of_data rfl rfl
       · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
         obtain ⟨_, _, rfl⟩ := ok
-        exact .of_data rfl
+        exact .of_data rfl rfl
     · simp only [pure, Except.pure, Except.ok.injEq] at ok
       exact ok ▸ .refl _
   have lastKept : CohortStep config finished after := by
@@ -594,7 +640,7 @@ theorem cohortStep_applyExpectedWithdrawals {capella : .shapella ≤ fork}
     split at last
     · cases last
     · cases last
-      exact .of_data rfl
+      exact .of_data rfl rfl
   exact one.trans <| two.trans <| (queued _).trans <| (partials _).trans <|
     (swept _ sweptOk).trans lastKept
 
@@ -628,7 +674,7 @@ theorem cohortStep_processExecutionPayload {body : BeaconBlockBody preset fork}
     (computed : processExecutionPayload config engine state body bellatrix = .ok after) :
     CohortStep config state after := by
   obtain ⟨_, _, _, rfl⟩ := processExecutionPayload_ok computed
-  exact .of_data rfl
+  exact .of_data rfl rfl
 
 /-- The payload of the parent runs from Gloas. -/
 theorem cohortStep_processParentExecutionPayload (early : fork < .pectra)
@@ -644,11 +690,11 @@ theorem cohortStep_processExecutionPayloadBid {gloas : .glamsterdam ≤ fork}
   obtain ⟨_, recorded, recordedOk, rfl⟩ := processExecutionPayloadBid_ok computed
   by_cases paid : 0 < signed.message.value
   · obtain ⟨_, _, _, _, rfl⟩ := recordBidPayment_of_pos paid recordedOk
-    exact .of_data rfl
+    exact .of_data rfl rfl
   · simp only [recordBidPayment, paid, ↓reduceIte, pure, Except.pure, Except.ok.injEq]
       at recordedOk
     subst recordedOk
-    exact .of_data rfl
+    exact .of_data rfl rfl
 
 theorem cohortStep_processBlockExecution {body : BeaconBlockBody preset fork}
     {bellatrix : .bellatrix ≤ fork}
@@ -786,7 +832,7 @@ theorem cohortStep_processJustificationAndFinalization
   · subst same
     exact .refl _
   · obtain ⟨_, _, _, rest⟩ := weighJustificationAndFinalization_checkpoints weighed
-    exact .of_data (by rw [← rest])
+    exact .of_data (by rw [← rest]) (by rw [← rest])
 
 theorem cohortStep_applyAllDeltas {deltas : Array Gwei × Array Gwei}
     (computed : applyAllDeltas state deltas = .ok after) : CohortStep config state after :=
@@ -867,7 +913,7 @@ theorem cohortStep_processEth1DataReset {before : fork < .hegota}
   split at computed
   · simp only [pure, Except.pure, Except.ok.injEq] at computed
     subst computed
-    exact .of_data rfl
+    exact .of_data rfl rfl
   · simp only [pure, Except.pure, Except.ok.injEq] at computed
     exact computed ▸ .refl _
 
@@ -891,7 +937,7 @@ theorem cohortStep_processHistoricalRootsUpdate
   split at computed
   · simp only [bind_ok_iff, liftSsz_ok, pure, Except.pure, Except.ok.injEq] at computed
     obtain ⟨_, _, _, _, rfl⟩ := computed
-    exact .of_data rfl
+    exact .of_data rfl rfl
   · simp only [pure, Except.pure, Except.ok.injEq] at computed
     exact computed ▸ .refl _
 
@@ -903,7 +949,7 @@ theorem cohortStep_processParticipationRecordUpdates
   · cases computed
   simp only [pure, Except.pure, Except.ok.injEq] at computed
   subst computed
-  exact .of_data rfl
+  exact .of_data rfl rfl
 
 /-! ## The steps of an epoch from Altair -/
 
@@ -916,7 +962,7 @@ theorem cohortStep_processInactivityUpdates {altair : .altair ≤ fork}
     exact computed ▸ .refl _
   · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at computed
     obtain ⟨_, _, _, _, rfl⟩ := computed
-    exact .of_data rfl
+    exact .of_data rfl rfl
 
 private theorem cohortStep_epochEnd {altair : .altair ≤ fork}
     {rooted synced looked : BeaconState preset fork}
@@ -930,13 +976,13 @@ private theorem cohortStep_epochEnd {altair : .altair ≤ fork}
     unfold processSyncCommitteeUpdates at syncedOk
     simp only [bind, Except.bind, pure, Except.pure] at syncedOk
     repeat' (split at syncedOk <;> try cases syncedOk)
-    all_goals exact .of_data rfl
+    all_goals exact .of_data rfl rfl
   have lookedKept : CohortStep config synced looked := by
     split at lookedOk
     · simp only [processProposerLookahead, liftAccessor_ok, bind_ok_iff, pure, Except.pure,
         Except.ok.injEq] at lookedOk
       obtain ⟨_, _, _, _, rfl⟩ := lookedOk
-      exact .of_data rfl
+      exact .of_data rfl rfl
     · simp only [pure, Except.pure, Except.ok.injEq] at lookedOk
       exact lookedOk ▸ .refl _
   have windowedKept : CohortStep config looked after := by
@@ -944,7 +990,7 @@ private theorem cohortStep_epochEnd {altair : .altair ≤ fork}
     · simp only [processPtcWindow, liftAccessor_ok, bind_ok_iff, pure, Except.pure,
         Except.ok.injEq] at windowed
       obtain ⟨_, _, _, _, rfl⟩ := windowed
-      exact .of_data rfl
+      exact .of_data rfl rfl
     · simp only [pure, Except.pure, Except.ok.injEq] at windowed
       exact windowed ▸ .refl _
   exact syncedKept.trans (lookedKept.trans windowedKept)
@@ -1066,11 +1112,13 @@ theorem cohorts_processRegistryUpdates (early : fork < .pectra)
     (computed : processRegistryUpdates config state = .ok after) :
     state.validators.data.size ≤ after.validators.data.size ∧ after.slot = state.slot ∧
       (ExitCohortsBounded config state → ExitCohortsBounded config after) ∧
-      ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
+      (∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
         (epoch.toNat ≠ nextActivationEpoch state →
           activationCohort after epoch = activationCohort state epoch) ∧
         activationCohort after epoch ≤
-          activationCohort state epoch + churnCap config after.validators.data.size := by
+          activationCohort state epoch + churnCap config after.validators.data.size) ∧
+      ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH → epoch.toNat < nextActivationEpoch state →
+        exitCohort after epoch = exitCohort state epoch := by
   unfold processRegistryUpdates at computed
   split at computed
   · rename_i electra
@@ -1108,13 +1156,16 @@ theorem cohorts_processRegistryUpdates (early : fork < .pectra)
     · exact UInt64.le_iff_toNat_le.mp getValidatorActivationChurnLimit_le.2
     · exact Nat.le_refl _
   refine ⟨Nat.le_trans updatedKept.size_le (Nat.le_of_eq size.symm), slot.trans updatedSlot,
-    fun bounded epoch finite => ?_, fun epoch finite => ⟨fun other => ?_, ?_⟩⟩
+    fun bounded epoch finite => ?_, fun epoch finite => ⟨fun other => ?_, ?_⟩,
+    fun epoch finite below => ?_⟩
   · rw [exits epoch, size]
     exact updatedKept.exits bounded epoch finite
   · simp only [activations epoch finite, next, other, ↓reduceIte, Nat.add_zero,
       updatedKept.activations epoch finite]
   · rw [activations epoch finite, updatedKept.activations epoch finite]
     split <;> omega
+  · rw [exits epoch]
+    exact updatedKept.exitsBelow epoch finite below
 
 /-! ## The epoch transition -/
 
@@ -1139,8 +1190,11 @@ private theorem cohorts_epochParts (early : fork < .pectra)
       (∀ epoch, epoch ≠ FAR_FUTURE_EPOCH → epoch ≠ GENESIS_EPOCH →
         activationCohort after epoch ≤ churnCap config after.validators.data.size) ∧
       (∀ epoch, epoch ≠ FAR_FUTURE_EPOCH → 0 < activationCohort after epoch →
-        epoch.toNat ≤ nextActivationEpoch state) := by
-  obtain ⟨sizeLe, _, registryExits, registryActivations⟩ :=
+        epoch.toNat ≤ nextActivationEpoch state) ∧
+      (∀ epoch, epoch ≠ FAR_FUTURE_EPOCH → epoch.toNat < nextActivationEpoch state →
+        exitCohort after epoch = exitCohort state epoch ∧
+          activationCohort after epoch = activationCohort state epoch) := by
+  obtain ⟨sizeLe, registeredSlot, registryExits, registryActivations, registryBelow⟩ :=
     cohorts_processRegistryUpdates early registry
   have next : nextActivationEpoch middle = nextActivationEpoch state := by
     simp [nextActivationEpoch, getCurrentEpoch, middleSlot]
@@ -1148,8 +1202,10 @@ private theorem cohorts_epochParts (early : fork < .pectra)
       activationCohort after epoch = activationCohort registered epoch ∧
         activationCohort middle epoch = activationCohort state epoch :=
     fun epoch finite => ⟨tail.activations epoch finite, head.activations epoch finite⟩
+  have registeredNext : nextActivationEpoch registered = nextActivationEpoch state := by
+    simp [nextActivationEpoch, getCurrentEpoch, registeredSlot, middleSlot]
   refine ⟨tail.exits (registryExits (head.exits exits)), fun epoch finite genesis => ?_,
-    fun epoch finite occupied => ?_⟩
+    fun epoch finite occupied => ?_, fun epoch finite below => ?_⟩
   · obtain ⟨afterSame, middleSame⟩ := same epoch finite
     obtain ⟨other, grown⟩ := registryActivations epoch finite
     rw [afterSame]
@@ -1170,6 +1226,14 @@ private theorem cohorts_epochParts (early : fork < .pectra)
     · exact Nat.le_of_eq at_next
     · rw [afterSame, other (by rw [next]; exact at_next), middleSame] at occupied
       exact Nat.le_of_lt (activations.scheduled epoch finite occupied)
+  · -- Every step changes the cohorts only at the next activation epoch or later.
+    obtain ⟨afterSame, middleSame⟩ := same epoch finite
+    obtain ⟨other, _⟩ := registryActivations epoch finite
+    refine ⟨?_, ?_⟩
+    · rw [tail.exitsBelow epoch finite (by rw [registeredNext]; exact below),
+        registryBelow epoch finite (by rw [next]; exact below),
+        head.exitsBelow epoch finite below]
+    · rw [afterSame, other (by rw [next]; omega), middleSame]
 
 /-- The epoch transition before Electra keeps the exit cohorts within their cap.
 
@@ -1181,7 +1245,10 @@ theorem cohorts_processEpoch (early : fork < .pectra) (exits : ExitCohortsBounde
       (∀ epoch, epoch ≠ FAR_FUTURE_EPOCH → epoch ≠ GENESIS_EPOCH →
         activationCohort after epoch ≤ churnCap config after.validators.data.size) ∧
       (∀ epoch, epoch ≠ FAR_FUTURE_EPOCH → 0 < activationCohort after epoch →
-        epoch.toNat ≤ nextActivationEpoch state) := by
+        epoch.toNat ≤ nextActivationEpoch state) ∧
+      (∀ epoch, epoch ≠ FAR_FUTURE_EPOCH → epoch.toNat < nextActivationEpoch state →
+        exitCohort after epoch = exitCohort state epoch ∧
+          activationCohort after epoch = activationCohort state epoch) := by
   unfold processEpoch at computed
   split at computed
   · have whole := computed
@@ -1201,15 +1268,15 @@ theorem cohorts_processEpoch (early : fork < .pectra) (exits : ExitCohortsBounde
       · simp only [processBuilderPendingPayments, liftAccessor_ok, bind_ok_iff, pure,
           Except.pure, Except.ok.injEq] at paidOk
         obtain ⟨_, _, rfl⟩ := paidOk
-        exact .of_data rfl
+        exact .of_data rfl rfl
       · simp only [pure, Except.pure, Except.ok.injEq] at paidOk
         exact paidOk ▸ .refl _
     have clearedKept : CohortStep config balanced cleared := by
       obtain ⟨_, _, _, _, rfl⟩ := processSlashingsReset_eq clearedOk
-      exact .of_data rfl
+      exact .of_data rfl rfl
     have mixedKept : CohortStep config cleared mixed := by
       obtain ⟨_, _, _, _, _, _, rfl⟩ := processRandaoMixesReset_eq mixedOk
-      exact .of_data rfl
+      exact .of_data rfl rfl
     have head : CohortStep config state rewarded :=
       (cohortStep_processJustificationAndFinalization justifiedOk').trans <|
       (cohortStep_processInactivityUpdates scoredOk).trans
@@ -1231,7 +1298,7 @@ theorem cohorts_processEpoch (early : fork < .pectra) (exits : ExitCohortsBounde
           repeat' (split at rootedOk <;> try cases rootedOk)
           all_goals first
             | exact .refl _
-            | exact .of_data rfl
+            | exact .of_data rfl rfl
         exact middle.trans <| rootedKept.trans (cohortStep_epochEnd syncedOk lookedOk windowed)
       · exact middle.trans <| (cohortStep_processHistoricalRootsUpdate rootedOk).trans
           (cohortStep_epochEnd syncedOk lookedOk windowed)
@@ -1243,10 +1310,10 @@ theorem cohorts_processEpoch (early : fork < .pectra) (exits : ExitCohortsBounde
     rootedOk, rotated⟩ := computed
   have clearedKept : CohortStep config balanced cleared := by
     obtain ⟨_, _, _, _, rfl⟩ := processSlashingsReset_eq clearedOk
-    exact .of_data rfl
+    exact .of_data rfl rfl
   have mixedKept : CohortStep config cleared mixed := by
     obtain ⟨_, _, _, _, _, _, rfl⟩ := processRandaoMixesReset_eq mixedOk
-    exact .of_data rfl
+    exact .of_data rfl rfl
   have head : CohortStep config state rewarded :=
     (cohortStep_processJustificationAndFinalization justifiedOk).trans
       (cohortStep_processRewardsAndPenalties rewardedOk)
@@ -1290,15 +1357,28 @@ theorem cohorts_of_carried {fork' : Base.Fork} {after : BeaconState preset fork'
     exact activations.scheduled epoch finite
       (by simpa [activationCohort, validators] using occupied)
 
+/-- The cohorts of a later state agree with those of a state before its next activation epoch.
+
+The next activation epoch does not move back. -/
+def PastCohortsKept {fork' : Base.Fork} (state : BeaconState preset fork)
+    (after : BeaconState preset fork') : Prop :=
+  nextActivationEpoch state ≤ nextActivationEpoch after ∧
+    ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH → epoch.toNat < nextActivationEpoch state →
+      exitCohort after epoch = exitCohort state epoch ∧
+        activationCohort after epoch = activationCohort state epoch
+
 /-- One slot before Electra keeps the cohorts within their caps.
 
 At the last slot of an epoch, the epoch transition fills the cohort of the next activation epoch.
 
-The slot then moves to the next epoch, whose next activation epoch is one later. -/
+The slot then moves to the next epoch, whose next activation epoch is one later.
+
+No cohort before the next activation epoch changes. -/
 theorem cohorts_advanceSlot (early : fork < .pectra) (exits : ExitCohortsBounded config state)
     (activations : ActivationCohorts config state)
     (computed : advanceSlot config checks state = .ok after) :
-    ExitCohortsBounded config after ∧ ActivationCohorts config after := by
+    (ExitCohortsBounded config after ∧ ActivationCohorts config after) ∧
+      PastCohortsKept state after := by
   simp only [advanceSlot, bind_ok_iff, liftAccessor_ok, liftArith, mapError_ok_iff,
     addChecked_ok_iff, pure, Except.pure, Except.ok.injEq] at computed
   obtain ⟨next, ⟨_, sum⟩, cached, cachedOk, epoched, epochedOk, rfl⟩ := computed
@@ -1310,10 +1390,22 @@ theorem cohorts_advanceSlot (early : fork < .pectra) (exits : ExitCohortsBounded
   obtain ⟨cachedExits, cachedActivations⟩ :=
     cohorts_of_carried (state := state) (after := cached) cachedValidators cachedSlot exits
       activations
+  have cachedNext : nextActivationEpoch cached = nextActivationEpoch state := by
+    simp [nextActivationEpoch, getCurrentEpoch, cachedSlot]
+  have cachedSame : ∀ epoch, exitCohort cached epoch = exitCohort state epoch ∧
+      activationCohort cached epoch = activationCohort state epoch := fun epoch => by
+    simp [exitCohort, activationCohort, cachedValidators]
+  -- The next slot is in the same epoch or a later one.
+  have later : state.slot.toNat / preset.SLOTS_PER_EPOCH.toNat ≤
+      next.toNat / preset.SLOTS_PER_EPOCH.toNat := Nat.div_le_div_right (by omega)
+  have nextLe : nextActivationEpoch state ≤
+      nextActivationEpoch ({ epoched with slot := next } : BeaconState preset fork) := by
+    simp only [nextActivationEpoch, getCurrentEpoch_toNat]
+    omega
   unfold epochIfLast at epochedOk
   split at epochedOk
   · rename_i boundary
-    obtain ⟨slot, epochedExits, bounded, scheduled⟩ :=
+    obtain ⟨slot, epochedExits, bounded, scheduled, below⟩ :=
       cohorts_processEpoch early cachedExits cachedActivations epochedOk
     have boundary' : next.toNat % preset.SLOTS_PER_EPOCH.toNat = 0 := by
       simpa [UInt64.toNat_mod] using congrArg UInt64.toNat boundary
@@ -1322,19 +1414,21 @@ theorem cohorts_advanceSlot (early : fork < .pectra) (exits : ExitCohortsBounded
         state.slot.toNat / preset.SLOTS_PER_EPOCH.toNat + 1 := by
       rw [sum]
       exact Nat.succ_div_of_dvd (Nat.dvd_of_mod_eq_zero (sum ▸ boundary'))
-    refine ⟨epochedExits, bounded, fun epoch finite occupied => ?_⟩
-    have := scheduled epoch finite occupied
-    simp only [nextActivationEpoch, getCurrentEpoch_toNat] at this ⊢
-    rw [step]
-    rw [cachedSlot] at this
-    omega
+    refine ⟨⟨epochedExits, bounded, fun epoch finite occupied => ?_⟩, nextLe,
+      fun epoch finite below' => ?_⟩
+    · have := scheduled epoch finite occupied
+      simp only [nextActivationEpoch, getCurrentEpoch_toNat] at this ⊢
+      rw [step]
+      rw [cachedSlot] at this
+      omega
+    · obtain ⟨exitsSame, activationsSame⟩ := below epoch finite (by rw [cachedNext]; exact below')
+      exact ⟨exitsSame.trans (cachedSame epoch).1, activationsSame.trans (cachedSame epoch).2⟩
   · simp only [pure, Except.pure, Except.ok.injEq] at epochedOk
     subst epochedOk
-    refine ⟨cachedExits, cachedActivations.bounded, fun epoch finite occupied => ?_⟩
+    refine ⟨⟨cachedExits, cachedActivations.bounded, fun epoch finite occupied => ?_⟩, nextLe,
+      fun epoch _ _ => cachedSame epoch⟩
     have := cachedActivations.scheduled epoch finite occupied
     simp only [nextActivationEpoch, getCurrentEpoch_toNat] at this ⊢
-    have later : state.slot.toNat / preset.SLOTS_PER_EPOCH.toNat ≤
-        next.toNat / preset.SLOTS_PER_EPOCH.toNat := Nat.div_le_div_right (by omega)
     rw [cachedSlot] at this
     omega
 
@@ -1352,7 +1446,7 @@ theorem stepRelation_cohorts :
   StepRelation.ofPreserves
     (fun holds computed early =>
       have ⟨exits, activations⟩ := holds early
-      cohorts_advanceSlot early exits activations computed)
+      (cohorts_advanceSlot early exits activations computed).1)
     (fun {pre} {post} holds _ computed postEarly => by
       have preEarly : pre.fork < .pectra := Nat.lt_trans post.property postEarly
       obtain ⟨exits, activations⟩ := holds preEarly
@@ -1381,6 +1475,79 @@ theorem stepRelation_cohorts :
         exact Nat.le_trans (activations.bounded epoch finite genesis) (churnCap_mono kept.size_le)
       · rw [next]
         exact activations.scheduled epoch finite (kept.activations epoch finite ▸ occupied))
+
+/-- An upgrade to a fork before Electra keeps the registry and the slot. -/
+theorem upgradeNext_carried {pre : ForkedBeaconState preset}
+    {post : {post : ForkedBeaconState preset // pre.fork < post.fork}}
+    (early : post.val.fork < .pectra) (computed : upgradeNext config checks pre = .ok post) :
+    post.val.state.validators.data = pre.state.validators.data ∧
+      post.val.state.slot = pre.state.slot := by
+  obtain ⟨fork, state⟩ := pre
+  cases fork <;>
+    simp only [upgradeNext, bind_ok_iff, pure, Except.pure, Except.ok.injEq, throw,
+      throwThe, MonadExceptOf.throw, reduceCtorEq] at computed
+  · obtain ⟨_, upgraded, rfl⟩ := computed
+    simp only [upgradeToAltair, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at upgraded
+    obtain ⟨_, folded, _, -, rfl⟩ := upgraded
+    rw [← Array.foldlM_toList] at folded
+    obtain ⟨_, rfl, -⟩ := foldlM_translateAttestation folded
+    exact ⟨rfl, rfl⟩
+  all_goals first
+    | (subst computed; exact ⟨rfl, rfl⟩)
+    | (obtain ⟨_, _, rfl⟩ := computed; simp only at early
+       exact absurd early (by decide))
+
+/-- Along a chain before Electra, no cohort before the next activation epoch of its start changes.
+-/
+def PastCohorts (start after : ForkedBeaconState preset) : Prop :=
+  start.fork ≤ after.fork ∧ (after.fork < .pectra → PastCohortsKept start.state after.state)
+
+/-- Every step of a chain keeps the cohorts, and changes none before the next activation epoch. -/
+theorem stepRelation_pastCohorts :
+    StepRelation config checks fun (forked after : ForkedBeaconState preset) =>
+      PreElectraCohorts config forked →
+        PreElectraCohorts config after ∧ PastCohorts forked after :=
+  StepRelation.ofGuarded (holds := PreElectraCohorts config) (relates := PastCohorts)
+    (fun _ => ⟨Nat.le_refl _, fun _ => ⟨Nat.le_refl _, fun _ _ _ => ⟨rfl, rfl⟩⟩⟩)
+    (fun one two => ⟨Nat.le_trans one.1 two.1, fun late => by
+      obtain ⟨firstLe, firstSame⟩ := one.2 (Nat.lt_of_le_of_lt two.1 late)
+      obtain ⟨secondLe, secondSame⟩ := two.2 late
+      refine ⟨Nat.le_trans firstLe secondLe, fun epoch finite below => ?_⟩
+      obtain ⟨exitsSecond, activationsSecond⟩ :=
+        secondSame epoch finite (Nat.lt_of_lt_of_le below firstLe)
+      obtain ⟨exitsFirst, activationsFirst⟩ := firstSame epoch finite below
+      exact ⟨exitsSecond.trans exitsFirst, activationsSecond.trans activationsFirst⟩⟩)
+    (fun {fork} {_} {_} holds computed => by
+      by_cases early : fork < .pectra
+      · obtain ⟨exits, activations⟩ := holds early
+        obtain ⟨kept, past⟩ := cohorts_advanceSlot early exits activations computed
+        exact ⟨fun _ => kept, Nat.le_refl _, fun _ => past⟩
+      · exact ⟨fun late => absurd late early, Nat.le_refl _, fun late => absurd late early⟩)
+    (fun {pre} {post} holds due computed => by
+      refine ⟨stepRelation_cohorts.upgradeNext due computed holds,
+        Nat.le_of_lt post.property, fun early => ?_⟩
+      obtain ⟨validators, slot⟩ := upgradeNext_carried early computed
+      have next : nextActivationEpoch post.val.state = nextActivationEpoch pre.state := by
+        simp [nextActivationEpoch, getCurrentEpoch, slot]
+      exact ⟨Nat.le_of_eq next.symm, fun epoch _ _ => by
+        simp [exitCohort, activationCohort, validators]⟩)
+    (fun {fork} {_} {state} {after} {_} {_} holds computed => by
+      refine ⟨stepRelation_cohorts.applySignedBlock computed holds, Nat.le_refl _,
+        fun early => ?_⟩
+      have kept := cohortStep_processBlock (config := config) early
+        (applySignedBlock_ok computed).2.1
+      have next : nextActivationEpoch after = nextActivationEpoch state := by
+        simp [nextActivationEpoch, getCurrentEpoch, kept.slot]
+      exact ⟨Nat.le_of_eq next.symm, fun epoch finite below =>
+        ⟨kept.exitsBelow epoch finite below, kept.activations epoch finite⟩⟩)
+
+/-- Along every chain from a state whose cohorts are within their caps, past cohorts stay.
+
+They are those before its next activation epoch, while the chain stays before Electra. -/
+theorem Reaches.pastCohorts {start after : ForkedBeaconState preset}
+    (holds : PreElectraCohorts config start) (chain : Reaches config checks start after) :
+    PastCohorts start after :=
+  (stepRelation_pastCohorts.reaches chain holds).2
 
 /-- Along every chain from a state whose cohorts are within their caps, every state keeps them so.
 
@@ -1425,7 +1592,7 @@ theorem genesisCohorts_genesisDeposit (early : fork < .pectra) {before : fork < 
   obtain ⟨depositRoot, _, deposited⟩ := computed
   have kept := (CohortStep.of_data (config := config) (state := state)
     (after := { state with eth1Data := fun _ => { state.eth1Data before with depositRoot } })
-    rfl).trans (cohortStep_processDeposit early deposited)
+    rfl rfl).trans (cohortStep_processDeposit early deposited)
   refine ⟨kept.exits holds.1, genesisActivations_iff.mpr fun epoch finite genesis => ?_⟩
   rw [kept.activations epoch finite]
   exact genesisActivations_iff.mp holds.2 epoch finite genesis
