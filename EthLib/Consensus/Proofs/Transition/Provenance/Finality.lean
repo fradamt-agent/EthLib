@@ -228,7 +228,8 @@ def KFinalizedBy (config : Config) (checks : SignatureChecks) (start after : For
       recordSource cached (cs k).epoch = c
 
 /-- Two checkpoints that calls justified, read at a common end: ancestry at a later end. -/
-private theorem ancestor_at {start middle after : ForkedBeaconState preset} {first second : Checkpoint}
+theorem JustifiedBy.pastAncestor_at {start middle after : ForkedBeaconState preset}
+    {first second : Checkpoint}
     (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (genesis : Genesis config checks start) (tail : Reaches config checks middle after)
     (firstJustified : JustifiedBy config checks start middle first)
@@ -243,7 +244,8 @@ private theorem ancestor_at {start middle after : ForkedBeaconState preset} {fir
     (·.extendChain tail) (·.extendChain tail)
 
 /-- A checkpoint that a call justified has a nonzero root at a later end, or there is evidence. -/
-private theorem nonzero_at {start middle after : ForkedBeaconState preset} {checkpoint : Checkpoint}
+theorem JustifiedBy.nonzero_at {start middle after : ForkedBeaconState preset}
+    {checkpoint : Checkpoint}
     (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (genesis : Genesis config checks start) (tail : Reaches config checks middle after)
     (justified : JustifiedBy config checks start middle checkpoint) :
@@ -277,12 +279,13 @@ theorem kFinalizedBy_one {start middle after : ForkedBeaconState preset} {c : Ch
     · omega
   · intro i below
     rcases i with _ | i
-    · exact ancestor_at wide genesis tail cJustified link.justifiedBy (by simp [epoch]) recentEnd
+    · exact JustifiedBy.pastAncestor_at wide genesis tail cJustified link.justifiedBy
+        (by simp [epoch]) recentEnd
     · omega
   · intro i below one
     rcases i with _ | _ | i
     · omega
-    · exact nonzero_at wide genesis tail link.justifiedBy
+    · exact JustifiedBy.nonzero_at wide genesis tail link.justifiedBy
     · omega
 
 /-- `2`-finalization from a justified `c`, a justified checkpoint of the next epoch, and a link
@@ -315,8 +318,10 @@ theorem kFinalizedBy_two {start middle after : ForkedBeaconState preset} {c d : 
     · omega
   · intro i below
     rcases i with _ | _ | i
-    · exact ancestor_at wide genesis tail cJustified dJustified (by simp [dEpoch]) recentEnd
-    · refine ancestor_at wide genesis tail dJustified link.justifiedBy (by simp [dEpoch, eEpoch])
+    · exact JustifiedBy.pastAncestor_at wide genesis tail cJustified dJustified
+        (by simp [dEpoch]) recentEnd
+    · refine JustifiedBy.pastAncestor_at wide genesis tail dJustified link.justifiedBy
+        (by simp [dEpoch, eEpoch])
         ?_
       show _ ≤ d.epoch.toNat * _ + _
       rw [dEpoch, Nat.add_mul, Nat.one_mul]
@@ -325,8 +330,8 @@ theorem kFinalizedBy_two {start middle after : ForkedBeaconState preset} {c d : 
   · intro i below one
     rcases i with _ | _ | _ | i
     · omega
-    · exact nonzero_at wide genesis tail dJustified
-    · exact nonzero_at wide genesis tail link.justifiedBy
+    · exact JustifiedBy.nonzero_at wide genesis tail dJustified
+    · exact JustifiedBy.nonzero_at wide genesis tail link.justifiedBy
     · omega
 
 
