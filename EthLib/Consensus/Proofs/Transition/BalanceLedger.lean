@@ -879,13 +879,28 @@ theorem sameSizes_processEth1DataReset {before : fork < .hegota}
   obtain ⟨_, _, computed⟩ := computed
   split at computed <;> (cases computed; exact ⟨rfl, rfl⟩)
 
+/-- The penalties of the slashings of an epoch, read from the state that the slashings read.
+
+Each is the `epochSlashingPenalty` of the validator at its position.
+
+`total` is the total active balance, and `slashedSum` the slashed balance of the recent epochs. -/
+def SlashingPenaltyAt (state : BeaconState preset fork) (penalty : Nat → Nat) : Prop :=
+  ∃ total slashedSum : Gwei,
+    getTotalActiveBalance state = .ok total ∧ slashingsSum state = .ok slashedSum ∧
+    ∀ i, penalty i = epochSlashingPenalty preset fork (getCurrentEpoch state) total.toNat
+      (min (slashedSum.toNat * (parameters preset fork).PROPORTIONAL_SLASHING_MULTIPLIER.toNat)
+        total.toNat) state.validators.data[i]?
+
 /-- What the slashings of an epoch do to the balances: one debit at each position.
+
+The debit is the penalty of `SlashingPenaltyAt`.
 
 `slashingsLedger` proves it from the balances that the slashings leave. -/
 def SlashingsLedger (preset : Preset) (fork : Base.Fork) : Prop :=
   ∀ state after : BeaconState preset fork, state.RegistryWithinLimit →
     processSlashings state = .ok after →
-    ∃ penalty : Nat → Nat, BalanceLedger state after fun i => [.debit .slashing (penalty i)]
+    ∃ penalty : Nat → Nat, SlashingPenaltyAt state penalty ∧
+      BalanceLedger state after fun i => [.debit .slashing (penalty i)]
 
 /-- From Altair, the ledger of an epoch, given the ledger of its slashings.
 
@@ -926,6 +941,8 @@ theorem processEpochAltair_ledger_of_slashings (slashings : SlashingsLedger pres
           processPendingConsolidations middle electra = .ok deposited ∧
           BalanceLedger pending middle deposits ∧ BalanceLedger middle deposited transfers) ∧
         (fork < .pectra → (∀ i, deposits i = []) ∧ ∀ i, transfers i = [])) ∧
+      (∃ registered slashedOut, processRegistryUpdates config rewarded = .ok registered ∧
+        processSlashings registered = .ok slashedOut ∧ SlashingPenaltyAt registered penalty) ∧
       BalanceLedger state after fun i =>
         (if i < state.validators.data.size ∧ i < state.balances.data.size then
           deltaChanges deltas i else []) ++
@@ -948,7 +965,7 @@ theorem processEpochAltair_ledger_of_slashings (slashings : SlashingsLedger pres
   -- The ledgers of the steps that change balances.
   obtain ⟨deltas, genesis, -, fromAltair, rewards⟩ :=
     processRewardsAndPenalties_ledger (size2.registryWithinLimit within) s3Ok
-  obtain ⟨penalty, slashed⟩ := slashings s4 s5 (size4.registryWithinLimit within) s5Ok
+  obtain ⟨penalty, penaltyAt, slashed⟩ := slashings s4 s5 (size4.registryWithinLimit within) s5Ok
   obtain ⟨deposited, deposits, transfers, depositLedger, transferLedger, pendingLedger, early,
     late⟩ := processPendingBalances_ledger s7Ok (balancesMatch_of_sameSizes size6 holds)
       (by rw [size6.1]; exact room)
@@ -1002,7 +1019,7 @@ theorem processEpochAltair_ledger_of_slashings (slashings : SlashingsLedger pres
   have tail := BalanceLedger.of_balances rest
   refine ⟨s2, s3, s6, deltas, penalty, deposits, transfers, ⟨s1, s1Ok, s2Ok⟩, s3Ok,
     fun later => ?_, genesis, ⟨s7, s7Ok, fun electra => ?_,
-      fun before => ⟨(early before).2.1, (early before).2.2⟩⟩, ?_⟩
+      fun before => ⟨(early before).2.1, (early before).2.2⟩⟩, ⟨s4, s5, s4Ok, s5Ok, penaltyAt⟩, ?_⟩
   · obtain ⟨flags, inactivity, flagsOk, inactivityOk, same⟩ := fromAltair altair later
     exact ⟨flags, inactivity, flagsOk, inactivityOk, same⟩
   · obtain ⟨depositedOk, consolidatedOk⟩ := late electra
@@ -1037,6 +1054,10 @@ theorem processEpoch_ledger_of_lt_altair_of_slashings (slashings : SlashingsLedg
         ∃ attestation, getAttestationDeltas config justified before = .ok attestation ∧
           deltas = [attestation]) ∧
       (getCurrentEpoch justified = GENESIS_EPOCH → deltas = []) ∧
+      (∃ rewarded registered slashedOut,
+        processRewardsAndPenalties config justified = .ok rewarded ∧
+        processRegistryUpdates config rewarded = .ok registered ∧
+        processSlashings registered = .ok slashedOut ∧ SlashingPenaltyAt registered penalty) ∧
       BalanceLedger state after fun i =>
         (if i < state.validators.data.size ∧ i < state.balances.data.size then
           deltaChanges deltas i else []) ++ [.debit .slashing (penalty i)] := by
@@ -1052,14 +1073,15 @@ theorem processEpoch_ledger_of_lt_altair_of_slashings (slashings : SlashingsLedg
     (sameSizes_processRegistryUpdates s3Ok)
   obtain ⟨deltas, genesis, fromPhase0, -, rewards⟩ :=
     processRewardsAndPenalties_ledger (size1.registryWithinLimit within) s2Ok
-  obtain ⟨penalty, slashed⟩ := slashings s3 s4 (size3.registryWithinLimit within) s4Ok
+  obtain ⟨penalty, penaltyAt, slashed⟩ := slashings s3 s4 (size3.registryWithinLimit within) s4Ok
   have one := BalanceLedger.of_balances (processJustificationAndFinalization_balances s1Ok)
   have three := BalanceLedger.of_balances (processRegistryUpdates_balances s3Ok)
   have rest : after.balances = s4.balances := by
     rw [processParticipationRecordUpdates_balances last, processHistoricalRootsUpdate_balances s9Ok,
       processRandaoMixesReset_balances s8Ok, processSlashingsReset_balances s7Ok,
       processEffectiveBalanceUpdates_balances s6Ok, processEth1DataReset_balances s5Ok]
-  refine ⟨s1, deltas, penalty, s1Ok, fromPhase0 before, genesis, ?_⟩
+  refine ⟨s1, deltas, penalty, s1Ok, fromPhase0 before, genesis,
+    ⟨s2, s3, s4, s2Ok, s3Ok, s4Ok, penaltyAt⟩, ?_⟩
   refine ((((one.trans rewards).trans three).trans slashed).trans
     (BalanceLedger.of_balances rest)).congr fun i => ?_
   simp only [size1.1, size1.2, List.nil_append, List.append_nil, List.foldl_append]
@@ -1075,10 +1097,12 @@ theorem slashingsLedger : SlashingsLedger preset fork := by
     have bound : state.validators.data.size ≤ _ := within
     have := preset.VALIDATOR_REGISTRY_LIMIT.toNat_lt
     omega
-  obtain ⟨total, slashedSum, _, _, _, balances⟩ := processSlashings_balances small computed
+  obtain ⟨total, slashedSum, totalOk, sumOk, _, balances⟩ :=
+    processSlashings_balances small computed
   refine ⟨fun i => epochSlashingPenalty preset fork (getCurrentEpoch state) total.toNat
     (min (slashedSum.toNat * (parameters preset fork).PROPORTIONAL_SLASHING_MULTIPLIER.toNat)
-      total.toNat) state.validators.data[i]?, fun i => ?_⟩
+      total.toNat) state.validators.data[i]?, ⟨total, slashedSum, totalOk, sumOk, fun _ => rfl⟩,
+    fun i => ?_⟩
   unfold balanceNat
   rw [balances i]
   cases state.balances.data[i]? <;> simp [BalanceChange.apply]
@@ -1116,6 +1140,8 @@ theorem processEpochAltair_ledger {altair : .altair ≤ fork} (within : state.Re
           processPendingConsolidations middle electra = .ok deposited ∧
           BalanceLedger pending middle deposits ∧ BalanceLedger middle deposited transfers) ∧
         (fork < .pectra → (∀ i, deposits i = []) ∧ ∀ i, transfers i = [])) ∧
+      (∃ registered slashedOut, processRegistryUpdates config rewarded = .ok registered ∧
+        processSlashings registered = .ok slashedOut ∧ SlashingPenaltyAt registered penalty) ∧
       BalanceLedger state after fun i =>
         (if i < state.validators.data.size ∧ i < state.balances.data.size then
           deltaChanges deltas i else []) ++
@@ -1138,6 +1164,10 @@ theorem processEpoch_ledger_of_lt_altair (before : fork < .altair)
         ∃ attestation, getAttestationDeltas config justified before = .ok attestation ∧
           deltas = [attestation]) ∧
       (getCurrentEpoch justified = GENESIS_EPOCH → deltas = []) ∧
+      (∃ rewarded registered slashedOut,
+        processRewardsAndPenalties config justified = .ok rewarded ∧
+        processRegistryUpdates config rewarded = .ok registered ∧
+        processSlashings registered = .ok slashedOut ∧ SlashingPenaltyAt registered penalty) ∧
       BalanceLedger state after fun i =>
         (if i < state.validators.data.size ∧ i < state.balances.data.size then
           deltaChanges deltas i else []) ++ [.debit .slashing (penalty i)] :=

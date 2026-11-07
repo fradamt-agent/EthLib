@@ -59,10 +59,10 @@ theorem epochIfLast_ledger {fork : Base.Fork} {state after : BeaconState preset 
   · by_cases altair : .altair ≤ fork
     · unfold processEpoch at computed
       simp only [altair, ↓reduceDIte] at computed
-      obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, ledger⟩ :=
+      obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, ledger⟩ :=
         processEpochAltair_ledger within holds room computed
       exact ⟨_, ledger⟩
-    · obtain ⟨_, _, _, _, _, _, ledger⟩ :=
+    · obtain ⟨_, _, _, _, _, _, _, ledger⟩ :=
         processEpoch_ledger_of_lt_altair (Nat.lt_of_not_le altair) computed
       exact ⟨_, ledger⟩
   · cases computed
