@@ -1421,7 +1421,8 @@ The loss of effective balance, which the inactivity leak drives, and the placeme
 `historyRefinement` (`Transition/FfgHistories.lean`) builds the refinement of two histories from one genesis state, from the provenance proofs.
 `accountable_safety_histories` states accountable safety for them: slashable signed attestation data, or a hash with zero output on the histories.
 Its fields are all proved, at every fork, from genesis; checkpoints conflict as epoch-boundary pairs, as in Gasper §4.
-The drift bound is a hypothesis too, so the theorem is not yet about what a client runs without further assumptions.
+`store_accountable_safety` (`Transition/FfgStore.lean`) applies it to the justified and finalized checkpoints of a fork-choice store that starts at genesis.
+Their conflict as epoch-boundary pairs is a hypothesis there, and so is the drift bound, so the theorem is not yet about what a client runs without further assumptions.
 
 ### Engine API
 
