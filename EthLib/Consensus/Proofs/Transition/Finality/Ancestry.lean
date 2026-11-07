@@ -115,4 +115,34 @@ theorem finality_checkpoint_epoch_after_common_or_collision
       (finalityMessages_header cachedMember leftOk xMember)
       (finalityMessages_header otherMember rightOk yMember) collides)
 
+/-- Every successful slot cache before a supplied block is a recorded observation. -/
+theorem finality_observations_cached {cfg : Config} {checks : SignatureChecks}
+    {eng : ExecutionEngine p .phase0} {s before atStep cached : FinalityState p}
+    {bs : List (FinalityBlock p)} {b : FinalityBlock p} {i n : Nat}
+    (listed : bs[i]? = some b)
+    (prefixRun : finalityRuns cfg checks eng s (bs.take i) before)
+    (inside : n < b.message.slot.toNat - before.slot.toNat)
+    (advanced : advanceSlots cfg n before = .ok atStep)
+    (cachedOk : processSlot atStep = .ok cached) :
+    cached ∈ finalityObservations cfg checks eng s bs := by
+  apply List.mem_cons_of_mem
+  apply List.mem_flatMap.mpr
+  refine ⟨(b, i), List.mk_mem_zipIdx_iff_getElem?.mpr listed, ?_⟩
+  change cached ∈ (match (bs.take i).foldlM
+    (fun s b => stateTransition cfg checks eng s b true) s with
+    | .error _ => []
+    | .ok before => (stateTransition cfg checks eng before b true).toOption.toList ++
+      before :: (List.range (b.message.slot.toNat - before.slot.toNat)).flatMap fun n =>
+        match advanceSlots cfg n before with
+        | .error _ => []
+        | .ok atStep => atStep :: (processSlot atStep).toOption.toList)
+  rw [show (bs.take i).foldlM
+    (fun s b => stateTransition cfg checks eng s b true) s = .ok before from prefixRun]
+  apply List.mem_append_right
+  apply List.mem_cons_of_mem
+  apply List.mem_flatMap.mpr
+  refine ⟨n, List.mem_range.mpr inside, ?_⟩
+  simp only [advanced, cachedOk, Except.toOption, Option.toList_some]
+  exact List.mem_cons_of_mem _ List.mem_cons_self
+
 end EthLib.Consensus
