@@ -1650,6 +1650,41 @@ theorem processSlot_blockRoot_of_block (before : fork < .glamsterdam)
   rw [headerOk, BeaconBlock.hashTreeRoot_header block body] at rooted
   exact rooted
 
+/-- Targets later than C were included on its fork suffix, even when counted at a cached slot.
+
+Initialization supplies the pending-epoch invariant at C; no absence of pending votes is assumed. -/
+theorem pendingIncluded_after_common_at_cached_slot
+    {engine : ExecutionEngine preset fork}
+    {genesis common after atStep cached : BeaconState preset fork}
+    {eth1BlockHash : Hash32} {eth1Timestamp : UInt64} {deposits : Array Deposit}
+    {commonBlocks blocks : List (SignedBeaconBlock preset fork)} {count : Nat}
+    {pending : PendingAttestation preset}
+    (before : fork < .altair)
+    (initialized : initializeBeaconStateFromEth1 config checks eth1BlockHash eth1Timestamp
+      deposits = .ok genesis)
+    (commonRun : commonBlocks.foldlM
+      (fun state block => stateTransition config checks engine state block true)
+        genesis = .ok common)
+    (forkRun : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block true) common = .ok after)
+    (advanced : advanceSlots config count after = .ok atStep)
+    (cachedOk : processSlot atStep = .ok cached)
+    (member : pending ∈ (cached.currentEpochAttestations before).data ∨
+      pending ∈ (cached.previousEpochAttestations before).data)
+    (laterTarget : getCurrentEpoch common < pending.data.target.epoch) :
+    ∃ earlier block later atBlock atSlot,
+      blocks = earlier ++ block :: later ∧
+      earlier.foldlM
+        (fun state block => stateTransition config checks engine state block true)
+          common = .ok atBlock ∧
+      processSlots config atBlock block.message.slot = .ok atSlot ∧
+      PendingIncludedInBlock config checks before atSlot block.message pending := by
+  have atMember := ((pendingUnchanged_processSlot (before := before) cachedOk).mem_iff pending).mp
+    member
+  exact stateTransition_chain_pending_origin_of_target_gt before
+    (pendingEpochsMatch_of_initialized_chain before initialized commonRun) forkRun
+    (advanceSlots_pending_mem before count advanced atMember) laterTarget
+
 /-- A candidate state launches the chain exactly when it is late enough.
 
 It must also have enough validators active at the genesis epoch. -/

@@ -4086,4 +4086,465 @@ theorem stateTransition_chains_finalized_eq_of_zero_epochs (before : fork < .alt
   exact (stateTransition_chain_finalized_of_same_epoch before leftRun leftEpoch).trans
     (stateTransition_chain_finalized_of_same_epoch before rightRun rightEpoch).symm
 
+/-- Epoch processing changes neither the latest block header nor the block-root buffer.
+
+Only slot caching and block-header processing write these fields in Phase 0. -/
+theorem processEpoch_block_history (before : fork < .altair)
+    (computed : processEpoch config state = .ok after) :
+    after.latestBlockHeader = state.latestBlockHeader ∧ after.blockRoots = state.blockRoots := by
+  let history := fun s : BeaconState preset fork => (s.latestBlockHeader, s.blockRoots)
+  have raise {s s' : BeaconState preset fork} {index delta}
+      (ok : increaseBalance s index delta = .ok s') : history s' = history s := by
+    simp only [increaseBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+    obtain ⟨_, _, _, _, rfl⟩ := ok
+    rfl
+  have lower {s s' : BeaconState preset fork} {index delta}
+      (ok : decreaseBalance s index delta = .ok s') : history s' = history s := by
+    simp only [decreaseBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+    obtain ⟨_, _, rfl⟩ := ok
+    rfl
+  have exit {s s' : BeaconState preset fork} {index}
+      (ok : initiateValidatorExit config s index = .ok s') : history s' = history s := by
+    obtain ⟨_, _, ⟨_, rfl⟩ | ⟨_, queued, epoch, _, queue, _, rfl⟩⟩ :=
+      initiateValidatorExit_ok ok
+    · rfl
+    · have notElectra : ¬Fork.pectra ≤ fork :=
+        Nat.not_le_of_lt (Nat.lt_trans before (by decide))
+      simp only [exitQueue, notElectra, ↓reduceDIte, bind_ok_iff, pure, Except.pure,
+        Except.ok.injEq, Prod.mk.injEq] at queue
+      obtain ⟨_, _, same, _⟩ := queue
+      cases same
+      rfl
+  have deltas {s s' : BeaconState preset fork} {rewards penalties index}
+      (ok : applyDeltas rewards penalties s index = .ok s') : history s' = history s := by
+    simp only [applyDeltas, bind_ok_iff, liftAccessor_ok] at ok
+    obtain ⟨_, raised, lowered⟩ := ok
+    exact (lower lowered).trans (raise raised)
+  have allDeltas {s s' : BeaconState preset fork} {ds}
+      (ok : applyAllDeltas s ds = .ok s') : history s' = history s :=
+    foldlM_ok_invariant (fun t => history t = history s)
+      (fun _ _ _ same applied => (deltas applied).trans same) rfl ok
+  have rewards {s s' : BeaconState preset fork}
+      (ok : processRewardsAndPenalties config s = .ok s') : history s' = history s := by
+    unfold processRewardsAndPenalties at ok
+    split at ok
+    · cases ok; rfl
+    split at ok
+    · exact (Nat.not_le_of_lt before ‹_›).elim
+    obtain ⟨_, _, applied⟩ := bind_ok_iff.mp ok
+    exact allDeltas applied
+  have entry {s s' : BeaconState preset fork} {index}
+      (ok : updateRegistryEntry config s index = .ok s') : history s' = history s := by
+    simp only [updateRegistryEntry, bind_ok_iff, liftAccessor_ok] at ok
+    obtain ⟨_, _, _, _, ok⟩ := ok
+    split at ok
+    · simpa only [history, BeaconState.setValidator] using exit (liftAccessor_ok.mp ok)
+    · cases ok; rfl
+  have activation {s s' : BeaconState preset fork} {index}
+      (ok : activateValidator s index = .ok s') : history s' = history s := by
+    simp only [activateValidator, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+      Except.ok.injEq] at ok
+    obtain ⟨_, _, _, _, rfl⟩ := ok
+    rfl
+  have registry {s s' : BeaconState preset fork}
+      (ok : processRegistryUpdates config s = .ok s') : history s' = history s := by
+    unfold processRegistryUpdates at ok
+    split at ok
+    · cases ok
+    obtain ⟨middle, first, second⟩ := bind_ok_iff.mp ok
+    have one := foldlM_ok_invariant (fun t => history t = history s)
+      (fun _ _ _ same applied => (entry applied).trans same) rfl first
+    exact foldlM_ok_invariant (fun t => history t = history s)
+      (fun _ _ _ same applied => (activation applied).trans same) one second
+  have penalty {s s' : BeaconState preset fork} {total adjusted index}
+      (ok : applySlashingPenalty s total adjusted index = .ok s') : history s' = history s := by
+    simp only [applySlashingPenalty, bind_ok_iff, liftAccessor_ok] at ok
+    obtain ⟨_, _, ok⟩ := ok
+    split at ok
+    · obtain ⟨_, _, ok⟩ := bind_ok_iff.mp ok
+      split at ok
+      · simp only [bind_ok_iff, liftAccessor_ok] at ok
+        obtain ⟨_, _, _, _, lowered⟩ := ok
+        exact lower lowered
+      · cases ok; rfl
+    · cases ok; rfl
+  have slashings {s s' : BeaconState preset fork}
+      (ok : processSlashings s = .ok s') : history s' = history s := by
+    unfold processSlashings at ok
+    split at ok
+    · cases ok
+    simp only [bind_ok_iff] at ok
+    obtain ⟨_, _, _, _, _, _, applied⟩ := ok
+    exact foldlM_ok_invariant (fun t => history t = history s)
+      (fun _ _ _ same applied => (penalty applied).trans same) rfl applied
+  have effective {s s' : BeaconState preset fork} {index}
+      (ok : updateEffectiveBalance s index = .ok s') : history s' = history s := by
+    simp only [updateEffectiveBalance, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+      Except.ok.injEq] at ok
+    obtain ⟨_, _, _, _, _, _, rfl⟩ := ok
+    rfl
+  have effectiveAll {s s' : BeaconState preset fork}
+      (ok : processEffectiveBalanceUpdates s = .ok s') : history s' = history s := by
+    unfold processEffectiveBalanceUpdates at ok
+    split at ok
+    · cases ok
+    exact foldlM_ok_invariant (fun t => history t = history s)
+      (fun _ _ _ same applied => (effective applied).trans same) rfl ok
+  have notAltair : ¬Fork.altair ≤ fork := Nat.not_le_of_lt before
+  simp only [processEpoch, notAltair, ↓reduceDIte, bind_ok_iff] at computed
+  obtain ⟨justified, justifiedOk, rewarded, rewardedOk, registered, registeredOk, slashed,
+    slashedOk, reset, resetOk, balanced, balancedOk, cleared, clearedOk, mixed, mixedOk, rooted,
+    rootedOk, rotated⟩ := computed
+  have justification : history justified = history state := by
+    rcases processJustificationAndFinalization_ok justifiedOk with same | ⟨_, _, _, weighed⟩
+    · rw [same]
+    · simpa only [history] using
+        congrArg history (weighJustificationAndFinalization_checkpoints weighed).2.2.2
+  have resetHistory : history reset = history slashed := by
+    simp only [processEth1DataReset, bind_ok_iff, liftAccessor_ok] at resetOk
+    obtain ⟨_, _, ok⟩ := resetOk
+    split at ok <;> cases ok <;> rfl
+  have clearedHistory : history cleared = history balanced := by
+    obtain ⟨_, _, rfl⟩ := processSlashingsReset_eq clearedOk
+    rfl
+  have mixedHistory : history mixed = history cleared := by
+    obtain ⟨_, _, _, _, rfl⟩ := processRandaoMixesReset_eq mixedOk
+    rfl
+  have rootedHistory : history rooted = history mixed := by
+    unfold processHistoricalRootsUpdate at rootedOk
+    split at rootedOk
+    · cases rootedOk
+    simp only [bind_ok_iff, liftAccessor_ok] at rootedOk
+    obtain ⟨_, _, ok⟩ := rootedOk
+    split at ok
+    · simp only [bind_ok_iff, liftSsz_ok, pure, Except.pure, Except.ok.injEq] at ok
+      obtain ⟨_, _, _, _, rfl⟩ := ok
+      rfl
+    · cases ok; rfl
+  have rotatedHistory : history after = history rooted := by
+    unfold processParticipationRecordUpdates at rotated
+    split at rotated
+    · cases rotated
+    cases rotated
+    rfl
+  have same := rotatedHistory.trans <| rootedHistory.trans <| mixedHistory.trans <|
+    clearedHistory.trans <| (effectiveAll balancedOk).trans <| resetHistory.trans <|
+    (slashings slashedOk).trans <| (registry registeredOk).trans <|
+    (rewards rewardedOk).trans justification
+  exact Prod.mk.inj same
+
+/-- A slot advance exposes the header and root buffer written by its cache step.
+
+The optional epoch transition preserves both fields. -/
+theorem advanceSlot_block_history (before : fork < .altair)
+    (computed : advanceSlot config state = .ok after) :
+    ∃ cached, processSlot state = .ok cached ∧
+      after.latestBlockHeader = cached.latestBlockHeader ∧
+      after.blockRoots = cached.blockRoots := by
+  simp only [advanceSlot, bind_ok_iff, liftAccessor_ok, liftArith, mapError_ok_iff,
+    addChecked_ok_iff, pure, Except.pure, Except.ok.injEq] at computed
+  obtain ⟨next, _, cached, cacheOk, epoched, epochOk, rfl⟩ := computed
+  refine ⟨cached, cacheOk, ?_⟩
+  change epoched.latestBlockHeader = cached.latestBlockHeader ∧
+    epoched.blockRoots = cached.blockRoots
+  unfold epochIfLast at epochOk
+  split at epochOk
+  · exact processEpoch_block_history before epochOk
+  · cases epochOk
+    exact ⟨rfl, rfl⟩
+
+/-- A block-root read after empty-slot advancement is inherited or was cached during the run.
+
+The witness names a real successful slot-cache call, including those at epoch boundaries. -/
+theorem advanceSlots_readBlockRoot_origin (before : fork < .altair) :
+    ∀ (count : Nat) {state after : BeaconState preset fork} {slot : Slot} {root : Root},
+      advanceSlots config count state = .ok after →
+      readCircular after.blockRoots slot = .ok root →
+      readCircular state.blockRoots slot = .ok root ∨
+        ∃ offset atStep cached, offset < count ∧
+          advanceSlots config offset state = .ok atStep ∧
+          processSlot atStep = .ok cached ∧
+          SszType.hashTreeRoot cached.latestBlockHeader = .ok root
+  | 0, _, _, _, _, computed, read => by
+    cases computed
+    exact .inl read
+  | count + 1, state, _, slot, root, computed, read => by
+    obtain ⟨middle, first, rest⟩ := bind_ok_iff.mp computed
+    rcases advanceSlots_readBlockRoot_origin before count rest read with old | originated
+    · obtain ⟨cached, cachedOk, _, buffer⟩ := advanceSlot_block_history before first
+      rw [buffer] at old
+      rcases processSlot_readBlockRoot_origin (Nat.lt_trans before (by decide)) cachedOk old
+          with inherited | fresh
+      · exact .inl inherited
+      · exact .inr ⟨0, state, cached, by omega, rfl, cachedOk, fresh⟩
+    · obtain ⟨offset, atStep, cached, inside, advanced, cachedOk, rooted⟩ := originated
+      refine .inr ⟨offset + 1, atStep, cached, by omega, ?_, cachedOk, rooted⟩
+      simp only [advanceSlots, bind_ok_iff]
+      exact ⟨middle, first, advanced⟩
+
+/-- Empty-slot advancement preserves a recent cached root before its circular overwrite.
+
+The strict upper bound excludes the slot that overwrites the requested position. -/
+theorem advanceSlots_readBlockRoot_recent (before : fork < .altair) :
+    ∀ (count : Nat) {state after : BeaconState preset fork} (slot : Slot),
+      slot.toNat < state.slot.toNat →
+      state.slot.toNat + count ≤ slot.toNat + preset.SLOTS_PER_HISTORICAL_ROOT.toNat →
+      advanceSlots config count state = .ok after →
+      readCircular after.blockRoots slot = readCircular state.blockRoots slot
+  | 0, _, _, _, _, _, computed => by
+    cases computed
+    rfl
+  | count + 1, state, _, slot, earlier, recent, computed => by
+    obtain ⟨middle, first, rest⟩ := bind_ok_iff.mp computed
+    have moved := advanceSlot_slot first
+    have tail := advanceSlots_readBlockRoot_recent before count slot
+      (by omega) (by omega) rest
+    obtain ⟨cached, cachedOk, _, buffer⟩ := advanceSlot_block_history before first
+    rw [tail, buffer]
+    exact processSlot_readBlockRoot_recent (Nat.lt_trans before (by decide)) cachedOk slot
+      earlier (by omega)
+
+/-- Empty slots preserve a completed header, even when the run crosses epoch boundaries. -/
+theorem advanceSlots_latestBlockHeader_of_nonzero (before : fork < .altair) :
+    ∀ (count : Nat) {state after : BeaconState preset fork},
+      state.latestBlockHeader.stateRoot ≠ Vector.replicate 32 0 →
+      advanceSlots config count state = .ok after →
+      after.latestBlockHeader = state.latestBlockHeader
+  | 0, _, _, _, computed => by
+    cases computed
+    rfl
+  | count + 1, state, _, filled, computed => by
+    obtain ⟨middle, first, rest⟩ := bind_ok_iff.mp computed
+    obtain ⟨cached, cachedOk, header, _⟩ := advanceSlot_block_history before first
+    have same := header.trans
+      (processSlot_latestBlockHeader_of_nonzero (Nat.lt_trans before (by decide)) cachedOk filled)
+    have filled' : middle.latestBlockHeader.stateRoot ≠ Vector.replicate 32 0 := by
+      simpa only [same] using filled
+    exact (advanceSlots_latestBlockHeader_of_nonzero before count filled' rest).trans same
+
+/-- Phase 0 block operations preserve the latest header and every cached block root.
+
+Header installation is a separate step before these operations. -/
+theorem processOperations_block_history (before : fork < .altair)
+    {body : BeaconBlockBody preset fork}
+    (computed : processOperations config checks state body = .ok after) :
+    after.latestBlockHeader = state.latestBlockHeader ∧ after.blockRoots = state.blockRoots := by
+  let history := fun s : BeaconState preset fork => (s.latestBlockHeader, s.blockRoots)
+  have earlier : fork < .pectra := Nat.lt_trans before (by decide)
+  have raise {s s' : BeaconState preset fork} {index delta}
+      (ok : increaseBalance s index delta = .ok s') : history s' = history s := by
+    simp only [increaseBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+    obtain ⟨_, _, _, _, rfl⟩ := ok
+    rfl
+  have lower {s s' : BeaconState preset fork} {index delta}
+      (ok : decreaseBalance s index delta = .ok s') : history s' = history s := by
+    simp only [decreaseBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+    obtain ⟨_, _, rfl⟩ := ok
+    rfl
+  have exit {s s' : BeaconState preset fork} {index}
+      (ok : initiateValidatorExit config s index = .ok s') : history s' = history s := by
+    obtain ⟨_, _, ⟨_, rfl⟩ | ⟨_, queued, _, _, queue, _, rfl⟩⟩ :=
+      initiateValidatorExit_ok ok
+    · rfl
+    · change history queued = history s
+      rw [exitQueue_state earlier queue]
+  have slash {s s' : BeaconState preset fork} {index whistleblower}
+      (ok : slashValidator config s index whistleblower = .ok s') : history s' = history s := by
+    simp only [slashValidator, bind_ok_iff, liftArith, mapError_ok_iff] at ok
+    obtain ⟨exited, exitedOk, _, _, _, _, _, _, _, _, lowered, loweredOk,
+      _, _, _, _, raised, raisedOk, last, lastOk, done⟩ := ok
+    have notGloas : ¬Fork.glamsterdam ≤ fork :=
+      Nat.not_le_of_lt (Nat.lt_trans before (by decide))
+    simp only [notGloas, ↓reduceDIte, pure, Except.pure, Except.ok.injEq] at done
+    subst done
+    have credits := (raise lastOk).trans <| (raise raisedOk).trans (lower loweredOk)
+    simpa only [history, BeaconState.setValidator] using credits.trans
+      (show history _ = history s from by
+        simpa only [history, BeaconState.setValidator] using exit exitedOk)
+  have proposer {s s' : BeaconState preset fork} {slashing}
+      (ok : processProposerSlashing config checks s slashing = .ok s') :
+      history s' = history s := by
+    simp only [processProposerSlashing, bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at ok
+    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, slashed⟩ := ok
+    exact slash slashed
+  have slashStep {s s' : BeaconState preset fork × Bool} {index}
+      (ok : slashIfSlashable config s index = .ok s') : history s'.1 = history s.1 := by
+    obtain ⟨s, flag⟩ := s
+    simp only [slashIfSlashable, bind_ok_iff, liftAccessor_ok] at ok
+    obtain ⟨_, _, ok⟩ := ok
+    split at ok
+    · simp only [bind_ok_iff, liftAccessor_ok, pure, Except.pure, Except.ok.injEq] at ok
+      obtain ⟨_, slashed, rfl⟩ := ok
+      exact slash slashed
+    · cases ok; rfl
+  have attester {s s' : BeaconState preset fork} {slashing}
+      (ok : processAttesterSlashing config checks s slashing = .ok s') :
+      history s' = history s := by
+    simp only [processAttesterSlashing, bind_ok_iff, ensure_ok_iff, pure, Except.pure,
+      Except.ok.injEq] at ok
+    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, folded, _, _, rfl⟩ := ok
+    exact foldlM_ok_invariant (fun step => history step.1 = history s)
+      (fun _ _ _ same applied => (slashStep applied).trans same) rfl folded
+  have attestation {s s' : BeaconState preset fork} {a}
+      (ok : processAttestation config checks s a = .ok s') : history s' = history s := by
+    obtain ⟨_, _, _, _, _, recorded, _, _, _⟩ := processAttestation_records before ok
+    cases current : a.data.target.epoch == getCurrentEpoch s <;>
+      simp only [recordPendingAttestation, current, Bool.false_eq_true, ↓reduceIte] at recorded <;>
+      split at recorded <;> cases recorded <;> rfl
+  have insertion {s s' : BeaconState preset fork} {key credentials amount}
+      (ok : addValidatorToRegistry s key credentials amount = .ok s') :
+      history s' = history s := by
+    unfold addValidatorToRegistry at ok
+    split at ok
+    · exact (Nat.not_le_of_lt before ‹_›).elim
+    split at ok <;> cases ok
+    rfl
+  have depositCredit {s s' : BeaconState preset fork} {key credentials amount signature}
+      (ok : applyDeposit config checks s key credentials amount signature = .ok s') :
+      history s' = history s := by
+    have notElectra : ¬Fork.pectra ≤ fork := Nat.not_le_of_lt earlier
+    simp only [applyDeposit, notElectra, ↓reduceDIte, applyPendingDeposit] at ok
+    split at ok
+    · obtain ⟨_, _, ok⟩ := bind_ok_iff.mp ok
+      split at ok
+      · exact insertion ok
+      · cases ok; rfl
+    · exact raise (liftAccessor_ok.mp ok)
+  have deposit {s s' : BeaconState preset fork} {beforeHeze : fork < .hegota} {d}
+      (ok : processDeposit config checks beforeHeze s d = .ok s') : history s' = history s := by
+    obtain ⟨_, _, next, _, applied⟩ := processDeposit_ok ok
+    simpa only [history] using
+      depositCredit (s := { s with eth1DepositIndex := fun _ => next }) applied
+  have voluntary {s s' : BeaconState preset fork} {signed}
+      (ok : processVoluntaryExit config checks s signed = .ok s') : history s' = history s := by
+    unfold processVoluntaryExit at ok
+    split at ok
+    · cases ok
+    simp only [bind_ok_iff, ensure_ok_iff, liftAccessor_ok, liftSsz_ok] at ok
+    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, exited⟩ := ok
+    exact exit exited
+  unfold processOperations at computed
+  split at computed
+  · cases computed
+  simp only [bind_ok_iff, ensure_ok_iff, ← Array.foldlM_toList] at computed
+  obtain ⟨_, _, _, _, proposers, proposersOk, attesters, attestersOk, attested, attestedOk,
+    deposited, depositedOk, exited, exitsOk, changesOk⟩ := computed
+  have capella : ¬Fork.shapella ≤ fork := Nat.not_le_of_lt (Nat.lt_trans before (by decide))
+  simp only [capella, ↓reduceDIte, pure, Except.pure, Except.ok.injEq] at changesOk
+  subst changesOk
+  have p := foldlM_ok_invariant (fun s => history s = history state)
+    (fun _ _ _ same ok => (proposer ok).trans same) rfl proposersOk
+  have a := foldlM_ok_invariant (fun s => history s = history state)
+    (fun _ _ _ same ok => (attester ok).trans same) p attestersOk
+  have t := foldlM_ok_invariant (fun s => history s = history state)
+    (fun _ _ _ same ok => (attestation ok).trans same) a attestedOk
+  have d := foldlM_ok_invariant (fun s => history s = history state)
+    (fun _ _ _ same ok => (deposit ok).trans same) t depositedOk
+  have e := foldlM_ok_invariant (fun s => history s = history state)
+    (fun _ _ _ same ok => (voluntary ok).trans same) d exitsOk
+  exact Prod.mk.inj e
+
+/-- A Phase 0 block installs its header and preserves the cached roots of earlier blocks. -/
+theorem processBlock_block_history (before : fork < .altair)
+    {block : BeaconBlock preset fork}
+    (computed : processBlock config checks engine state block = .ok after) :
+    after.blockRoots = state.blockRoots ∧
+      ∃ bodyRoot, SszType.hashTreeRoot block.body = .ok bodyRoot ∧
+        after.latestBlockHeader =
+          ⟨block.slot, block.proposerIndex, block.parentRoot, Vector.replicate 32 0, bodyRoot⟩ := by
+  have notAltair : ¬Fork.altair ≤ fork := Nat.not_le_of_lt before
+  simp only [processBlock, notAltair, ↓reduceDIte, bind_ok_iff] at computed
+  obtain ⟨header, headerOk, randao, randaoOk, eth1, eth1Ok, operationsOk⟩ := computed
+  obtain ⟨bodyRoot, bodyRootOk, headerState⟩ := processBlockHeader_eq headerOk
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, randaoState⟩ := processRandao_eq randaoOk
+  obtain ⟨_, _, eth1State⟩ := processEth1Data_eq eth1Ok
+  obtain ⟨operationsHeader, operationsRoots⟩ := processOperations_block_history before operationsOk
+  have eth1Header : eth1.latestBlockHeader = randao.latestBlockHeader :=
+    congrArg (·.latestBlockHeader) eth1State
+  have eth1Roots : eth1.blockRoots = randao.blockRoots := congrArg (·.blockRoots) eth1State
+  rw [randaoState, headerState] at eth1Header eth1Roots
+  exact ⟨operationsRoots.trans eth1Roots, bodyRoot, bodyRootOk,
+    operationsHeader.trans eth1Header⟩
+
+/-- A root read after a valid block is inherited or was cached while advancing to that block. -/
+theorem stateTransition_readBlockRoot_origin (before : fork < .altair)
+    {signed : SignedBeaconBlock preset fork} {slot : Slot} {root : Root}
+    (computed : stateTransition config checks engine state signed true = .ok after)
+    (read : readCircular after.blockRoots slot = .ok root) :
+    readCircular state.blockRoots slot = .ok root ∨
+      ∃ offset atStep cached,
+        offset < signed.message.slot.toNat - state.slot.toNat ∧
+        advanceSlots config offset state = .ok atStep ∧
+        processSlot atStep = .ok cached ∧
+        SszType.hashTreeRoot cached.latestBlockHeader = .ok root := by
+  obtain ⟨advanced, slotsOk, _, _, blockOk, _⟩ := stateTransition_ok computed
+  rw [(processBlock_block_history before blockOk).1] at read
+  simp only [processSlots, bind_ok_iff, ensure_ok_iff] at slotsOk
+  obtain ⟨_, _, slotsOk⟩ := slotsOk
+  exact advanceSlots_readBlockRoot_origin before _ slotsOk read
+
+/-- Every new root in a Phase 0 chain's buffer has an actual slot-cache computation.
+
+The block prefix and slot offset locate that computation in the successful execution. -/
+theorem stateTransition_chain_readBlockRoot_origin (before : fork < .altair)
+    {blocks : List (SignedBeaconBlock preset fork)} {slot : Slot} {root : Root}
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block true) state = .ok after)
+    (read : readCircular after.blockRoots slot = .ok root) :
+    readCircular state.blockRoots slot = .ok root ∨
+      ∃ earlier block later atBlock offset atStep cached,
+        blocks = earlier ++ block :: later ∧
+        earlier.foldlM (fun state block => stateTransition config checks engine state block true)
+          state = .ok atBlock ∧
+        offset < block.message.slot.toNat - atBlock.slot.toNat ∧
+        advanceSlots config offset atBlock = .ok atStep ∧
+        processSlot atStep = .ok cached ∧
+        SszType.hashTreeRoot cached.latestBlockHeader = .ok root := by
+  induction blocks generalizing state with
+  | nil =>
+    cases computed
+    exact .inl read
+  | cons block rest ih =>
+    obtain ⟨middle, first, tail⟩ := bind_ok_iff.mp computed
+    rcases ih tail with old | originated
+    · rcases stateTransition_readBlockRoot_origin before first old with inherited | fresh
+      · exact .inl inherited
+      · obtain ⟨offset, atStep, cached, inside, advanced, cachedOk, rooted⟩ := fresh
+        exact .inr ⟨[], block, rest, state, offset, atStep, cached, rfl, rfl,
+          inside, advanced, cachedOk, rooted⟩
+    · obtain ⟨earlier, next, later, atBlock, offset, atStep, cached, split, prefixOk,
+        inside, advanced, cachedOk, rooted⟩ := originated
+      refine .inr ⟨block :: earlier, next, later, atBlock, offset, atStep, cached,
+        by simp only [List.cons_append, split], ?_, inside, advanced, cachedOk, rooted⟩
+      simp only [List.foldlM_cons, bind_ok_iff]
+      exact ⟨middle, first, prefixOk⟩
+
+/-- A pending target above the starting epoch cannot be carried from the starting state.
+
+Its inclusion witness therefore belongs to the supplied fork segment, not its common prefix. -/
+theorem stateTransition_chain_pending_origin_of_target_gt (before : fork < .altair)
+    {blocks : List (SignedBeaconBlock preset fork)} {pending : PendingAttestation preset}
+    (epochs : PendingEpochsMatch state before)
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block true) state = .ok after)
+    (member : pending ∈ (after.currentEpochAttestations before).data ∨
+      pending ∈ (after.previousEpochAttestations before).data)
+    (laterTarget : getCurrentEpoch state < pending.data.target.epoch) :
+    ∃ earlier block later atBlock atSlot,
+      blocks = earlier ++ block :: later ∧
+      earlier.foldlM
+        (fun state block => stateTransition config checks engine state block true)
+          state = .ok atBlock ∧
+      processSlots config atBlock block.message.slot = .ok atSlot ∧
+      PendingIncludedInBlock config checks before atSlot block.message pending := by
+  rcases stateTransition_chain_pending_origin before computed member with old | included
+  · have targetLe : pending.data.target.epoch ≤ getCurrentEpoch state := by
+      rcases old with current | previous
+      · rw [(epochs.1 pending current).1]
+        exact UInt64.le_refl _
+      · rw [(epochs.2 pending previous).1]
+        exact getPreviousEpoch_le state
+    exact (UInt64.not_lt.mpr targetLe laterTarget).elim
+  · exact included
+
 end EthLib.Consensus
