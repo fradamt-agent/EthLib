@@ -133,6 +133,13 @@ theorem finality_phase0_safety_horizon_of_main_and_churn
     obtain ⟨addedRight, exitedRight, gapRight⟩ := churn right b rightRun rightHorizon
     have added := finalityMaxOn_append_le addedLeft addedRight
     have gap := finalityMaxOn_append_le gapLeft gapRight
+    -- Keep the same stake expressions as the core inequality for arithmetic cancellation.
+    change finalityAdditions c (finalityObservations cfg checks eng c a ++
+      finalityObservations cfg checks eng c b) ≤
+      n * finalityChurnCap cfg c n * p.MAX_EFFECTIVE_BALANCE.toNat at added
+    change finalityPreviousGap (finalityObservations cfg checks eng c a ++
+      finalityObservations cfg checks eng c b) ≤
+      finalityChurnCap cfg c n * p.MAX_EFFECTIVE_BALANCE.toNat at gap
     have exited := finalityExits_append_le c
       (finalityObservations cfg checks eng c a) (finalityObservations cfg checks eng c b)
     have exitBound : finalityExits c (finalityObservations cfg checks eng c a ++
