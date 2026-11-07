@@ -96,6 +96,31 @@ theorem BalanceLedger.congr {first second : Nat → List BalanceChange}
     BalanceLedger state after second :=
   fun i => (holds i).trans (same i)
 
+/-- The total that some changes credit, of every kind. -/
+def BalanceChange.creditedAll (changes : List BalanceChange) : Nat :=
+  (changes.map fun
+    | .credit _ amount => amount
+    | .debit _ _ => 0).sum
+
+/-- Changes raise a balance by at most what they credit. -/
+theorem BalanceChange.foldl_apply_le :
+    ∀ (changes : List BalanceChange) (balance : Nat),
+      changes.foldl BalanceChange.apply balance ≤
+        balance + BalanceChange.creditedAll changes
+  | [], balance => by simp [BalanceChange.creditedAll]
+  | change :: rest, balance => by
+    have later := BalanceChange.foldl_apply_le rest (BalanceChange.apply balance change)
+    cases change <;>
+      simp only [List.foldl_cons, BalanceChange.apply, BalanceChange.creditedAll,
+        List.map_cons, List.sum_cons] at later ⊢ <;> omega
+
+/-- A balance after a step is at most the one before, plus what the ledger credits it. -/
+theorem BalanceLedger.le_credited {changes : Nat → List BalanceChange}
+    (holds : BalanceLedger state after changes) (i : Nat) :
+    balanceNat after i ≤ balanceNat state i + BalanceChange.creditedAll (changes i) := by
+  rw [holds i]
+  exact BalanceChange.foldl_apply_le _ _
+
 /-- The total that some changes of one kind credit. -/
 def BalanceChange.credited (flow : BalanceFlow) (changes : List BalanceChange) : Nat :=
   (changes.map fun
