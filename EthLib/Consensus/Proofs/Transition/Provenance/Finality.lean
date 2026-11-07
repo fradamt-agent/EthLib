@@ -20,7 +20,8 @@ Each rule reads justification bits and an old justified checkpoint `c`.
 This file turns each rule into `k`-finalization, with `k` 1 or 2.
 
 - The checkpoints from `c` on are justified, one per epoch.
-- Each root descends from the one before, or a state of the chain has the zero root.
+- Each root descends from the one before, along blocks past the earlier one's epoch start.
+  Or a state of the chain has the zero root.
 - A weighing call of the chain justified the last one, with `c` as its source.
 
 The newest bit can come from the call before the finalizing one.
@@ -207,7 +208,8 @@ theorem Reaches.newestBit {start after : ForkedBeaconState preset}
 
 - `cs 0 = c`, and `cs i` is in the `i`-th epoch after `c`'s, up to `k`.
 - The first `k` are justified, by the start or by a weighing call of the chain.
-- Each root descends from the one before, or a state of the chain has the zero root.
+- Each root descends from the one before, along blocks past the first slot of the earlier
+  checkpoint's epoch, or a state of the chain has the zero root.
 - The roots after `c` are not zero, or a header of the chain has the zero root.
 - A weighing call of the chain justified `cs k`, with `c` as its source. -/
 def KFinalizedBy (config : Config) (checks : SignatureChecks) (start after : ForkedBeaconState preset)
@@ -215,7 +217,8 @@ def KFinalizedBy (config : Config) (checks : SignatureChecks) (start after : For
   ∃ k, 1 ≤ k ∧ k ≤ 2 ∧ ∃ cs : ℕ → Checkpoint, cs 0 = c ∧
     (∀ i ≤ k, (cs i).epoch.toNat = c.epoch.toNat + i) ∧
     (∀ i < k, JustifiedOrStart config checks start after (cs i)) ∧
-    (∀ i < k, ChainAncestor config checks start after (cs i).root (cs (i + 1)).root ∨
+    (∀ i < k, PastAncestor config checks start after
+        ((cs i).epoch.toNat * preset.SLOTS_PER_EPOCH.toNat) (cs i).root (cs (i + 1)).root ∨
       ZeroRootFound config checks start after) ∧
     (∀ i ≤ k, 1 ≤ i → (cs i).root ≠ Vector.replicate 32 0 ∨
       ZeroHeaderFound config checks start after) ∧
@@ -233,9 +236,10 @@ private theorem ancestor_at {start middle after : ForkedBeaconState preset} {fir
     (ordered : first.epoch.toNat ≤ second.epoch.toNat)
     (recentEnd : middle.state.slot.toNat ≤
       first.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat + preset.SLOTS_PER_HISTORICAL_ROOT.toNat) :
-    ChainAncestor config checks start after first.root second.root ∨
+    PastAncestor config checks start after (first.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat)
+        first.root second.root ∨
       ZeroRootFound config checks start after :=
-  (JustifiedBy.ancestor wide genesis firstJustified secondJustified ordered recentEnd).imp
+  (firstJustified.pastAncestor wide genesis secondJustified ordered recentEnd).imp
     (·.extendChain tail) (·.extendChain tail)
 
 /-- A checkpoint that a call justified has a nonzero root at a later end, or there is evidence. -/
