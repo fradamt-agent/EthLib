@@ -91,6 +91,7 @@ public import EthLib.Consensus.Proofs.Transition.Operations
 public import EthLib.Consensus.Proofs.Transition.ParentPayload
 public import EthLib.Consensus.Proofs.Transition.Payload
 public import EthLib.Consensus.Proofs.Transition.Provenance.Ancestry
+public import EthLib.Consensus.Proofs.Transition.Provenance.Anchors
 public import EthLib.Consensus.Proofs.Transition.Provenance.Attestations
 public import EthLib.Consensus.Proofs.Transition.Provenance.Committees
 public import EthLib.Consensus.Proofs.Transition.Provenance.Finality
