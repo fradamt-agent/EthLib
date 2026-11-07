@@ -69,6 +69,7 @@ public import EthLib.Consensus.Proofs.Transition.FfgVotes
 public import EthLib.Consensus.Proofs.Transition.Finality.Ancestry
 public import EthLib.Consensus.Proofs.Transition.Finality.Definitions
 public import EthLib.Consensus.Proofs.Transition.Finality.Registry
+public import EthLib.Consensus.Proofs.Transition.Finality.SlashingBudget
 public import EthLib.Consensus.Proofs.Transition.ForkBoundary
 public import EthLib.Consensus.Proofs.Transition.Genesis
 public import EthLib.Consensus.Proofs.Transition.Invariants
