@@ -174,6 +174,53 @@ theorem finality_observations_slot_input {cfg : Config} {checks : SignatureCheck
   simp only [advanced]
   exact List.mem_cons_self
 
+/-- A successful common prefix splits every full-history observation into the frozen pools. -/
+theorem finality_observations_append {cfg : Config} {checks : SignatureChecks}
+    {eng : ExecutionEngine p .phase0} {g c t : FinalityState p}
+    {common suffix : List (FinalityBlock p)}
+    (shared : finalityRuns cfg checks eng g common c)
+    (member : t ∈ finalityObservations cfg checks eng g (common ++ suffix)) :
+    t ∈ finalityObservations cfg checks eng g common ++
+      finalityObservations cfg checks eng c suffix := by
+  simp only [finalityObservations, List.mem_cons, List.mem_flatMap] at member
+  rcases member with rfl | ⟨⟨block, i⟩, listed, member⟩
+  · exact List.mem_append_left _ List.mem_cons_self
+  have index := List.mk_mem_zipIdx_iff_getElem?.mp listed
+  by_cases before : i < common.length
+  · apply List.mem_append_left
+    apply List.mem_cons_of_mem
+    apply List.mem_flatMap.mpr
+    refine ⟨(block, i), List.mk_mem_zipIdx_iff_getElem?.mpr ?_, ?_⟩
+    · simpa only [List.getElem?_append_left before] using index
+    · simpa only [List.take_append_of_le_length (by omega : i ≤ common.length)] using member
+  · apply List.mem_append_right
+    apply List.mem_cons_of_mem
+    apply List.mem_flatMap.mpr
+    refine ⟨(block, i - common.length), List.mk_mem_zipIdx_iff_getElem?.mpr ?_, ?_⟩
+    · simpa only [List.getElem?_append_right (by omega : common.length ≤ i)] using index
+    · have takeEq : (common ++ suffix).take i = common ++ suffix.take (i - common.length) := by
+        rw [List.take_append, List.take_of_length_le (by omega)]
+      unfold finalityRuns at shared
+      simpa only [takeEq, List.foldlM_append, shared, bind, Except.bind] using member
+
+/-- Every successful block output at its original prefix belongs to the history observations. -/
+theorem finality_observations_block_output {cfg : Config} {checks : SignatureChecks}
+    {eng : ExecutionEngine p .phase0} {s before after : FinalityState p}
+    {bs earlier later : List (FinalityBlock p)} {b : FinalityBlock p}
+    (split : bs = earlier ++ b :: later)
+    (prefixOk : finalityRuns cfg checks eng s earlier before)
+    (blockOk : stateTransition cfg checks eng before b true = .ok after) :
+    after ∈ finalityObservations cfg checks eng s bs := by
+  unfold finalityRuns at prefixOk
+  apply List.mem_cons_of_mem
+  apply List.mem_flatMap.mpr
+  refine ⟨(b, earlier.length), List.mk_mem_zipIdx_iff_getElem?.mpr ?_, ?_⟩
+  · simp [split]
+  · simp only [show bs.take earlier.length = earlier by simp [split], prefixOk]
+    apply List.mem_append_left
+    simp only [blockOk, Except.toOption, Option.toList_some]
+    exact List.mem_cons_self
+
 /-- A zero-root observed state supplies the concrete SHA-256 input required by the alternative. -/
 theorem finality_zero_root_found {ss : List (FinalityState p)} {bs : List (FinalityBlock p)}
     {s : FinalityState p} (observed : s ∈ ss)
