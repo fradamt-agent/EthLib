@@ -1347,8 +1347,10 @@ Two branches finalize conflicting checkpoints of one epoch with no slashable val
 
 `FfgRefinement` (`Transition/FfgRefinement.lean`) lists, as structure fields, the facts that two histories of the beacon chain must provide for the dynamic model.
 `FfgRefinement.accountable_safety` proves that these fields give slashable stake, or hash evidence.
-No field is proved yet, and no theorem bounds the drift from the churn limits.
-So no theorem is yet about what a client runs.
+`FfgRefinement.accountable_safety_preElectra` (`Transition/FfgPreElectra.lean`) measures the bound in a state that both histories share, before Electra.
+It proves the bounds on the stake that leaves and joins from the churn limits, and on gains from the cap.
+The loss of effective balance, which the inactivity leak drives, and the placement of each weighing call are hypotheses.
+The fields of `FfgRefinement` are not proved yet, so no theorem is yet about what a client runs.
 
 ### Engine API
 

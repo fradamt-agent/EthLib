@@ -89,6 +89,7 @@ public import EthLib.Consensus.Proofs.Transition.EpochRewards
 public import EthLib.Consensus.Proofs.Transition.EpochUpdates
 public import EthLib.Consensus.Proofs.Transition.Execution
 public import EthLib.Consensus.Proofs.Transition.CommonState
+public import EthLib.Consensus.Proofs.Transition.FfgPreElectra
 public import EthLib.Consensus.Proofs.Transition.FfgRefinement
 public import EthLib.Consensus.Proofs.Transition.FfgVotes
 public import EthLib.Consensus.Proofs.Transition.ForkBoundary
