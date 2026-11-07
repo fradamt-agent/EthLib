@@ -12,7 +12,7 @@ New active weight lies in activation cohorts strictly after the reference epoch.
 
 namespace EthLib.Consensus
 
-open Base
+open Base Cryptography.Bls
 
 variable {p : Preset}
 
@@ -492,5 +492,442 @@ theorem finality_processRegistryUpdates_activation_history {cfg : Config}
     omega
   · intro epoch assigned finite
     exact frontier.empty finite (by omega)
+
+/-- Effective-balance hysteresis leaves the activation epochs unchanged. -/
+theorem finality_processEffectiveBalanceUpdates_activationEpochs {s t : FinalityState p}
+    (ran : processEffectiveBalanceUpdates s = .ok t) :
+    t.validators.data.toList.map (·.activationEpoch) =
+      s.validators.data.toList.map (·.activationEpoch) := by
+  simp only [processEffectiveBalanceUpdates, show ¬Fork.pectra ≤ Fork.phase0 by decide,
+    ↓reduceIte] at ran
+  have step : ∀ (a b : FinalityState p) i, i < a.validators.data.size →
+      updateEffectiveBalance a i = .ok b →
+      b.validators.data.toList.map (·.activationEpoch) =
+        a.validators.data.toList.map (·.activationEpoch) := by
+    intro a b i inside ok
+    have exactIndex := toNat_toUInt64_of_lt (a.validators.bound (by decide)) inside
+    simp only [updateEffectiveBalance, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+      Except.ok.injEq] at ok
+    obtain ⟨v, read, _, _, balance, _, rfl⟩ := ok
+    have found : a.validators.data[i]? = some v := by
+      unfold getValidator at read
+      rw [exactIndex] at read
+      split at read
+      · cases read; assumption
+      · cases read
+    exact finality_activationEpochs_setValidator found { v with effectiveBalance := balance } rfl
+  have pass : ∀ (indices : List Nat) (a b : FinalityState p),
+      (∀ i ∈ indices, i < a.validators.data.size) →
+      indices.foldlM updateEffectiveBalance a = .ok b →
+      b.validators.data.toList.map (·.activationEpoch) =
+        a.validators.data.toList.map (·.activationEpoch) := by
+    intro indices
+    induction indices with
+    | nil => intro a b _ ok; cases ok; rfl
+    | cons i rest ih =>
+      intro a b inside ok
+      obtain ⟨middle, first, tail⟩ := bind_ok_iff.mp ok
+      have sizes := (sameSizes_updateEffectiveBalance first).1
+      exact (ih middle b (fun j member => by
+        rw [sizes]
+        exact inside j (List.mem_cons_of_mem _ member)) tail).trans
+          (step a middle i (inside i List.mem_cons_self) first)
+  exact pass _ s t (fun _ member => List.mem_range.mp member) ran
+
+/-- Epoch processing creates a bounded activation cohort and advances its finite frontier. -/
+theorem finality_processEpoch_activation_history {cfg : Config}
+    {s t : FinalityState p} {cap : Nat} (inv : Invariant s)
+    (frontier : FinalityActivationFrontier s
+      ((getCurrentEpoch s).toNat + p.MAX_SEED_LOOKAHEAD.toNat))
+    (bounded : ∀ epoch, epoch ≠ 0 → epoch ≠ FAR_FUTURE_EPOCH →
+      (s.validators.data.toList.filter (·.activationEpoch == epoch)).length ≤ cap)
+    (limit : ∀ u : FinalityState p, u.validators.data.size = s.validators.data.size →
+      (getValidatorChurnLimit cfg u).toNat ≤ cap)
+    (ran : processEpoch cfg s = .ok t) :
+    FinalityActivationFrontier t
+      ((getCurrentEpoch s).toNat + 1 + p.MAX_SEED_LOOKAHEAD.toNat) ∧
+    ∀ epoch, epoch ≠ 0 → epoch ≠ FAR_FUTURE_EPOCH →
+      (t.validators.data.toList.filter (·.activationEpoch == epoch)).length ≤ cap := by
+  simp only [processEpoch, show ¬Fork.altair ≤ Fork.phase0 by decide, ↓reduceDIte,
+    bind_ok_iff] at ran
+  obtain ⟨justified, justifiedOk, rewarded, rewardedOk, registered, registeredOk, slashed,
+    slashedOk, reset, resetOk, balanced, balancedOk, cleared, clearedOk, mixed, mixedOk, rooted,
+    rootedOk, rotated⟩ := ran
+  obtain ⟨_, _, _, justifiedSlot, justifiedRegistry, _⟩ :=
+    processJustificationAndFinalization_invariant inv.ordered inv.settled justifiedOk
+  have rewardedRegistry :=
+    (processRewardsAndPenalties_validators rewardedOk).trans justifiedRegistry
+  have rewardedSlot := (frame_processRewardsAndPenalties rewardedOk).slot.trans justifiedSlot
+  have history := finality_processRegistryUpdates_activation_history
+    (s := rewarded) (by
+      simpa only [FinalityActivationFrontier, getCurrentEpoch, rewardedSlot, rewardedRegistry]
+        using frontier)
+    (by simpa only [rewardedRegistry] using bounded)
+    (fun u same => limit u (by simpa only [rewardedRegistry] using same)) registeredOk
+  have clearedRegistry : cleared.validators = balanced.validators := by
+    obtain ⟨_, _, rfl⟩ := processSlashingsReset_eq clearedOk
+    rfl
+  have mixedRegistry : mixed.validators = cleared.validators := by
+    obtain ⟨_, _, _, _, rfl⟩ := processRandaoMixesReset_eq mixedOk
+    rfl
+  have same : t.validators.data.toList.map (·.activationEpoch) =
+      registered.validators.data.toList.map (·.activationEpoch) := by
+    rw [processParticipationRecordUpdates_validators rotated,
+      processHistoricalRootsUpdate_validators rootedOk, mixedRegistry, clearedRegistry,
+      finality_processEffectiveBalanceUpdates_activationEpochs balancedOk,
+      processEth1DataReset_validators resetOk, processSlashings_validators slashedOk]
+  refine ⟨?_, ?_⟩
+  · have front := history.1.of_epochs same
+    simpa only [getCurrentEpoch, rewardedSlot] using front
+  · intro epoch nonzero finite
+    rw [finality_activationCohort_of_epochs same epoch]
+    exact history.2 epoch nonzero finite
+
+/-- Slashing changes exit and withdrawal data but not activation epochs. -/
+theorem finality_slashValidator_activationEpochs {cfg : Config}
+    {s t : FinalityState p} {i : ValidatorIndex} {whistleblower : Option ValidatorIndex}
+    (ran : slashValidator cfg s i whistleblower = .ok t) :
+    t.validators.data.toList.map (·.activationEpoch) =
+      s.validators.data.toList.map (·.activationEpoch) := by
+  unfold slashValidator at ran
+  simp only [bind_ok_iff, liftArith, mapError_ok_iff] at ran
+  obtain ⟨exited, exitedOk, validator, found, withdrawable, _, _, _, _, _, _, lowered,
+    _, _, _, _, _, raised, _, final, done⟩ := ran
+  have same := (slashValidator_last done).1.trans ((increaseBalance_validators final).trans
+    ((increaseBalance_validators raised).trans (decreaseBalance_validators lowered)))
+  have read : exited.validators.data[i.toNat]? = some validator := by
+    unfold getValidator at found
+    split at found
+    · cases found; assumption
+    · cases found
+  let marked := { validator with
+    slashed := true
+    withdrawableEpoch := max validator.withdrawableEpoch withdrawable }
+  rw [same, finality_activationEpochs_setValidator read marked rfl]
+  exact finality_initiateValidatorExit_activationEpochs exitedOk
+
+/-- A proposer-slashing operation preserves activation epochs. -/
+theorem finality_processProposerSlashing_activationEpochs {cfg : Config}
+    {checks : SignatureChecks} {s t : FinalityState p} {slashing : ProposerSlashing}
+    (ran : processProposerSlashing cfg checks s slashing = .ok t) :
+    t.validators.data.toList.map (·.activationEpoch) =
+      s.validators.data.toList.map (·.activationEpoch) := by
+  unfold processProposerSlashing at ran
+  simp only [bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at ran
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, slashed⟩ := ran
+  exact finality_slashValidator_activationEpochs slashed
+
+/-- Conditional slashing preserves activation epochs. -/
+theorem finality_slashIfSlashable_activationEpochs {cfg : Config}
+    {s t : FinalityState p × Bool} {i : ValidatorIndex}
+    (ran : slashIfSlashable cfg s i = .ok t) :
+    t.1.validators.data.toList.map (·.activationEpoch) =
+      s.1.validators.data.toList.map (·.activationEpoch) := by
+  obtain ⟨s, flag⟩ := s
+  simp only [slashIfSlashable, bind_ok_iff, liftAccessor_ok] at ran
+  obtain ⟨v, _, rest⟩ := ran
+  split at rest
+  · simp only [bind_ok_iff, liftAccessor_ok, pure, Except.pure, Except.ok.injEq] at rest
+    obtain ⟨_, slashed, rfl⟩ := rest
+    exact finality_slashValidator_activationEpochs slashed
+  · cases rest; rfl
+
+/-- An attester slashing preserves activation epochs through its actual index fold. -/
+theorem finality_processAttesterSlashing_activationEpochs {cfg : Config}
+    {checks : SignatureChecks} {s t : FinalityState p} {a : AttesterSlashing p .phase0}
+    (ran : processAttesterSlashing cfg checks s a = .ok t) :
+    t.validators.data.toList.map (·.activationEpoch) =
+      s.validators.data.toList.map (·.activationEpoch) := by
+  simp only [processAttesterSlashing, bind_ok_iff, ensure_ok_iff, pure, Except.pure,
+    Except.ok.injEq] at ran
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, folded, _, _, rfl⟩ := ran
+  exact foldlM_ok_invariant
+    (fun u : FinalityState p × Bool => u.1.validators.data.toList.map (·.activationEpoch) =
+      s.validators.data.toList.map (·.activationEpoch))
+    (fun _ _ _ previous ok => (finality_slashIfSlashable_activationEpochs ok).trans previous)
+    rfl folded
+
+/-- A voluntary exit preserves activation epochs. -/
+theorem finality_processVoluntaryExit_activationEpochs {cfg : Config}
+    {checks : SignatureChecks} {s t : FinalityState p} {a : SignedVoluntaryExit}
+    (ran : processVoluntaryExit cfg checks s a = .ok t) :
+    t.validators.data.toList.map (·.activationEpoch) =
+      s.validators.data.toList.map (·.activationEpoch) := by
+  simp only [processVoluntaryExit, show ¬Fork.pectra ≤ Fork.phase0 by decide,
+    ↓reduceIte, bind_ok_iff, ensure_ok_iff, liftAccessor_ok, liftSsz_ok] at ran
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, exited⟩ := ran
+  exact finality_initiateValidatorExit_activationEpochs exited
+
+/-- Deposits preserve finite activation cohorts. -/
+theorem finality_applyDeposit_activation_history {cfg : Config} {checks : SignatureChecks}
+    {s t : FinalityState p} {key : BLSPubkey} {credentials : Bytes32}
+    {amount : Gwei} {signature : BLSSignature}
+    (ran : applyDeposit cfg checks s key credentials amount signature = .ok t) :
+    ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
+      (t.validators.data.toList.filter (·.activationEpoch == epoch)).length =
+        (s.validators.data.toList.filter (·.activationEpoch == epoch)).length := by
+  simp only [applyDeposit, show ¬Fork.pectra ≤ Fork.phase0 by decide, ↓reduceDIte,
+    applyPendingDeposit] at ran
+  split at ran
+  · simp only [bind_ok_iff] at ran
+    obtain ⟨_, _, ran⟩ := ran
+    split at ran
+    · simp only [addValidatorToRegistry, show ¬Fork.altair ≤ Fork.phase0 by decide,
+        ↓reduceDIte] at ran
+      split at ran
+      · cases ran
+        intro epoch finite
+        simp [Array.toList_push, getValidatorFromDeposit, Ne.symm finite]
+      · cases ran
+    · cases ran
+      intro _ _; rfl
+  · rw [increaseBalance_validators (liftAccessor_ok.mp ran)]
+    intro _ _; rfl
+
+/-- Preserving every finite activation cohort preserves the finite frontier. -/
+theorem FinalityActivationFrontier.of_cohorts {s t : FinalityState p} {last : Nat}
+    (frontier : FinalityActivationFrontier s last)
+    (same : ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
+      (t.validators.data.toList.filter (·.activationEpoch == epoch)).length =
+        (s.validators.data.toList.filter (·.activationEpoch == epoch)).length) :
+    FinalityActivationFrontier t last := by
+  intro v member finite
+  by_contra h
+  have empty := frontier.empty finite (by omega)
+  have present : v ∈ t.validators.data.toList.filter
+      (·.activationEpoch == v.activationEpoch) := by
+    simp only [List.mem_filter, beq_self_eq_true, and_true]
+    simpa using member
+  have positive := List.length_pos_of_mem present
+  rw [same _ finite, empty] at positive
+  omega
+
+/-- A checked deposit preserves all finite activation cohorts. -/
+theorem finality_processDeposit_activationCohort {cfg : Config} {checks : SignatureChecks}
+    {s t : FinalityState p} {deposit : Deposit}
+    (ran : processDeposit cfg checks (by decide) s deposit = .ok t)
+    {epoch : Epoch} (finite : epoch ≠ FAR_FUTURE_EPOCH) :
+    (t.validators.data.toList.filter (·.activationEpoch == epoch)).length =
+      (s.validators.data.toList.filter (·.activationEpoch == epoch)).length := by
+  obtain ⟨_, _, _, _, applied⟩ := processDeposit_ok ran
+  exact finality_applyDeposit_activation_history applied epoch finite
+
+/-- Phase 0 block operations preserve every finite activation cohort. -/
+theorem finality_processOperations_activationCohort {cfg : Config}
+    {checks : SignatureChecks} {s t : FinalityState p} {body : BeaconBlockBody p .phase0}
+    (ran : processOperations cfg checks s body = .ok t)
+    {epoch : Epoch} (finite : epoch ≠ FAR_FUTURE_EPOCH) :
+    (t.validators.data.toList.filter (·.activationEpoch == epoch)).length =
+      (s.validators.data.toList.filter (·.activationEpoch == epoch)).length := by
+  unfold processOperations at ran
+  split at ran
+  · cases ran
+  simp only [bind_ok_iff, ensure_ok_iff, ← Array.foldlM_toList] at ran
+  obtain ⟨_, _, _, _, proposers, proposersOk, attesters, attestersOk, attested, attestedOk,
+    deposited, depositedOk, exited, exitsOk, changesOk⟩ := ran
+  simp only [show ¬Fork.shapella ≤ Fork.phase0 by decide, ↓reduceDIte,
+    pure, Except.pure, Except.ok.injEq] at changesOk
+  subst t
+  have one := foldlM_ok_invariant
+    (fun u : FinalityState p => u.validators.data.toList.map (·.activationEpoch) =
+      s.validators.data.toList.map (·.activationEpoch))
+    (fun _ _ _ prior ok => (finality_processProposerSlashing_activationEpochs ok).trans prior)
+    rfl proposersOk
+  have two := foldlM_ok_invariant
+    (fun u : FinalityState p => u.validators.data.toList.map (·.activationEpoch) =
+      s.validators.data.toList.map (·.activationEpoch))
+    (fun _ _ _ prior ok => (finality_processAttesterSlashing_activationEpochs ok).trans prior)
+    one attestersOk
+  have three := foldlM_ok_invariant
+    (fun u : FinalityState p => u.validators.data.toList.map (·.activationEpoch) =
+      s.validators.data.toList.map (·.activationEpoch))
+    (fun before a _ prior ok => by
+      obtain ⟨_, _, _, _, _, recorded, _, _, _⟩ := processAttestation_records (by decide) ok
+      cases current : a.data.target.epoch == getCurrentEpoch before <;>
+        simp only [recordPendingAttestation, current, Bool.false_eq_true,
+          ↓reduceIte] at recorded <;>
+        split at recorded <;> cases recorded <;> exact prior) two attestedOk
+  have four := foldlM_ok_invariant
+    (fun u : FinalityState p =>
+      (u.validators.data.toList.filter (·.activationEpoch == epoch)).length =
+        (s.validators.data.toList.filter (·.activationEpoch == epoch)).length)
+    (fun _ _ _ prior ok => (finality_processDeposit_activationCohort ok finite).trans prior)
+    (finality_activationCohort_of_epochs three epoch) depositedOk
+  have five := foldlM_ok_invariant
+    (fun u : FinalityState p => u.validators.data.toList.map (·.activationEpoch) =
+      deposited.validators.data.toList.map (·.activationEpoch))
+    (fun _ _ _ prior ok => (finality_processVoluntaryExit_activationEpochs ok).trans prior)
+    rfl exitsOk
+  exact (finality_activationCohort_of_epochs five epoch).trans four
+
+/-- A Phase 0 block preserves all finite activation cohorts. -/
+theorem finality_processBlock_activationCohort {cfg : Config} {checks : SignatureChecks}
+    {eng : ExecutionEngine p .phase0} {s t : FinalityState p} {b : BeaconBlock p .phase0}
+    (ran : processBlock cfg checks eng s b = .ok t)
+    {epoch : Epoch} (finite : epoch ≠ FAR_FUTURE_EPOCH) :
+    (t.validators.data.toList.filter (·.activationEpoch == epoch)).length =
+      (s.validators.data.toList.filter (·.activationEpoch == epoch)).length := by
+  simp only [processBlock, show ¬Fork.altair ≤ Fork.phase0 by decide, ↓reduceDIte,
+    bind_ok_iff] at ran
+  obtain ⟨header, headerOk, randao, randaoOk, eth1, eth1Ok, operationsOk⟩ := ran
+  have headerRegistry : header.validators = s.validators := by
+    obtain ⟨_, _, rfl⟩ := processBlockHeader_eq headerOk
+    rfl
+  have randaoRegistry : randao.validators = header.validators := by
+    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq randaoOk
+    rfl
+  have eth1Registry : eth1.validators = randao.validators :=
+    congrArg (fun u => u.validators) (processEth1Data_eq eth1Ok).2.2
+  simpa only [eth1Registry, randaoRegistry, headerRegistry] using
+    finality_processOperations_activationCohort operationsOk finite
+
+/-- Positive slots make the last-slot epoch step advance the epoch by exactly one. -/
+theorem finality_epoch_boundary {s : FinalityState p} {next : Slot}
+    (_positive : 0 < p.SLOTS_PER_EPOCH.toNat)
+    (step : next.toNat = s.slot.toNat + 1)
+    (boundary : next % p.SLOTS_PER_EPOCH = 0) :
+    (computeEpochAtSlot p next).toNat = (getCurrentEpoch s).toNat + 1 := by
+  have modulo : next.toNat % p.SLOTS_PER_EPOCH.toNat = 0 := by
+    simpa only [UInt64.toNat_mod, UInt64.toNat_zero] using congrArg UInt64.toNat boundary
+  rw [getCurrentEpoch_toNat]
+  simp only [computeEpochAtSlot, UInt64.toNat_div]
+  rw [step] at modulo ⊢
+  exact Nat.succ_div_of_mod_eq_zero modulo
+
+/-- One slot preserves the activation history bound after moving to its next epoch. -/
+theorem finality_advanceSlot_activation_history {cfg : Config}
+    {s t : FinalityState p} {cap : Nat} (inv : Invariant s)
+    (positive : 0 < p.SLOTS_PER_EPOCH.toNat)
+    (frontier : FinalityActivationFrontier s
+      ((getCurrentEpoch s).toNat + p.MAX_SEED_LOOKAHEAD.toNat))
+    (bounded : ∀ epoch, epoch ≠ 0 → epoch ≠ FAR_FUTURE_EPOCH →
+      (s.validators.data.toList.filter (·.activationEpoch == epoch)).length ≤ cap)
+    (limit : ∀ u : FinalityState p, u.validators.data.size = s.validators.data.size →
+      (getValidatorChurnLimit cfg u).toNat ≤ cap)
+    (ran : advanceSlot cfg s = .ok t) :
+    FinalityActivationFrontier t
+      ((getCurrentEpoch t).toNat + p.MAX_SEED_LOOKAHEAD.toNat) ∧
+    ∀ epoch, epoch ≠ 0 → epoch ≠ FAR_FUTURE_EPOCH →
+      (t.validators.data.toList.filter (·.activationEpoch == epoch)).length ≤ cap := by
+  have step := advanceSlot_slot ran
+  simp only [advanceSlot, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ran
+  obtain ⟨next, _, cached, cachedOk, epoched, epochedOk, rfl⟩ := ran
+  change next.toNat = s.slot.toNat + 1 at step
+  have cacheRegistry : cached.validators = s.validators := by
+    obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+    rfl
+  have cacheSlot := (frame_processSlot cachedOk).slot
+  unfold epochIfLast at epochedOk
+  split at epochedOk
+  · rename_i boundary
+    have boundaryEpoch := finality_epoch_boundary (s := s) positive step boundary
+    have history := finality_processEpoch_activation_history
+      ((frame_processSlot cachedOk).invariant inv)
+      (by simpa only [FinalityActivationFrontier, getCurrentEpoch, cacheSlot, cacheRegistry]
+        using frontier)
+      (by simpa only [cacheRegistry] using bounded)
+      (fun u same => limit u (by simpa only [cacheRegistry] using same)) epochedOk
+    refine ⟨?_, history.2⟩
+    simpa only [FinalityActivationFrontier, getCurrentEpoch, cacheSlot, boundaryEpoch,
+      Nat.add_assoc, Nat.add_comm, Nat.add_left_comm] using history.1
+  · cases epochedOk
+    refine ⟨?_, ?_⟩
+    · have epochLe := Nat.div_le_div_right (c := p.SLOTS_PER_EPOCH.toNat)
+        (show s.slot.toNat ≤ next.toNat by omega)
+      intro v member finite
+      have oldMember : v ∈ s.validators.data := by
+        simpa only [cacheRegistry] using member
+      have bound := frontier v oldMember finite
+      change v.activationEpoch.toNat ≤
+        (computeEpochAtSlot p next).toNat + p.MAX_SEED_LOOKAHEAD.toNat
+      simp only [computeEpochAtSlot, UInt64.toNat_div] at *
+      rw [getCurrentEpoch_toNat] at bound
+      omega
+    · simpa only [cacheRegistry] using bounded
+
+/-- Empty-slot advancement preserves bounded historical activation cohorts. -/
+theorem finality_advanceSlots_activation_history {cfg : Config}
+    {s t : FinalityState p} {count cap : Nat} (inv : Invariant s)
+    (positive : 0 < p.SLOTS_PER_EPOCH.toNat)
+    (frontier : FinalityActivationFrontier s
+      ((getCurrentEpoch s).toNat + p.MAX_SEED_LOOKAHEAD.toNat))
+    (bounded : ∀ epoch, epoch ≠ 0 → epoch ≠ FAR_FUTURE_EPOCH →
+      (s.validators.data.toList.filter (·.activationEpoch == epoch)).length ≤ cap)
+    (limit : ∀ u : FinalityState p, u.validators.data.size = s.validators.data.size →
+      (getValidatorChurnLimit cfg u).toNat ≤ cap)
+    (ran : advanceSlots cfg count s = .ok t) :
+    FinalityActivationFrontier t
+      ((getCurrentEpoch t).toNat + p.MAX_SEED_LOOKAHEAD.toNat) ∧
+    ∀ epoch, epoch ≠ 0 → epoch ≠ FAR_FUTURE_EPOCH →
+      (t.validators.data.toList.filter (·.activationEpoch == epoch)).length ≤ cap := by
+  induction count generalizing s with
+  | zero => cases ran; exact ⟨frontier, bounded⟩
+  | succ count ih =>
+    obtain ⟨middle, first, tail⟩ := bind_ok_iff.mp ran
+    have next := finality_advanceSlot_activation_history inv positive frontier bounded limit first
+    have sizes := finality_advanceSlots_size (count := 1) (by simpa [advanceSlots] using first)
+    exact ih (advanceSlot_invariant (by decide) inv first).1 next.1 next.2
+      (fun u same => limit u (same.trans sizes)) tail
+
+/-- A validated block transition preserves the finite activation history. -/
+theorem finality_stateTransition_activation_history {cfg : Config}
+    {checks : SignatureChecks} {eng : ExecutionEngine p .phase0}
+    {s t : FinalityState p} {b : FinalityBlock p} {population cap : Nat}
+    (inv : Invariant s) (positive : 0 < p.SLOTS_PER_EPOCH.toNat)
+    (frontier : FinalityActivationFrontier s
+      ((getCurrentEpoch s).toNat + p.MAX_SEED_LOOKAHEAD.toNat))
+    (bounded : ∀ epoch, epoch ≠ 0 → epoch ≠ FAR_FUTURE_EPOCH →
+      (s.validators.data.toList.filter (·.activationEpoch == epoch)).length ≤ cap)
+    (size : t.validators.data.size ≤ population)
+    (limit : ∀ u : FinalityState p, u.validators.data.size ≤ population →
+      (getValidatorChurnLimit cfg u).toNat ≤ cap)
+    (ran : stateTransition cfg checks eng s b true = .ok t) :
+    FinalityActivationFrontier t
+      ((getCurrentEpoch t).toNat + p.MAX_SEED_LOOKAHEAD.toNat) ∧
+    ∀ epoch, epoch ≠ 0 → epoch ≠ FAR_FUTURE_EPOCH →
+      (t.validators.data.toList.filter (·.activationEpoch == epoch)).length ≤ cap := by
+  have startSize := Nat.le_trans (finality_stateTransition_registry inv ran).1 size
+  obtain ⟨advanced, slotsOk, _, _, blockOk, _⟩ := stateTransition_ok ran
+  have slots := slotsOk
+  simp only [processSlots, bind_ok_iff, ensure_ok_iff] at slots
+  obtain ⟨_, _, advancedOk⟩ := slots
+  have history := finality_advanceSlots_activation_history inv positive frontier bounded
+    (fun u same => limit u (same ▸ startSize)) advancedOk
+  have blockSlot := (frame_processBlock (by decide) blockOk).slot
+  refine ⟨?_, ?_⟩
+  · have kept := history.1.of_cohorts (fun _ finite =>
+      finality_processBlock_activationCohort blockOk finite)
+    simpa only [getCurrentEpoch, blockSlot] using kept
+  · intro epoch nonzero finite
+    rw [finality_processBlock_activationCohort blockOk finite]
+    exact history.2 epoch nonzero finite
+
+/-- A validated chain preserves nonzero finite activation-cohort caps. -/
+theorem finality_runs_activation_history {cfg : Config} {checks : SignatureChecks}
+    {eng : ExecutionEngine p .phase0} {s t : FinalityState p}
+    {bs : List (FinalityBlock p)} {population cap : Nat}
+    (inv : Invariant s) (positive : 0 < p.SLOTS_PER_EPOCH.toNat)
+    (frontier : FinalityActivationFrontier s
+      ((getCurrentEpoch s).toNat + p.MAX_SEED_LOOKAHEAD.toNat))
+    (bounded : ∀ epoch, epoch ≠ 0 → epoch ≠ FAR_FUTURE_EPOCH →
+      (s.validators.data.toList.filter (·.activationEpoch == epoch)).length ≤ cap)
+    (size : t.validators.data.size ≤ population)
+    (limit : ∀ u : FinalityState p, u.validators.data.size ≤ population →
+      (getValidatorChurnLimit cfg u).toNat ≤ cap)
+    (ran : finalityRuns cfg checks eng s bs t) :
+    FinalityActivationFrontier t
+      ((getCurrentEpoch t).toNat + p.MAX_SEED_LOOKAHEAD.toNat) ∧
+    ∀ epoch, epoch ≠ 0 → epoch ≠ FAR_FUTURE_EPOCH →
+      (t.validators.data.toList.filter (·.activationEpoch == epoch)).length ≤ cap := by
+  induction bs generalizing s with
+  | nil => cases ran; exact ⟨frontier, bounded⟩
+  | cons b bs ih =>
+    obtain ⟨middle, first, tail⟩ := bind_ok_iff.mp ran
+    have middleInv := finality_runs_invariant inv (bs := [b])
+      (by simpa [finalityRuns] using first)
+    have middleSize := Nat.le_trans (finality_runs_registry middleInv tail).1 size
+    have history := finality_stateTransition_activation_history inv positive frontier bounded
+      middleSize limit first
+    exact ih middleInv history.1 history.2 tail
 
 end EthLib.Consensus
