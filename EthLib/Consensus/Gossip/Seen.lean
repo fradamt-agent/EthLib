@@ -60,8 +60,10 @@ structure Seen where
   aggregateBits : List ((Root × CommitteeIndex) × List Bool) := []
   /-- At Deneb and Electra: the slot, the proposer and the index of each valid blob sidecar. -/
   blobSidecarTuples : List (Slot × ValidatorIndex × BlobIndex) := []
-  /-- From Fulu: the slot, the proposer and the column index of each valid column sidecar. -/
+  /-- At Fulu: the slot, the proposer and the column index of each valid column sidecar. -/
   dataColumnSidecarTuples : List (Slot × ValidatorIndex × DataAvailability.ColumnIndex) := []
+  /-- From Gloas: the block root and the column index of each valid column sidecar. -/
+  dataColumnSidecarRoots : List (Root × DataAvailability.ColumnIndex) := []
   /-- From Gloas: the valid preferences of proposers, by proposal slot and dependent root. -/
   proposerPreferences : List ((Slot × Root) × ProposerPreferences) := []
   /-- From Gloas: the block root and the builder of each valid envelope. -/
@@ -79,6 +81,10 @@ structure Seen where
 
   Each valid bid beats the value before it, so the latest value is the best. -/
   bestExecutionPayloadBids : List ((Slot × Hash32 × Root) × Gwei) := []
+  /-- From Heze: the slot, the dependent root and the member of each valid inclusion list.
+
+  A key appears once for each valid list, so it counts them. -/
+  inclusionListKeys : List (Slot × Root × ValidatorIndex) := []
   deriving Inhabited
 
 namespace Store

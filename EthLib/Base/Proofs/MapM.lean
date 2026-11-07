@@ -12,6 +12,7 @@ Lean core proves no such facts for `Except`, and every layer needs them.
 - The map has one output for each input.
 - Two lists that map to one list are equal, when the function is injective on their items.
 - A run of checks passes exactly when each check passes.
+- A loop that never stops early passes exactly when each step passes.
 - The function succeeds on every input.
 - Each output is the image of an input.
 - The map succeeds, and returns no error, when the function succeeds on every input.
@@ -83,6 +84,24 @@ theorem forM_ok_iff {xs : List α} {check : α → Except ε Unit} :
   | cons x xs ih =>
     simp only [List.forM, bind_unit_ok_iff, List.forall_mem_cons]
     exact and_congr_right fun _ => ih
+
+/-- A loop with no state passes exactly when each step passes.
+
+No step may stop the loop early. -/
+theorem forIn_unit_ok_iff {xs : List α} {body : α → PUnit → Except ε (ForInStep PUnit)}
+    (hnd : ∀ x, body x PUnit.unit ≠ .ok (.done PUnit.unit)) :
+    forIn xs PUnit.unit body = .ok PUnit.unit ↔
+      ∀ x ∈ xs, body x PUnit.unit = .ok (.yield PUnit.unit) := by
+  induction xs with
+  | nil => simp [pure, Except.pure]
+  | cons x xs ih =>
+    rw [List.forIn_cons, List.forall_mem_cons]
+    cases h : body x PUnit.unit with
+    | error e => simp [bind, Except.bind]
+    | ok s =>
+      cases s with
+      | done u => exact absurd h (hnd x)
+      | yield u => simpa [bind, Except.bind] using ih
 
 /-- A successful map succeeds on every input. -/
 theorem mapM_ok_of_mem {xs : List α} {ys : List β} (h : xs.mapM f = .ok ys) :
@@ -186,6 +205,22 @@ theorem vector_mapM_ok_getElem {n : Nat} {xs : Vector α n} {ys : Vector β n}
     rfl
   have := mapM_ok_getElem onList i (by simpa using hi)
   simpa using this
+
+/-- A map over a vector returns a vector exactly when each output is the image of its input. -/
+theorem vector_mapM_eq_ok_iff {n : Nat} {xs : Vector α n} {ys : Vector β n} :
+    xs.mapM f = .ok ys ↔ ∀ (i : Nat) (hi : i < n), f xs[i] = .ok ys[i] := by
+  refine ⟨fun h i hi => vector_mapM_ok_getElem h i hi, fun each => ?_⟩
+  -- The map over the entries as a list returns the entries of the outputs.
+  have onList : xs.toArray.toList.mapM f = .ok ys.toArray.toList :=
+    mapM_eq_ok_iff.mpr ⟨by simp, fun i hi => by simpa using each i (by simpa using hi)⟩
+  have onArray : Vector.toArray <$> xs.mapM f = .ok ys.toArray := by
+    rw [Vector.toArray_mapM, Array.mapM_eq_mapM_toList, onList]
+    rfl
+  cases mapped : xs.mapM f with
+  | error e => rw [mapped] at onArray; cases onArray
+  | ok zs =>
+    rw [mapped] at onArray
+    exact congrArg Except.ok (Vector.toArray_inj.mp (Except.ok.inj onArray))
 
 /-- Two functions that agree on every entry of a vector map it to one result. -/
 theorem vector_mapM_congr {n : Nat} {xs : Vector α n} {g : α → Except ε β}
@@ -308,5 +343,43 @@ theorem exists_mem_of_mapM_ok {xs : List α} {ys : List β}
     · exact ⟨y, List.mem_cons_self, first⟩
     · obtain ⟨y', member', step⟩ := ih others member
       exact ⟨y', List.mem_cons_of_mem _ member', step⟩
+
+/-- Each element of a list gives a result when the monadic flat map over the list succeeds. -/
+theorem flatMapM_ok_of_mem {α β ε : Type} {f : α → Except ε (List β)} :
+    ∀ {xs : List α} {ys : List β}, xs.flatMapM f = .ok ys → ∀ x ∈ xs, ∃ zs, f x = .ok zs
+  | [], _, _, _, mem => by cases mem
+  | x :: xs, ys, h, y, mem => by
+    rw [List.flatMapM_cons, bind_ok_iff] at h
+    obtain ⟨zs, first, h⟩ := h
+    rw [bind_ok_iff] at h
+    obtain ⟨rest, restOk, -⟩ := h
+    rcases List.mem_cons.mp mem with rfl | mem
+    · exact ⟨zs, first⟩
+    · exact flatMapM_ok_of_mem restOk y mem
+
+/-- An element of a monadic flat map comes from the list of one element, and each such counts. -/
+theorem mem_of_flatMapM_ok {α β ε : Type} {f : α → Except ε (List β)} :
+    ∀ {xs : List α} {ys : List β}, xs.flatMapM f = .ok ys →
+      ∀ y, y ∈ ys ↔ ∃ x ∈ xs, ∃ zs, f x = .ok zs ∧ y ∈ zs
+  | [], ys, h, y => by
+    simp only [List.flatMapM_nil, pure, Except.pure, Except.ok.injEq] at h
+    simp [← h]
+  | x :: xs, ys, h, y => by
+    rw [List.flatMapM_cons, bind_ok_iff] at h
+    obtain ⟨zs, first, h⟩ := h
+    rw [bind_ok_iff] at h
+    obtain ⟨rest, restOk, h⟩ := h
+    simp only [pure, Except.pure, Except.ok.injEq] at h
+    subst h
+    rw [List.mem_append, mem_of_flatMapM_ok restOk]
+    constructor
+    · rintro (mem | ⟨x', mem', zs', ok', mem''⟩)
+      · exact ⟨x, List.mem_cons_self, zs, first, mem⟩
+      · exact ⟨x', List.mem_cons_of_mem _ mem', zs', ok', mem''⟩
+    · rintro ⟨x', mem', zs', ok', mem''⟩
+      rcases List.mem_cons.mp mem' with rfl | mem'
+      · rw [first, Except.ok.injEq] at ok'
+        exact .inl (ok' ▸ mem'')
+      · exact .inr ⟨x', mem', zs', ok', mem''⟩
 
 end EthLib.Base

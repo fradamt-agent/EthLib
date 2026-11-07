@@ -77,7 +77,8 @@ A sidecar rejected for one of them fails that check, and every other sidecar pas
 From Gloas a sidecar has no branch, and its commitments are in the bid of the block whose root it names.
 So from Gloas the file finds that block among the blocks of the case, and runs the two other checks against it.
 A sidecar whose block the case does not give must be rejected before gossip validation reads the block.
-From Gloas the rest of gossip validation waits for the Gloas store; the Fulu cases run in full from `gossip/`.
+The Fulu and Gloas cases run in full from `gossip/`, which keeps them with their state.
+At Heze the rest of gossip validation waits for the Heze rules.
 The same file rebuilds every sidecar of a block from one sidecar, and from the bodies of `merkle_proof/` for Fulu.
 From Gloas it rebuilds each valid sidecar from its block, and from itself.
 It also builds the matrix of two blobs of the KZG vectors under `tests/cryptography/kzg/`, and recovers it from half of its columns.
@@ -168,6 +169,7 @@ In the second, a proof does not match, so the store rejects the block.
 At Electra and Fulu it keeps the smallest case of each handler, of the optimistic sync and of each fast confirmation suite.
 Electra adds the handler `deposit_with_reorg`.
 At Fulu its `on_block` case is one whose block lacks the columns that the node samples.
+At Gloas and Heze it also keeps the smallest case of each fast confirmation suite.
 `bindings/python/tests/consensus/test_fork_choice.py` runs each case on one store in Lean and compares each step with the case.
 
 The directory `gossip/` holds gossip validation cases from `minimal.tar.gz` in the same way.
@@ -175,22 +177,25 @@ A case starts a store from an anchor state and an anchor block, then validates a
 Each message expects to be valid, ignored or rejected, and a failure names its reason.
 The directory keeps the cases of attester slashings, proposer slashings, voluntary exits and changes of BLS credentials.
 It keeps every case of these topics at Capella and Deneb, since Deneb changes the domain of an exit signature.
-At Altair, Bellatrix, Electra and Fulu it keeps the case with one valid message of each topic.
+At Phase 0, Altair, Bellatrix, Electra and Fulu it keeps the case with one valid message of each topic.
 It also keeps the cases of the two sync committee topics, which start at Altair.
 It keeps every case of these two topics at Altair, and the case with one valid message at each later fork.
 It keeps every case of the block topic from Altair to Deneb.
 A block case may import more blocks after the anchor, and mark some as failed or pending.
 It may also give the status of their payloads, and replace the finalized checkpoint.
-At Electra and Fulu it keeps the case with one valid block.
+At Phase 0, Electra and Fulu it keeps the case with one valid block.
 It keeps every case of the attestation and aggregate topics at Altair, Deneb and Electra.
 Deneb changes the window of time of a vote, and Electra moves the committee out of the attestation data.
-At Bellatrix, Capella and Fulu it keeps the case with one valid message of each of these topics.
+At Phase 0, Bellatrix, Capella and Fulu it keeps the case with one valid message of each of these topics.
 It keeps every blob sidecar case at Deneb, and at Electra the valid case and the case of an index past the limit.
 It keeps every Fulu case of the column sidecar topic, with its state.
 It keeps every Fulu case of the partial column topic too.
 A partial message carries some cells of one column and a bitmap of the blobs that they belong to.
 On the first push it also carries the header of its block.
 A case gives a group ID with each message, and may list headers that the node has already validated.
+It also keeps every Gloas case of the partial column topic.
+From Gloas a partial message has no header, and its group ID also names the slot of its block.
+Heze changes nothing in partial columns, so at Heze it keeps one case, that of invalid KZG proofs.
 At Gloas it keeps four cases of the topic of proposer preferences.
 It also keeps every Gloas case of the topics of payload envelopes and of payload votes.
 From Gloas a block of a case may come with the envelope of its payload, which the store keeps.
@@ -199,6 +204,12 @@ A bid case also sends the proposer preferences and the envelopes that its bids r
 It keeps 24 Gloas cases of blocks, attestations and aggregates, for the checks that Gloas adds.
 Those checks read the bid of a block, its parent payload, and the payload that a vote sees.
 The anchor block of a case may come with the envelope of its payload too.
+At Gloas it keeps one valid case of each of the six topics that Gloas leaves unchanged.
+It keeps every minimal Gloas case of the column sidecar topic too.
+At Heze it keeps every minimal case of the inclusion list topic.
+It keeps the two Heze bid cases that read inclusion lists, too.
+It also keeps one valid Heze case of each other topic that runs at Heze.
+A valid inclusion list joins the inclusion lists of the store as timely, for the bids after it.
 `bindings/python/tests/consensus/test_gossip_validation.py` validates each message in Lean and compares the outcome and the reason with the case.
 
 The directory `genesis/` holds every genesis case of `minimal.tar.gz` in the same way.

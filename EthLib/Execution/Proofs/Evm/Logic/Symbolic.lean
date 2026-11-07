@@ -100,6 +100,8 @@ It holds the flags of the jump destinations of its code, and its message.
 
 It also names the state, the substate and the error of the frame, none.
 
+Its output is empty.
+
 The interpreter sets the code, the flags and the message when it starts a frame.
 
 No step changes them, so they stay the same along a run. -/
@@ -108,8 +110,8 @@ def At (code : ByteArray) (message : Message fork) (pc : Nat) (stack : List U256
     (evm : Evm fork Nat) : Prop :=
   evm.code = code ∧ evm.validJumpDestinations = validJumpDestinations code ∧
     evm.message = message ∧ evm.pc = pc ∧ evm.stack.val = stack ∧ evm.memory = memory ∧
-    evm.gas = gas ∧ evm.running = true ∧ evm.error = none ∧ evm.state = state ∧
-    evm.substate = substate
+    evm.gas = gas ∧ evm.running = true ∧ evm.error = none ∧ evm.output = .empty ∧
+    evm.state = state ∧ evm.substate = substate
 
 variable {code : ByteArray} {message : Message fork} {pc : Nat} {stack : List U256}
   {memory : ByteArray} {gas : Nat} {state : State.TransactionState} {substate : Substate}
@@ -135,21 +137,31 @@ theorem decode_push (n : Fin 33) (hn : n.val ≠ 0) :
   revert n
   decide
 
-/-- PUSHn, for `n` from 1, pushes the word of the `n` bytes after it, for 3 gas. -/
-theorem push {n : Fin 33} {word : U256} (hn : n.val ≠ 0) (hlt : pc < code.size)
-    (hbyte : code[pc] = 0x5f + UInt8.ofNat n.val)
-    (decoded : Op.decode (0x5f + UInt8.ofNat n.val) = some (.push n))
+/-- PUSHn, for the `n` from 1 that the byte at the program counter decodes to.
+
+It pushes the word of the `n` bytes after it, for 3 gas. -/
+theorem push_of_decode {byte : UInt8} {n : Fin 33} {word : U256} (hlt : pc < code.size)
+    (hbyte : code[pc] = byte) (decoded : Op.decode byte = some (.push n)) (hn : n.val ≠ 0)
     (hword : pushData code pc n = word) (hgas : 3 ≤ gas) (hstack : stack.length < STACK_LIMIT) :
     Hoare fork (At code message pc stack memory gas state substate)
       (At code message (pc + (1 + n)) (word :: stack) memory (gas - 3) state substate) := by
   have hn' : n ≠ 0 := fun h => hn (by simp [h])
   apply At.rule hlt hbyte
     (ofByte_of_decode decoded (by simp [Op.since, hn', Fork.frontier_le])) (instruction_push n)
-  rintro evm ⟨hcode, hj, hm, hpc, hst, hmem, hg, hrun, herr, hs, hss⟩
+  rintro evm ⟨hcode, hj, hm, hpc, hst, hmem, hg, hrun, herr, hout, hs, hss⟩
   have hlen : evm.stack.val.length < STACK_LIMIT := by rw [hst]; exact hstack
   rw [pushN_nat hn (by rw [hg]; exact hgas) hlen]
   refine ⟨_, rfl, hcode, hj, hm, by simp [hpc], by simp [hst, hcode, hpc, hword], hmem,
-    by simp [hg, OPCODE_PUSH, VERY_LOW], hrun, herr, hs, hss⟩
+    by simp [hg, OPCODE_PUSH, VERY_LOW], hrun, herr, hout, hs, hss⟩
+
+/-- PUSHn, for `n` from 1, pushes the word of the `n` bytes after it, for 3 gas. -/
+theorem push {n : Fin 33} {word : U256} (hn : n.val ≠ 0) (hlt : pc < code.size)
+    (hbyte : code[pc] = 0x5f + UInt8.ofNat n.val)
+    (decoded : Op.decode (0x5f + UInt8.ofNat n.val) = some (.push n))
+    (hword : pushData code pc n = word) (hgas : 3 ≤ gas) (hstack : stack.length < STACK_LIMIT) :
+    Hoare fork (At code message pc stack memory gas state substate)
+      (At code message (pc + (1 + n)) (word :: stack) memory (gas - 3) state substate) :=
+  push_of_decode hlt hbyte decoded hn hword hgas hstack
 
 /-- PUSH1 pushes the byte after it and costs 3, with room on the stack. -/
 theorem push1 {byte : UInt8} (hlt : pc + 1 < code.size) (hop : code[pc]'(by omega) = 0x60)

@@ -317,6 +317,30 @@ theorem toByte_ofByte (b : UInt8) : (ResponseCode.ofByte b).toByte = b := by
     by_cases h3 : b = 3 <;> by_cases h4 : b < 128 <;>
     simp [ResponseCode.ofByte, ResponseCode.toByte, h0, h1, h2, h3, h4]
 
+/-- Two bytes with one response code are one byte. -/
+theorem ofByte_injective : Function.Injective ResponseCode.ofByte := fun a b h => by
+  rw [← toByte_ofByte a, ← toByte_ofByte b, h]
+
+/-- A response code reads back from its own byte exactly when its byte is in its range.
+
+A reserved code needs a byte from 4 to 127, and a request-specific code a byte from 128.
+
+The four named codes always read back. -/
+theorem ofByte_toByte_eq_iff (c : ResponseCode) :
+    ResponseCode.ofByte c.toByte = c ↔
+      (∀ k, c = .reserved k → 4 ≤ k.toNat ∧ k.toNat < 128) ∧
+        (∀ k, c = .requestSpecific k → 128 ≤ k.toNat) := by
+  cases c with
+  | reserved k | requestSpecific k =>
+    have h0 : k = 0 ↔ k.toNat = 0 := by rw [← UInt8.toNat_inj]; rfl
+    have h1 : k = 1 ↔ k.toNat = 1 := by rw [← UInt8.toNat_inj]; rfl
+    have h2 : k = 2 ↔ k.toNat = 2 := by rw [← UInt8.toNat_inj]; rfl
+    have h3 : k = 3 ↔ k.toNat = 3 := by rw [← UInt8.toNat_inj]; rfl
+    simp only [ResponseCode.ofByte, ResponseCode.toByte, h0, h1, h2, h3, UInt8.lt_iff_toNat_lt]
+    by_cases a : k.toNat = 0 <;> by_cases b : k.toNat = 1 <;> by_cases c : k.toNat = 2 <;>
+      by_cases d : k.toNat = 3 <;> by_cases e : k.toNat < 128 <;> simp [a, b, c, d, e] <;> omega
+  | _ => simp [ResponseCode.ofByte, ResponseCode.toByte]
+
 /-- A code byte, the context bytes and payload bytes that decode back make a chunk that decodes.
 
 The payload decodes at the bounds of its code.
@@ -397,6 +421,63 @@ theorem decodeResponseChunk_encodeResponseChunk {contextBytes : Nat}
   split
   · exact hm ‹_›
   · exact Nat.zero_le _
+
+/-- The bytes that decode to a chunk are its code byte, its context bytes and a payload.
+
+The code is the code of its own byte, which excludes a reserved code outside 4 to 127.
+
+A success carries the context bytes of the method, and an error carries none.
+
+The payload decodes at the bounds of the code.
+
+On a success those are the bounds of the message type, and otherwise those of an error message. -/
+theorem decodeResponseChunk_eq_ok_iff {contextBytes : Nat} {typeMin typeBound : UInt64}
+    {bs : ByteArray} {c : ResponseChunk} :
+    decodeResponseChunk contextBytes typeMin typeBound bs = .ok c ↔
+      ResponseCode.ofByte c.code.toByte = c.code ∧
+        c.context.size = (if c.code = .success then contextBytes else 0) ∧
+        ∃ p : ByteArray, bs = ⟨#[c.code.toByte]⟩ ++ c.context ++ p ∧
+          decodePayload (if c.code = .success then typeMin else 0)
+            (if c.code = .success then typeBound else MAX_ERROR_MESSAGE_SIZE) p =
+            .ok c.payload := by
+  constructor
+  · intro h
+    obtain ⟨⟨l⟩⟩ := bs
+    unfold decodeResponseChunk at h
+    cases l with
+    | nil => simp [throw, throwThe, MonadExceptOf.throw] at h
+    | cons b rest =>
+      have hb : (ResponseCode.ofByte b).toByte = b := toByte_ofByte b
+      simp only at h
+      split at h
+      · rename_i hcode
+        rw [hcode] at hb
+        split at h
+        · simp [throw, throwThe, MonadExceptOf.throw, bind, Except.bind] at h
+        · rename_i long
+          cases hp : decodePayload typeMin typeBound ⟨(rest.drop contextBytes).toArray⟩ with
+          | error e => simp [hp, bind, Except.bind] at h
+          | ok payload =>
+            simp only [hp, bind, Except.bind, pure, Except.pure, Except.ok.injEq] at h
+            subst h
+            refine ⟨rfl, ?_, ⟨(rest.drop contextBytes).toArray⟩, ?_, by simpa using hp⟩
+            · simp only [ite_true, ByteArray.size, List.size_toArray, List.length_take]
+              omega
+            · subst hb
+              apply ByteArray.ext
+              simp [ByteArray.data_append]
+      · rename_i _ hne
+        cases hp : decodePayload 0 MAX_ERROR_MESSAGE_SIZE ⟨rest.toArray⟩ with
+        | error e => simp [hp, bind, Except.bind] at h
+        | ok payload =>
+          simp only [hp, bind, Except.bind, pure, Except.pure, Except.ok.injEq] at h
+          subst h
+          have hs : ResponseCode.ofByte b ≠ .success := hne
+          refine ⟨by rw [hb], by simp [hs], ⟨rest.toArray⟩, ?_, by simpa [hs] using hp⟩
+          apply ByteArray.ext
+          simp [ByteArray.data_append, hb]
+  · rintro ⟨hc, hctx, p, rfl, hd⟩
+    exact decodeResponseChunk_append hc hctx hd
 
 /-! ## Error codes -/
 

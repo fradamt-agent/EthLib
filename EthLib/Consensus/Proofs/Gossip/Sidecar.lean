@@ -25,6 +25,14 @@ A partial column sidecar is checked in three parts: its counts, its header, then
 The counts read nothing but the sidecar, so they decide first whatever the store holds.
 
 A header that passes is recorded before the cells, so it stays recorded when they fail.
+
+From Gloas a column sidecar has no header, and its chain reads the block that it names.
+
+A valid one has the slot of that block, and one cell per commitment of its bid.
+
+From Gloas a partial sidecar has no header either, and its chain also reads its block.
+
+It is ignored only when that block is unseen.
 -/
 
 @[expose] public section
@@ -584,6 +592,99 @@ theorem validateDataColumnSidecar_rejected
 
 end Column
 
+/-! ## Column sidecars from Gloas -/
+
+section GloasColumn
+
+variable {gloas : .glamsterdam ≤ fork} {sidecar : DataColumnSidecar preset fork}
+  {subnet : SubnetID} {future valid : Bool} {block : BeaconBlock preset fork}
+  {state : BeaconState preset fork}
+
+/-- From Gloas the commitments of a sidecar are those of the bid it is checked against. -/
+theorem DataColumnSidecar.commitments_of_gloas
+    {bidCommitments : Since .glamsterdam fork (BlobKZGCommitments preset fork)} :
+    sidecar.commitments bidCommitments = bidCommitments gloas := by
+  have notBefore : ¬ fork < .glamsterdam := Nat.not_lt_of_le gloas
+  simp [DataColumnSidecar.commitments, notBefore]
+
+/-- From Gloas a column sidecar whose block and column a valid sidecar had already is ignored. -/
+theorem validateGloasDataColumnSidecar_of_seen
+    (known : (sidecar.beaconBlockRoot gloas, sidecar.index) ∈ seen.dataColumnSidecarRoots) :
+    validateGloasDataColumnSidecar config setup seen store gloas sidecar currentTimeMs subnetId =
+      .ok (.ignore "already seen sidecar for this block root and index") := by
+  simp [validateGloasDataColumnSidecar, known, pure, Except.pure]
+
+/-- From Gloas a valid column sidecar records its key, so the same sidecar is then ignored. -/
+theorem validateGloasDataColumnSidecar_recordGloasDataColumnSidecar :
+    validateGloasDataColumnSidecar config setup (seen.recordGloasDataColumnSidecar gloas sidecar)
+        store gloas sidecar currentTimeMs subnetId =
+      .ok (.ignore "already seen sidecar for this block root and index") :=
+  validateGloasDataColumnSidecar_of_seen (by simp [Seen.recordGloasDataColumnSidecar])
+
+/-- From Gloas the outcome of a column sidecar is its chain of checks, in order.
+
+It holds once the subnet, the clock, the block with its state and the KZG check are computed. -/
+theorem validateGloasDataColumnSidecar_eq
+    (subnetOf : computeSubnetForDataColumnSidecar config sidecar.index = .ok subnet)
+    (clock : store.isFutureSlot config (sidecar.slot gloas) currentTimeMs = .ok future)
+    (known : store.blocks[sidecar.beaconBlockRoot gloas]? = some block)
+    (held : store.blockStates[sidecar.beaconBlockRoot gloas]? = some state)
+    (proofs : verifyDataColumnSidecarKzgProofs setup sidecar block.bidCommitments = .ok valid) :
+    validateGloasDataColumnSidecar config setup seen store gloas sidecar currentTimeMs subnetId =
+      .ok ((ignoreUnless (!seen.dataColumnSidecarRoots.contains
+          (sidecar.beaconBlockRoot gloas, sidecar.index))
+          "already seen sidecar for this block root and index").andThen fun _ =>
+        (rejectUnless (subnet == subnetId) "sidecar is for wrong subnet").andThen fun _ =>
+        (ignoreUnless (!future) "sidecar is from a future slot").andThen fun _ =>
+        (rejectUnless (sidecar.slot gloas == block.slot)
+          "sidecar's slot does not match block's slot").andThen fun _ =>
+        (rejectUnless (verifyDataColumnSidecar preset config sidecar block.bidCommitments)
+          "invalid sidecar").andThen fun _ =>
+        rejectUnless valid "invalid sidecar kzg proofs") := by
+  unfold validateGloasDataColumnSidecar
+  simp only [subnetOf, clock, known, held, proofs, bind, Except.bind, pure, Except.pure,
+    Except.mapError, ignoreUnless_andThenM, ignoreUnless_andThen, rejectUnless_andThenM,
+    rejectUnless_andThen, apply_ite (Except.ok (ε := ForkChoiceError))]
+
+/-- From Gloas a column sidecar is valid exactly when every check passes, once its inputs are set.
+-/
+theorem validateGloasDataColumnSidecar_eq_accept
+    (subnetOf : computeSubnetForDataColumnSidecar config sidecar.index = .ok subnet)
+    (clock : store.isFutureSlot config (sidecar.slot gloas) currentTimeMs = .ok future)
+    (known : store.blocks[sidecar.beaconBlockRoot gloas]? = some block)
+    (held : store.blockStates[sidecar.beaconBlockRoot gloas]? = some state)
+    (proofs : verifyDataColumnSidecarKzgProofs setup sidecar block.bidCommitments = .ok valid) :
+    validateGloasDataColumnSidecar config setup seen store gloas sidecar currentTimeMs subnetId =
+        .ok accept ↔
+      (sidecar.beaconBlockRoot gloas, sidecar.index) ∉ seen.dataColumnSidecarRoots ∧
+        subnet = subnetId ∧ future = false ∧ sidecar.slot gloas = block.slot ∧
+        verifyDataColumnSidecar preset config sidecar block.bidCommitments = true ∧
+        valid = true := by
+  rw [validateGloasDataColumnSidecar_eq subnetOf clock known held proofs]
+  simp only [Except.ok.injEq, andThen_eq_accept, ignoreUnless_eq_accept, rejectUnless_eq_accept]
+  simp
+
+/-- From Gloas a valid column sidecar has the slot of its block.
+
+It also has one cell per commitment of the bid of its block, and at least one. -/
+theorem validateGloasDataColumnSidecar_shape
+    (known : store.blocks[sidecar.beaconBlockRoot gloas]? = some block)
+    (accepted : validateGloasDataColumnSidecar config setup seen store gloas sidecar currentTimeMs
+      subnetId = .ok accept) :
+    sidecar.slot gloas = block.slot ∧
+      sidecar.column.data.size =
+        ((block.body.signedExecutionPayloadBid gloas).message.blobKzgCommitments).data.size ∧
+      sidecar.column.data.size ≠ 0 := by
+  unfold validateGloasDataColumnSidecar at accepted
+  simp only [known, ignoreUnless_andThenM, rejectUnless_andThenM, bind, Except.bind] at accepted
+  revert accepted
+  repeat' (first | split | intro)
+  all_goals simp_all [pure, Except.pure, Except.mapError, verifyDataColumnSidecar,
+    DataColumnSidecar.commitments_of_gloas (gloas := gloas), BeaconBlock.bidCommitments]
+  all_goals omega
+
+end GloasColumn
+
 /-! ## Partial column sidecars, at Fulu -/
 
 section Partial
@@ -611,11 +712,11 @@ theorem PartialHeaders.find?_record_of_ne (ne : other ≠ root) :
 /-- The counts reject a sidecar as empty exactly when it has no header and no set bit. -/
 theorem partialCountsOutcome_eq_empty :
     partialCountsOutcome sidecar = .reject "partial message is semantically empty" ↔
-      sidecar.header.data.size ≠ 1 ∧ sidecar.cellsPresentBitmap.bits.count true = 0 := by
+      sidecar.headers.size ≠ 1 ∧ sidecar.cellsPresentBitmap.bits.count true = 0 := by
   unfold partialCountsOutcome
   simp only [rejectUnless_andThen]
   by_cases first :
-      sidecar.header.data.size = 1 ∨ sidecar.cellsPresentBitmap.bits.count true ≠ 0 <;>
+      sidecar.headers.size = 1 ∨ sidecar.cellsPresentBitmap.bits.count true ≠ 0 <;>
     by_cases cells :
       sidecar.partialColumn.data.size = sidecar.cellsPresentBitmap.bits.count true <;>
     by_cases proofs :
@@ -625,12 +726,12 @@ theorem partialCountsOutcome_eq_empty :
 /-- The counts reject the cells exactly when the sidecar is not empty and its cells miscount. -/
 theorem partialCountsOutcome_eq_cells :
     partialCountsOutcome sidecar = .reject "number of cells does not match number of set bits" ↔
-      (sidecar.header.data.size = 1 ∨ sidecar.cellsPresentBitmap.bits.count true ≠ 0) ∧
+      (sidecar.headers.size = 1 ∨ sidecar.cellsPresentBitmap.bits.count true ≠ 0) ∧
         sidecar.partialColumn.data.size ≠ sidecar.cellsPresentBitmap.bits.count true := by
   unfold partialCountsOutcome
   simp only [rejectUnless_andThen]
   by_cases first :
-      sidecar.header.data.size = 1 ∨ sidecar.cellsPresentBitmap.bits.count true ≠ 0 <;>
+      sidecar.headers.size = 1 ∨ sidecar.cellsPresentBitmap.bits.count true ≠ 0 <;>
     by_cases cells :
       sidecar.partialColumn.data.size = sidecar.cellsPresentBitmap.bits.count true <;>
     by_cases proofs :
@@ -640,13 +741,13 @@ theorem partialCountsOutcome_eq_cells :
 /-- The counts reject the proofs exactly when the earlier counts pass and the proofs miscount. -/
 theorem partialCountsOutcome_eq_proofs :
     partialCountsOutcome sidecar = .reject "number of proofs does not match number of set bits" ↔
-      (sidecar.header.data.size = 1 ∨ sidecar.cellsPresentBitmap.bits.count true ≠ 0) ∧
+      (sidecar.headers.size = 1 ∨ sidecar.cellsPresentBitmap.bits.count true ≠ 0) ∧
         sidecar.partialColumn.data.size = sidecar.cellsPresentBitmap.bits.count true ∧
         sidecar.kzgProofs.data.size ≠ sidecar.cellsPresentBitmap.bits.count true := by
   unfold partialCountsOutcome
   simp only [rejectUnless_andThen]
   by_cases first :
-      sidecar.header.data.size = 1 ∨ sidecar.cellsPresentBitmap.bits.count true ≠ 0 <;>
+      sidecar.headers.size = 1 ∨ sidecar.cellsPresentBitmap.bits.count true ≠ 0 <;>
     by_cases cells :
       sidecar.partialColumn.data.size = sidecar.cellsPresentBitmap.bits.count true <;>
     by_cases proofs :
@@ -656,13 +757,13 @@ theorem partialCountsOutcome_eq_proofs :
 /-- The counts pass exactly when the sidecar is not empty and its cells and proofs count. -/
 theorem partialCountsOutcome_eq_accept :
     partialCountsOutcome sidecar = .accept ↔
-      (sidecar.header.data.size = 1 ∨ sidecar.cellsPresentBitmap.bits.count true ≠ 0) ∧
+      (sidecar.headers.size = 1 ∨ sidecar.cellsPresentBitmap.bits.count true ≠ 0) ∧
         sidecar.partialColumn.data.size = sidecar.cellsPresentBitmap.bits.count true ∧
         sidecar.kzgProofs.data.size = sidecar.cellsPresentBitmap.bits.count true := by
   unfold partialCountsOutcome
   simp only [rejectUnless_andThen]
   by_cases first :
-      sidecar.header.data.size = 1 ∨ sidecar.cellsPresentBitmap.bits.count true ≠ 0 <;>
+      sidecar.headers.size = 1 ∨ sidecar.cellsPresentBitmap.bits.count true ≠ 0 <;>
     by_cases cells :
       sidecar.partialColumn.data.size = sidecar.cellsPresentBitmap.bits.count true <;>
     by_cases proofs :
@@ -675,7 +776,7 @@ theorem partialCountsOutcome_ne_ignore {reason : String} :
   unfold partialCountsOutcome
   simp only [rejectUnless_andThen]
   by_cases first :
-      sidecar.header.data.size = 1 ∨ sidecar.cellsPresentBitmap.bits.count true ≠ 0 <;>
+      sidecar.headers.size = 1 ∨ sidecar.cellsPresentBitmap.bits.count true ≠ 0 <;>
     by_cases cells :
       sidecar.partialColumn.data.size = sidecar.cellsPresentBitmap.bits.count true <;>
     by_cases proofs :
@@ -684,25 +785,29 @@ theorem partialCountsOutcome_ne_ignore {reason : String} :
 
 /-- An empty partial sidecar: no bit, no cell, no proof and no header. -/
 def emptyPartialSidecar : PartialDataColumnSidecar preset fork :=
-  ⟨⟨#[], by simp⟩, ⟨#[], by simp⟩, ⟨#[], by simp⟩, ⟨#[], by simp⟩⟩
+  ⟨⟨#[], by simp⟩, ⟨#[], by simp⟩, ⟨#[], by simp⟩, fun _ => ⟨#[], by simp⟩⟩
 
 /-- An empty partial sidecar is rejected as empty, so that reason can occur. -/
 theorem partialCountsOutcome_emptyPartialSidecar :
     partialCountsOutcome (emptyPartialSidecar (preset := preset) (fork := fork)) =
       .reject "partial message is semantically empty" :=
-  partialCountsOutcome_eq_empty.mpr (by simp [emptyPartialSidecar])
+  partialCountsOutcome_eq_empty.mpr
+    (by simp only [emptyPartialSidecar, PartialDataColumnSidecar.headers]; split <;> simp)
 
-/-- A partial sidecar with only a header passes the counts, so their accept case can occur. -/
-theorem partialCountsOutcome_header_only :
+/-- Before Gloas, a partial sidecar with only a header passes the counts.
+
+So their accept case can occur. -/
+theorem partialCountsOutcome_header_only (before : fork < .glamsterdam) :
     partialCountsOutcome { (emptyPartialSidecar : PartialDataColumnSidecar preset fork) with
-      header := ⟨#[header], by simp⟩ } = .accept :=
-  partialCountsOutcome_eq_accept.mpr (by simp [emptyPartialSidecar])
+      header := fun _ => ⟨#[header], by simp⟩ } = .accept :=
+  partialCountsOutcome_eq_accept.mpr
+    (by simp [emptyPartialSidecar, PartialDataColumnSidecar.headers, before])
 
 /-- In the minimal preset, one set bit with no cell is rejected for its cell count. -/
 theorem partialCountsOutcome_bit_without_cell :
     partialCountsOutcome
         { (emptyPartialSidecar : PartialDataColumnSidecar Preset.minimal fork) with
-          cellsPresentBitmap := ⟨#[true], by decide⟩ } =
+          cellsPresentBitmap := ⟨#[true], fun _ => by decide⟩ } =
       .reject "number of cells does not match number of set bits" :=
   partialCountsOutcome_eq_cells.mpr (by simp [emptyPartialSidecar])
 
@@ -1021,7 +1126,7 @@ theorem partialCellsOutcome_rejected
 
 /-! ### The whole rule: counts, then header, then cells -/
 
-variable {fulu : .fusaka ≤ fork ∧ fork < .glamsterdam} {group : PartialDataColumnGroupID}
+variable {fulu : .fusaka ≤ fork ∧ fork < .glamsterdam} {group : PartialDataColumnGroupID fork}
   {outcome : ValidationResult}
 
 /-- A sidecar whose counts fail gets their outcome, and the headers stay as they were.
@@ -1041,7 +1146,7 @@ theorem validatePartialDataColumnSidecar_of_counts
 The headers stay as they were, and the cells are not checked. -/
 theorem validatePartialDataColumnSidecar_of_header_not_accept
     (counts : partialCountsOutcome sidecar = .accept)
-    (present : sidecar.header.data[0]? = some header)
+    (present : sidecar.headers[0]? = some header)
     (checked : partialHeaderOutcome config checks headers store group.beaconBlockRoot header
       currentTimeMs = .ok outcome)
     (notAccepted : outcome ≠ .accept) :
@@ -1056,7 +1161,7 @@ theorem validatePartialDataColumnSidecar_of_header_not_accept
 The outcome is then the outcome of the cells against the new headers, if any bit is set. -/
 theorem validatePartialDataColumnSidecar_of_header_accept
     (counts : partialCountsOutcome sidecar = .accept)
-    (present : sidecar.header.data[0]? = some header)
+    (present : sidecar.headers[0]? = some header)
     (checked : partialHeaderOutcome config checks headers store group.beaconBlockRoot header
       currentTimeMs = .ok .accept) :
     validatePartialDataColumnSidecar config checks setup headers store fulu sidecar currentTimeMs
@@ -1075,7 +1180,7 @@ theorem validatePartialDataColumnSidecar_of_header_accept
 /-- A sidecar with no header is the outcome of its cells, and the headers stay as they were. -/
 theorem validatePartialDataColumnSidecar_of_no_header
     (counts : partialCountsOutcome sidecar = .accept)
-    (absent : sidecar.header.data[0]? = none) :
+    (absent : sidecar.headers[0]? = none) :
     validatePartialDataColumnSidecar config checks setup headers store fulu sidecar currentTimeMs
         group columnIndex =
       (if sidecar.cellsPresentBitmap.bits.count true = 0 then .ok .accept else
@@ -1093,7 +1198,7 @@ theorem validatePartialDataColumnSidecar_of_no_header
 So a valid header followed by cells that fail is still the header of its block. -/
 theorem validatePartialDataColumnSidecar_records_header {after : PartialHeaders preset fork}
     (counts : partialCountsOutcome sidecar = .accept)
-    (present : sidecar.header.data[0]? = some header)
+    (present : sidecar.headers[0]? = some header)
     (checked : partialHeaderOutcome config checks headers store group.beaconBlockRoot header
       currentTimeMs = .ok .accept)
     (run : validatePartialDataColumnSidecar config checks setup headers store fulu sidecar
@@ -1107,5 +1212,94 @@ theorem validatePartialDataColumnSidecar_records_header {after : PartialHeaders 
       simp_all [Except.map]
 
 end Partial
+
+/-! ## Partial column sidecars, from Gloas -/
+
+section GloasPartial
+
+variable {gloas : .glamsterdam ≤ fork} {sidecar : PartialDataColumnSidecar preset fork}
+  {group : PartialDataColumnGroupID fork} {columnIndex : DataAvailability.ColumnIndex}
+  {block : BeaconBlock preset fork} {state : BeaconState preset fork} {valid : Bool}
+  {reason : String}
+
+/-- From Gloas the outcome of a partial sidecar is its chain of checks, in order.
+
+It holds once the block of the group, its state and the KZG check are computed. -/
+theorem validateGloasPartialDataColumnSidecar_eq
+    (known : store.blocks[group.beaconBlockRoot]? = some block)
+    (held : store.blockStates[group.beaconBlockRoot]? = some state)
+    (proofs : verifyPartialDataColumnSidecarKzgProofs setup sidecar (block.bidCommitments gloas)
+      columnIndex = .ok valid) :
+    validateGloasPartialDataColumnSidecar setup store gloas sidecar group columnIndex =
+      .ok ((partialCountsOutcome sidecar).andThen fun _ =>
+        (rejectUnless (group.slot gloas == block.slot)
+          "group id's slot does not match the block's slot").andThen fun _ =>
+        (rejectUnless (sidecar.cellsPresentBitmap.bits.size ==
+            (block.bidCommitments gloas).data.size)
+          "bitmap length does not match commitments length").andThen fun _ =>
+        rejectUnless valid "invalid sidecar kzg proofs") := by
+  unfold validateGloasPartialDataColumnSidecar
+  by_cases counts : partialCountsOutcome sidecar = .accept
+  · simp only [counts, known, held, proofs, ValidationResult.accept_andThenM,
+      ValidationResult.accept_andThen, bind, Except.bind, pure, Except.pure, Except.mapError,
+      rejectUnless_andThenM, rejectUnless_andThen, apply_ite (Except.ok (ε := ForkChoiceError))]
+  · simp only [ValidationResult.andThenM_of_ne_accept counts, ValidationResult.andThen_of_ne_accept
+      counts, pure, Except.pure]
+
+/-- From Gloas a partial sidecar is valid exactly when every check passes, once its inputs are set.
+-/
+theorem validateGloasPartialDataColumnSidecar_eq_accept
+    (known : store.blocks[group.beaconBlockRoot]? = some block)
+    (held : store.blockStates[group.beaconBlockRoot]? = some state)
+    (proofs : verifyPartialDataColumnSidecarKzgProofs setup sidecar (block.bidCommitments gloas)
+      columnIndex = .ok valid) :
+    validateGloasPartialDataColumnSidecar setup store gloas sidecar group columnIndex =
+        .ok accept ↔
+      partialCountsOutcome sidecar = .accept ∧ group.slot gloas = block.slot ∧
+        sidecar.cellsPresentBitmap.bits.size = (block.bidCommitments gloas).data.size ∧
+        valid = true := by
+  rw [validateGloasPartialDataColumnSidecar_eq (gloas := gloas) known held proofs]
+  simp only [Except.ok.injEq, ValidationResult.andThen_eq_accept, rejectUnless_eq_accept]
+  simp
+
+/-- From Gloas a partial sidecar is ignored exactly when its counts pass and its block is unseen.
+
+So the rule ignores for no other reason, whatever the store and the KZG check give. -/
+theorem validateGloasPartialDataColumnSidecar_eq_ignore :
+    validateGloasPartialDataColumnSidecar setup store gloas sidecar group columnIndex =
+        .ok (.ignore reason) ↔
+      partialCountsOutcome sidecar = .accept ∧ store.blocks[group.beaconBlockRoot]? = none ∧
+        reason = "group id's block has not been seen" := by
+  unfold validateGloasPartialDataColumnSidecar
+  by_cases counts : partialCountsOutcome sidecar = .accept
+  · simp only [counts, ValidationResult.accept_andThenM, true_and]
+    cases known : store.blocks[group.beaconBlockRoot]? with
+    | none => simp [pure, Except.pure, eq_comm]
+    | some block =>
+      cases held : store.blockStates[group.beaconBlockRoot]? with
+      | none => simp [pure, Except.pure]
+      | some state =>
+        simp only [reduceCtorEq, false_and, iff_false]
+        simp only [bind, Except.bind, pure, Except.pure, Except.mapError, rejectUnless_andThenM]
+        split <;> try simp
+        split <;> try simp
+        cases verifyPartialDataColumnSidecarKzgProofs setup sidecar (block.bidCommitments gloas)
+          columnIndex <;> simp [rejectUnless] <;> split <;> simp
+  · simp only [ValidationResult.andThenM_of_ne_accept counts, pure, Except.pure, Except.ok.injEq]
+    cases h : partialCountsOutcome sidecar <;> simp_all [partialCountsOutcome_ne_ignore]
+
+/-- From Gloas a partial sidecar whose block is known without a state is rejected.
+
+That holds once its counts pass, since its block failed validation. -/
+theorem validateGloasPartialDataColumnSidecar_of_failed
+    (counts : partialCountsOutcome sidecar = .accept)
+    (known : store.blocks[group.beaconBlockRoot]? = some block)
+    (failed : store.blockStates[group.beaconBlockRoot]? = none) :
+    validateGloasPartialDataColumnSidecar setup store gloas sidecar group columnIndex =
+      .ok (.reject "group id's block failed validation") := by
+  unfold validateGloasPartialDataColumnSidecar
+  simp [counts, known, failed, pure, Except.pure]
+
+end GloasPartial
 
 end EthLib.Consensus

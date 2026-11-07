@@ -13,8 +13,9 @@ FORKS = {
     "heze": "hegota",
 }
 
-# Each container that EthLib defines, with the first fork at which EthLib holds it, and the first
-# at which it does not: the fork drops it, or EthLib does not hold its form at that fork yet.
+# Each container that EthLib defines, with the first fork at which EthLib holds it.
+# It also gives the first fork at which EthLib does not hold it.
+# At that fork, the fork drops it, or EthLib does not hold its form yet.
 CONTAINERS = {
     "Fork": ("phase0", None),
     "ForkData": ("phase0", None),
@@ -71,10 +72,10 @@ CONTAINERS = {
     "DataColumnSidecar": ("fulu", None),
     "DataColumnsByRootIdentifier": ("fulu", None),
     "MatrixEntry": ("fulu", None),
-    "PartialDataColumnSidecar": ("fulu", "gloas"),
-    "PartialDataColumnPartsMetadata": ("fulu", "gloas"),
+    "PartialDataColumnSidecar": ("fulu", None),
+    "PartialDataColumnPartsMetadata": ("fulu", None),
     "PartialDataColumnHeader": ("fulu", "gloas"),
-    "PartialDataColumnGroupID": ("fulu", "gloas"),
+    "PartialDataColumnGroupID": ("fulu", None),
     "Withdrawal": ("capella", None),
     "ExecutionPayload": ("bellatrix", None),
     "ExecutionPayloadHeader": ("bellatrix", "gloas"),
