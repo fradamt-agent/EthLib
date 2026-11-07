@@ -668,4 +668,82 @@ theorem finality_included_double_vote
     beq_iff_eq]
   exact .inl ⟨different, epochs⟩
 
+/-- Two actual suffix queries with nested epochs have a slashable intersection.
+
+Both targets are after C, so the reconstructed signers come only from the supplied suffixes. -/
+theorem finality_threshold_surround_intersection
+    {cfg : Config} {checks : SignatureChecks} {eng : ExecutionEngine p .phase0}
+    {g c left right leftStep rightStep leftCache rightCache : FinalityState p}
+    {common a b leftPrefix rightPrefix leftRest rightRest : List (FinalityBlock p)}
+    {leftCount rightCount : Nat} {leftEpoch rightEpoch : Epoch}
+    {leftIndices rightIndices : List ValidatorIndex}
+    (positive : 0 < p.MIN_SEED_LOOKAHEAD.toNat)
+    (history : p.MIN_SEED_LOOKAHEAD.toNat + 3 < p.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (initialized : finalityInitialized cfg checks g)
+    (shared : finalityRuns cfg checks eng g common c)
+    (leftSplit : a = leftPrefix ++ leftRest) (rightSplit : b = rightPrefix ++ rightRest)
+    (leftRun : finalityRuns cfg checks eng c leftPrefix left)
+    (rightRun : finalityRuns cfg checks eng c rightPrefix right)
+    (leftAdvance : advanceSlots cfg leftCount left = .ok leftStep)
+    (rightAdvance : advanceSlots cfg rightCount right = .ok rightStep)
+    (leftCached : processSlot leftStep = .ok leftCache)
+    (rightCached : processSlot rightStep = .ok rightCache)
+    (leftThreshold : FinalityThreshold leftCache leftEpoch leftIndices)
+    (rightThreshold : FinalityThreshold rightCache rightEpoch rightIndices)
+    (leftLater : getCurrentEpoch c < leftEpoch) (rightLater : getCurrentEpoch c < rightEpoch)
+    (sources :
+      (if leftEpoch = getCurrentEpoch leftCache then leftCache.currentJustifiedCheckpoint
+        else leftCache.previousJustifiedCheckpoint).epoch.toNat <
+      (if rightEpoch = getCurrentEpoch rightCache then rightCache.currentJustifiedCheckpoint
+        else rightCache.previousJustifiedCheckpoint).epoch.toNat)
+    (targets : rightEpoch.toNat < leftEpoch.toNat) :
+    ∀ i, i ∈ leftIndices → i ∈ rightIndices → FinalitySlashable cfg checks eng c a b i := by
+  intro i leftMember rightMember
+  obtain ⟨outer, outerIncluded, outerEpoch, outerSource, _⟩ :=
+    finality_threshold_signer_on_suffix positive history initialized shared leftSplit leftRun
+      leftAdvance leftCached leftThreshold leftMember leftLater
+  obtain ⟨inner, innerIncluded, innerEpoch, innerSource, _⟩ :=
+    finality_threshold_signer_on_suffix positive history initialized shared rightSplit rightRun
+      rightAdvance rightCached rightThreshold rightMember rightLater
+  exact finality_included_surround (.inl outerIncluded) (.inr innerIncluded)
+    (by simpa only [outerSource, innerSource] using sources)
+    (by simpa only [outerEpoch, innerEpoch] using targets)
+
+/-- Equal-epoch suffix queries with different roots have a slashable intersection. -/
+theorem finality_threshold_double_intersection
+    {cfg : Config} {checks : SignatureChecks} {eng : ExecutionEngine p .phase0}
+    {g c left right leftStep rightStep leftCache rightCache : FinalityState p}
+    {common a b leftPrefix rightPrefix leftRest rightRest : List (FinalityBlock p)}
+    {leftCount rightCount : Nat} {epoch : Epoch} {leftRoot rightRoot : Root}
+    {leftIndices rightIndices : List ValidatorIndex}
+    (positive : 0 < p.MIN_SEED_LOOKAHEAD.toNat)
+    (history : p.MIN_SEED_LOOKAHEAD.toNat + 3 < p.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (initialized : finalityInitialized cfg checks g)
+    (shared : finalityRuns cfg checks eng g common c)
+    (leftSplit : a = leftPrefix ++ leftRest) (rightSplit : b = rightPrefix ++ rightRest)
+    (leftRun : finalityRuns cfg checks eng c leftPrefix left)
+    (rightRun : finalityRuns cfg checks eng c rightPrefix right)
+    (leftAdvance : advanceSlots cfg leftCount left = .ok leftStep)
+    (rightAdvance : advanceSlots cfg rightCount right = .ok rightStep)
+    (leftCached : processSlot leftStep = .ok leftCache)
+    (rightCached : processSlot rightStep = .ok rightCache)
+    (leftThreshold : FinalityThreshold leftCache epoch leftIndices)
+    (rightThreshold : FinalityThreshold rightCache epoch rightIndices)
+    (later : getCurrentEpoch c < epoch)
+    (leftRootOk : getBlockRoot leftCache epoch = .ok leftRoot)
+    (rightRootOk : getBlockRoot rightCache epoch = .ok rightRoot)
+    (different : leftRoot ≠ rightRoot) :
+    ∀ i, i ∈ leftIndices → i ∈ rightIndices → FinalitySlashable cfg checks eng c a b i := by
+  intro i leftMember rightMember
+  obtain ⟨x, xIncluded, xEpoch, _, xRoot⟩ :=
+    finality_threshold_signer_on_suffix positive history initialized shared leftSplit leftRun
+      leftAdvance leftCached leftThreshold leftMember later
+  obtain ⟨y, yIncluded, yEpoch, _, yRoot⟩ :=
+    finality_threshold_signer_on_suffix positive history initialized shared rightSplit rightRun
+      rightAdvance rightCached rightThreshold rightMember later
+  have xEq : x.target.root = leftRoot := Except.ok.inj (xRoot.symm.trans leftRootOk)
+  have yEq : y.target.root = rightRoot := Except.ok.inj (yRoot.symm.trans rightRootOk)
+  exact finality_included_double_vote (.inl xIncluded) (.inr yIncluded)
+    (xEpoch.trans yEpoch.symm) (by simpa only [xEq, yEq] using different)
+
 end EthLib.Consensus
