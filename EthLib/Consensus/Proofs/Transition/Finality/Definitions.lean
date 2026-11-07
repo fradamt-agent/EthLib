@@ -7,8 +7,12 @@ public import Mathlib.Logic.Relation
 # Direct Phase 0 finality safety definitions
 
 These expressions record executions of the beacon state transition and measure their stake.
-They do not assert accountable safety. The epoch-order argument follows Casper FFG §2
-and Gasper §4 and §5, but the checkpoints and attestations here are the spec's data.
+
+They do not assert accountable safety.
+
+The epoch-order argument follows Casper FFG §2 and Gasper §4 and §5.
+
+The checkpoints and attestations here are the spec's data.
 -/
 
 @[expose] public section
