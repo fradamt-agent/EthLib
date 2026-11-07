@@ -312,6 +312,42 @@ theorem sumMarked_eq_sum (validators : Array Validator) (marked : Array Bool) :
       cases mark <;> simp [ih, Nat.add_assoc]
   simpa using fold (validators.zip marked).toList 0
 
+/-- A marked balance is bounded by the balance of any predicate containing its marked entries. -/
+theorem sumMarked_le_filter (validators : Array Validator) (marked : Array Bool)
+    (predicate : Validator → Bool)
+    (contains : ∀ validator, (validator, true) ∈ validators.zip marked →
+      predicate validator = true) :
+    sumMarked validators marked ≤
+      ((validators.toList.filter predicate).map (·.effectiveBalance.toNat)).sum := by
+  rw [sumMarked_eq_sum]
+  have compare : ∀ (entries : List Validator) (marks : List Bool),
+      (∀ validator, (validator, true) ∈ entries.zip marks → predicate validator = true) →
+      ((entries.zip marks).map fun (validator, mark) =>
+        if mark then validator.effectiveBalance.toNat else 0).sum ≤
+        ((entries.filter predicate).map (·.effectiveBalance.toNat)).sum := by
+    intro entries
+    induction entries with
+    | nil => intro marks _; simp
+    | cons validator entries ih =>
+      intro marks contained
+      cases marks with
+      | nil => simp
+      | cons mark marks =>
+        have rest := ih marks (fun other member =>
+          contained other (List.mem_cons_of_mem _ member))
+        cases mark with
+        | false =>
+          cases selected : predicate validator <;> simp [selected] at * <;> omega
+        | true =>
+          have selected := contained validator (by simp)
+          simpa only [List.zip_cons_cons, List.map_cons, List.sum_cons, ↓reduceIte,
+            List.filter_cons, selected] using Nat.add_le_add_left rest
+              validator.effectiveBalance.toNat
+  simpa only [Array.toList_zip] using compare validators.toList marked.toList (by
+    intro validator member
+    apply contains validator
+    simpa [← Array.toList_zip] using member)
+
 /-- Intersecting participation with the denominator loses only marks outside that denominator.
 
 The last sum is the concrete correction needed for previous-epoch voters that have exited. -/
@@ -872,6 +908,137 @@ theorem mem_getActiveValidatorIndices_of_current_target {before : fork < .altair
     {index : ValidatorIndex} (member : index ∈ indices) :
     index ∈ getActiveValidatorIndices state (getCurrentEpoch state) :=
   mem_getActiveValidatorIndices_of_target holds matching computed member
+
+/-- A previous-epoch validator absent from the current denominator exits at the current epoch.
+
+The previous epoch saturates at zero, so the conclusion also excludes such a gap at genesis. -/
+theorem previous_active_not_current_exits_now (validator : Validator)
+    (previous : isActiveValidator validator (getPreviousEpoch state) = true)
+    (current : isActiveValidator validator (getCurrentEpoch state) = false) :
+    validator.exitEpoch = getCurrentEpoch state := by
+  simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq] at previous
+  have earlier := UInt64.le_iff_toNat_le.mp previous.1
+  have later := UInt64.lt_iff_toNat_lt.mp previous.2
+  have age : (getPreviousEpoch state).toNat = (getCurrentEpoch state).toNat - 1 := by
+    simp only [getPreviousEpoch, toNat_saturatingSub]
+    rfl
+  have absent : ¬ (validator.activationEpoch ≤ getCurrentEpoch state ∧
+      getCurrentEpoch state < validator.exitEpoch) := by
+    intro active
+    have yes : isActiveValidator validator (getCurrentEpoch state) = true := by
+      simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq]
+      exact active
+    rw [current] at yes
+    cases yes
+  have activated : validator.activationEpoch ≤ getCurrentEpoch state := by
+    rw [UInt64.le_iff_toNat_le]
+    omega
+  have exited : validator.exitEpoch.toNat ≤ (getCurrentEpoch state).toNat := by
+    by_cases le : validator.exitEpoch.toNat ≤ (getCurrentEpoch state).toNat
+    · exact le
+    · exact (absent ⟨activated, UInt64.lt_iff_toNat_lt.mpr (by omega)⟩).elim
+  apply UInt64.toNat_inj.mp
+  omega
+
+/-- A reconstructed previous-target signer outside the denominator exits in this epoch.
+
+No activation or deposit can create this mismatch between consecutive active sets. -/
+theorem previous_target_signer_outside_active_exits_now {before : fork < .altair}
+    {attestations : Array (PendingAttestation preset)} {indices : List ValidatorIndex}
+    (within : state.RegistryWithinLimit) (holds : PendingEpochsMatch state before)
+    (matching : getMatchingTargetAttestations state before (getPreviousEpoch state) =
+      .ok attestations)
+    (computed : getUnslashedAttestingIndices state attestations = .ok indices)
+    {index : ValidatorIndex} (member : index ∈ indices)
+    (outside : index ∉ getActiveValidatorIndices state (getCurrentEpoch state)) :
+    ∃ validator, state.validators.data[index.toNat]? = some validator ∧
+      validator.exitEpoch = getCurrentEpoch state := by
+  obtain ⟨validator, found, previous⟩ := (mem_getActiveValidatorIndices within).mp
+    (mem_getActiveValidatorIndices_of_target holds matching computed member)
+  have current : isActiveValidator validator (getCurrentEpoch state) = false := by
+    cases active : isActiveValidator validator (getCurrentEpoch state)
+    · rfl
+    · exact (outside ((mem_getActiveValidatorIndices within).mpr
+        ⟨validator, found, active⟩)).elim
+  exact ⟨validator, found, previous_active_not_current_exits_now validator previous current⟩
+
+/-- Previous-target weight outside the denominator is bounded by this epoch's exiting weight.
+
+The bound counts each registry entry once, even if several attestations name it. -/
+theorem previous_target_outside_active_balance_le_exits {before : fork < .altair}
+    {attestations : Array (PendingAttestation preset)} {indices : List ValidatorIndex}
+    (within : state.RegistryWithinLimit) (holds : PendingEpochsMatch state before)
+    (matching : getMatchingTargetAttestations state before (getPreviousEpoch state) =
+      .ok attestations)
+    (computed : getUnslashedAttestingIndices state attestations = .ok indices) :
+    participatingOutsideActiveBalance state indices ≤
+      ((state.validators.data.toList.filter
+          (fun validator => validator.exitEpoch == getCurrentEpoch state)).map
+        (·.effectiveBalance.toNat)).sum := by
+  apply sumMarked_le_filter
+  intro validator member
+  obtain ⟨position, found⟩ := Array.mem_iff_getElem?.mp member
+  simp only [Array.zip_eq_zipWith, Array.getElem?_zipWith, getElem?_markIndices] at found
+  by_cases inside : position < state.validators.data.size
+  · simp only [inside, ↓reduceIte] at found
+    cases atPosition : state.validators.data[position]? with
+    | none => simp [atPosition] at found
+    | some entry =>
+      simp only [atPosition, Option.some.injEq, Prod.mk.injEq,
+        Bool.and_eq_true, Bool.not_eq_true'] at found
+      obtain ⟨rfl, marked, absent⟩ := found
+      obtain ⟨index, included, same⟩ := List.any_eq_true.mp marked
+      have indexEq : index.toNat = position := of_decide_eq_true same
+      have outside : index ∉ getActiveValidatorIndices state (getCurrentEpoch state) := by
+        intro active
+        have present : (getActiveValidatorIndices state (getCurrentEpoch state)).any
+            (·.toNat == position) = true :=
+          List.any_eq_true.mpr ⟨index, active, same⟩
+        rw [present] at absent
+        cases absent
+      obtain ⟨other, otherFound, exits⟩ :=
+        previous_target_signer_outside_active_exits_now within holds matching computed
+          included outside
+      rw [indexEq, atPosition] at otherFound
+      cases otherFound
+      simp only [exits, beq_self_eq_true]
+  · simp [inside] at found
+
+/-- The previous-voter gap costs at most one effective-balance cap per exit in this epoch.
+
+This separates the balance invariant from the exit-queue population bound. -/
+theorem previous_target_outside_active_balance_le_exit_count {before : fork < .altair}
+    {attestations : Array (PendingAttestation preset)} {indices : List ValidatorIndex}
+    (within : state.RegistryWithinLimit) (holds : PendingEpochsMatch state before)
+    (bounded : ∀ validator ∈ state.validators.data,
+      validator.effectiveBalance ≤ preset.MAX_EFFECTIVE_BALANCE)
+    (matching : getMatchingTargetAttestations state before (getPreviousEpoch state) =
+      .ok attestations)
+    (computed : getUnslashedAttestingIndices state attestations = .ok indices) :
+    participatingOutsideActiveBalance state indices ≤
+      (state.validators.data.toList.filter
+        (fun validator => validator.exitEpoch == getCurrentEpoch state)).length *
+          preset.MAX_EFFECTIVE_BALANCE.toNat := by
+  have cap : ∀ (validators : List Validator),
+      (∀ validator ∈ validators,
+        validator.effectiveBalance.toNat ≤ preset.MAX_EFFECTIVE_BALANCE.toNat) →
+      (validators.map (·.effectiveBalance.toNat)).sum ≤
+        validators.length * preset.MAX_EFFECTIVE_BALANCE.toNat := by
+    intro validators
+    induction validators with
+    | nil => intro _; simp
+    | cons validator validators ih =>
+      intro bounded
+      have first := bounded validator List.mem_cons_self
+      have rest := ih (fun other member => bounded other (List.mem_cons_of_mem _ member))
+      simp only [List.map_cons, List.sum_cons, List.length_cons, Nat.succ_mul]
+      omega
+  apply Nat.le_trans (previous_target_outside_active_balance_le_exits
+    within holds matching computed)
+  apply cap
+  intro validator member
+  exact UInt64.le_iff_toNat_le.mp (bounded validator (by
+    simpa using (List.mem_filter.mp member).1))
 
 /-- Before Altair, a changed justified checkpoint has a computed target balance above threshold.
 
