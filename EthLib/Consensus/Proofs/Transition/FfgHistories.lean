@@ -3,6 +3,7 @@ module
 public import EthLib.Consensus.Proofs.Transition.FfgProvenance
 public import EthLib.Consensus.Proofs.Transition.Provenance.Finality
 public import EthLib.Consensus.Proofs.Transition.Provenance.UpgradeVoters
+public import EthLib.Consensus.Proofs.Transition.Provenance.DirectCalls
 
 /-!
 # Proofs: the FFG refinement of two histories from genesis
@@ -16,10 +17,13 @@ This file builds the `FfgRefinement` of the pair from the provenance proofs.
 - Evidence: a state with the zero root, or a cached header with the zero root, on either history.
 - Signed votes: data that a validator signed in an attestation checked in a block of either
   history.
-- Records: the weighing calls of either history, each with its own source and weighing.
+- Records: the calls of `processJustificationAndFinalization` on states of either history, each
+  with its own source and weighing: those at epoch boundaries, and direct ones such as a store's
+  pulled-up tip.
 - Justified: the justified checkpoints of every state of either history, and every checkpoint that
   a call justified.
-- Finalized: the finalized checkpoint of every state of either history.
+- Finalized: the finalized checkpoint of every state of either history, and every checkpoint that
+  a call finalized by one of the four rules.
 
 The provenance proofs give every field, at every fork.
 
@@ -89,28 +93,32 @@ def historyRefinement {g a b : ForkedBeaconState preset} (genesis : Genesis conf
   signed := {p | ∃ y x, OnEither config checks g a b x ∧ Reaches config checks y x ∧
     SignedVote config checks g y p.1 p.2}
   records := {r | ∃ x, OnEither config checks g a b x ∧
-    ∃ (fork : Base.Fork) (state cached weighed next : BeaconState preset fork)
+    ∃ (fork : Base.Fork) (state cached weighed : BeaconState preset fork)
       (voters : List ValidatorIndex) (c : Checkpoint),
-      WeighingCall config checks g x fork state cached weighed next voters c ∧
+      CallRecord config checks g x fork state cached weighed voters c ∧
       r = ⟨recordSource cached c.epoch, c, Weighing.ofState cached voters.toFinset⟩}
-  justified := {c | ∃ x, OnEither config checks g a b x ∧ JustifiedOrStart config checks g x c}
-  finalized := {c | ∃ x, OnEither config checks g a b x ∧ c = x.state.finalizedCheckpoint}
+  justified := {c | ∃ x, OnEither config checks g a b x ∧
+    (JustifiedOrStart config checks g x c ∨ JustifiedByCall config checks g x c)}
+  finalized := {c | ∃ x, OnEither config checks g a b x ∧
+    (c = x.state.finalizedCheckpoint ∨ KFinalizedByCall config checks g x c)}
   justified_recorded := by
     rintro c ⟨x, hx, j⟩
     obtain ⟨-, previous, current, finalized⟩ := genesis_state genesis
-    rcases j with rfl | rfl | rfl | ⟨fork, state, cached, weighed, next, voters, call⟩
+    rcases j with (rfl | rfl | rfl | ⟨fork, state, cached, weighed, next, voters, call⟩) |
+      ⟨fork, state, cached, weighed, voters, call⟩
     · exact .inl (by rw [finalized]; exact genesis_toFfg)
     · exact .inl (by rw [previous]; exact genesis_toFfg)
     · exact .inl (by rw [current]; exact genesis_toFfg)
-    · exact .inr ⟨_, ⟨x, hx, fork, state, cached, weighed, next, voters, c, call, rfl⟩, rfl⟩
+    · exact .inr ⟨_, ⟨x, hx, fork, state, cached, weighed, voters, c, call.record, rfl⟩, rfl⟩
+    · exact .inr ⟨_, ⟨x, hx, fork, state, cached, weighed, voters, c, call, rfl⟩, rfl⟩
   source_justified := by
-    rintro r ⟨x, hx, fork, state, cached, weighed, next, voters, c, call, rfl⟩
-    exact ⟨x, hx, (call.source ⟨g, genesis, .refl g⟩).1⟩
+    rintro r ⟨x, hx, fork, state, cached, weighed, voters, c, call, rfl⟩
+    exact ⟨x, hx, .inl (call.source ⟨g, genesis, .refl g⟩).1⟩
   source_lt_target := by
-    rintro r ⟨x, hx, fork, state, cached, weighed, next, voters, c, call, rfl⟩
+    rintro r ⟨x, hx, fork, state, cached, weighed, voters, c, call, rfl⟩
     exact (call.source ⟨g, genesis, .refl g⟩).2
   source_le_target := by
-    rintro r ⟨x, hx, fork, state, cached, weighed, next, voters, c, call, rfl⟩
+    rintro r ⟨x, hx, fork, state, cached, weighed, voters, c, call, rfl⟩
     have fromStart : g.state.slot.toNat ≤ c.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat := by
       rw [(genesis_state genesis).1]
       exact Nat.zero_le _
@@ -122,7 +130,7 @@ def historyRefinement {g a b : ForkedBeaconState preset} (genesis : Genesis conf
       · exact .inr ⟨x, hx, .inr header⟩
     · exact .inr ⟨x, hx, .inl found⟩
   voters_signed := by
-    rintro r ⟨x, hx, fork, state, cached, weighed, next, voters, c, call, rfl⟩ i hi
+    rintro r ⟨x, hx, fork, state, cached, weighed, voters, c, call, rfl⟩ i hi
     simp only [Weighing.ofState, List.mem_toFinset] at hi
     have member : ∀ data, SignedVote config checks g ⟨fork, state⟩ i data →
         (i, data) ∈ {p : ValidatorIndex × AttestationData | ∃ y x, OnEither config checks g a b x ∧
@@ -136,12 +144,14 @@ def historyRefinement {g a b : ForkedBeaconState preset} (genesis : Genesis conf
         call.pending_voters_signed_of_genesis lookahead genesis (Nat.lt_of_not_le altair) i hi
       exact ⟨data, member data signed, source, target⟩
   threshold := by
-    rintro r ⟨x, hx, fork, state, cached, weighed, next, voters, c, call, rfl⟩
+    rintro r ⟨x, hx, fork, state, cached, weighed, voters, c, call, rfl⟩
     have cachedWithin : cached.RegistryWithinLimit := by
       have := within fork state call.head
       unfold BeaconState.RegistryWithinLimit at this ⊢
-      rw [(processSlot_keeps call.cachedOk).2.1]
-      exact this
+      rcases call.reads with cachedOk | rfl
+      · rw [(processSlot_keeps cachedOk).2.1]
+        exact this
+      · exact this
     have active : ∀ i ∈ voters, i ∈ getActiveValidatorIndices cached c.epoch := by
       by_cases altair : .altair ≤ fork
       · exact TargetVoters.active altair call.counted
@@ -152,13 +162,23 @@ def historyRefinement {g a b : ForkedBeaconState preset} (genesis : Genesis conf
     exact supermajority_of_threshold call.passes cachedWithin fun i mem =>
       activeAt_lt ((mem_active_iff cachedWithin).mp (active i mem))
   finalized_rule := by
-    rintro c ⟨x, hx, rfl⟩
-    rcases Reaches.finalized_rule wide4 genesis hx.1 with genesisCheckpoint |
-      ⟨k, hk, -, cs, h0, epochs, justified, ancestors, nonzero, fork, state, cached, weighed, next,
-        voters, call, source⟩
+    rintro c ⟨x, hx, finalized⟩
+    -- A state's own finalized checkpoint, by the chain's finalization rule, has the same shape.
+    have byCall : c = ⟨GENESIS_EPOCH, Vector.replicate 32 0⟩ ∨
+        KFinalizedByCall config checks g x c := by
+      rcases finalized with rfl | byCall
+      · rcases Reaches.finalized_rule wide4 genesis hx.1 with genesisCheckpoint |
+          ⟨k, hk, hk2, cs, h0, epochs, justified, ancestors, nonzero, fork, state, cached, weighed,
+            next, voters, call, source⟩
+        · exact .inl genesisCheckpoint
+        · exact .inr ⟨k, hk, hk2, cs, h0, epochs, fun i hi => .inl (justified i hi), ancestors,
+            nonzero, fork, state, cached, weighed, voters, call.record, source⟩
+      · exact .inr byCall
+    rcases byCall with genesisCheckpoint | ⟨k, hk, -, cs, h0, epochs, justified, ancestors,
+      nonzero, fork, state, cached, weighed, voters, call, source⟩
     · exact .inl (by rw [genesisCheckpoint]; exact genesis_toFfg)
     refine .inr ⟨k, hk, cs, h0, epochs, fun i hi => ⟨x, hx, justified i hi⟩, fun i hi => ?_,
-      _, ⟨x, hx, fork, state, cached, weighed, next, voters, cs k, call, rfl⟩, source, rfl⟩
+      _, ⟨x, hx, fork, state, cached, weighed, voters, cs k, call, rfl⟩, source, rfl⟩
     rcases ancestors i hi with path | zero
     · rcases nonzero (i + 1) hi (Nat.le_add_left 1 i) with ne | header
       · have ei := epochs i hi.le
@@ -210,7 +230,7 @@ theorem accountable_safety_histories {g a b : ForkedBeaconState preset}
         isSlashableAttestationData data1 data2 = true} + 2 * D ∨
       historyEvidence config checks g a b :=
   (historyRefinement (a := a) (b := b) genesis wide4 lookahead within).accountable_safety
-    ⟨x₁, on₁, rfl⟩ ⟨x₂, on₂, rfl⟩ conflicting ω₀ hD
+    ⟨x₁, on₁, .inl rfl⟩ ⟨x₂, on₂, .inl rfl⟩ conflicting ω₀ hD
 
 open scoped Classical in
 /-- Accountable safety for a finalized checkpoint and a later justified one of two histories.
@@ -255,6 +275,6 @@ theorem accountable_safety_histories_justified {g a b : ForkedBeaconState preset
         isSlashableAttestationData data1 data2 = true} + 2 * D ∨
       historyEvidence config checks g a b :=
   (historyRefinement (a := a) (b := b) genesis wide4 lookahead within).accountable_safety_justified
-    ⟨xF, onF, rfl⟩ ⟨xJ, onJ, onJ.1.checkpoints.2.2⟩ hle conflicting ω₀ hD
+    ⟨xF, onF, .inl rfl⟩ ⟨xJ, onJ, .inl onJ.1.checkpoints.2.2⟩ hle conflicting ω₀ hD
 
 end EthLib.Consensus
