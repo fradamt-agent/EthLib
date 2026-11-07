@@ -289,6 +289,86 @@ theorem Reaches.fork_eq_of_before {start after : ForkedBeaconState preset}
 
 /-! ## The counted voters signed the call's link -/
 
+/-- Before Altair, a signer that a later state finds for a recorded pending attestation signed it.
+
+A block of the chain recorded the pending attestation, with `epoch` as its target.
+
+A later state of the chain, before Altair and at most one epoch past `epoch`, computes a committee
+for it and finds a signer from its bits.
+
+That signer is active in `epoch`, and signed the attestation's data, checked at its site. -/
+theorem PendingRecordedBy.signed {start : ForkedBeaconState preset} {fork : Fork}
+    {state : BeaconState preset fork} {pending : PendingAttestation preset} {epoch : Epoch}
+    (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (before : fork < .altair)
+    (recordedBy : PendingRecordedBy config checks start ⟨fork, state⟩ pending epoch)
+    (near : (getCurrentEpoch state).toNat ≤ epoch.toNat + 1)
+    (finite : epoch ≠ FAR_FUTURE_EPOCH) {committee : Array ValidatorIndex}
+    {signers : List ValidatorIndex}
+    (committeeOk : getBeaconCommittee state pending.data.slot pending.data.index = .ok committee)
+    (attestersOk : committeeAttesters pending.aggregationBits.bits 0 committee = .ok signers)
+    {index : ValidatorIndex} (inSigners : index ∈ signers) :
+    pending.data.target.epoch = epoch ∧ index ∈ getActiveValidatorIndices state epoch ∧
+      SignedVote config checks start ⟨fork, state⟩ index pending.data := by
+  obtain ⟨fork', engine, block, validateResult, blockState, post, first, site, recorded, pre, suf,
+    attestation, blockHead, blockNotDue, applied, blockTail, votesKept, shuffleNear, split,
+    prefixOk, siteOk, reads, epochEq, recordedFacts⟩ := recordedBy
+  obtain ⟨indexed, bitsEq, dataEq, -, -, indexedOk, valid⟩ := recordedFacts
+  -- The block ran in the same fork as the later state, before Altair.
+  have sameFork : fork' = fork := blockTail.fork_eq_of_before before
+  subst sameFork
+  obtain ⟨siteRecent, slotEpoch, _, _, _, _, source⟩ := processAttestation_checks before siteOk
+  rw [epochEq] at siteRecent slotEpoch
+  have siteEpoch : getCurrentEpoch site = getCurrentEpoch blockState := by
+    simp only [getCurrentEpoch, reads.slot]
+  have sitePrevious : getPreviousEpoch site = getPreviousEpoch blockState := by
+    unfold getPreviousEpoch
+    rw [siteEpoch]
+  rw [siteEpoch, sitePrevious] at siteRecent
+  -- The block is in the target's epoch or the one after.
+  have blockBound : epoch ≤ getCurrentEpoch blockState := by
+    apply UInt64.le_iff_toNat_le.mpr
+    have := getPreviousEpoch_toNat blockState
+    rcases siteRecent with same | same <;> rw [same] <;> omega
+  have blockNear : (getCurrentEpoch blockState).toNat ≤ epoch.toNat + 1 := by
+    have := getPreviousEpoch_toNat blockState
+    rcases siteRecent with same | same <;> rw [same] <;> omega
+  -- The inputs of the shuffle are the same at the site and later, as at the block's start.
+  obtain ⟨-, processed, -⟩ := applySignedBlock_ok applied
+  have toFirst := shuffleNear before lookahead _ finite blockBound blockNear
+  have toSite : ShuffleKept epoch first site :=
+    foldlM_ok_invariant (ShuffleKept epoch first)
+      (fun _ _ _ held ok => held.trans (ShuffleKept.processAttestation before ok))
+      (ShuffleKept.refl _) prefixOk
+  have toPost := ShuffleKept.processBlock before lookahead finite blockBound blockNear processed
+  have postBound : epoch ≤ getCurrentEpoch post := by
+    unfold getCurrentEpoch at blockBound ⊢
+    rw [processBlock_slot processed]
+    exact blockBound
+  obtain ⟨_, toState⟩ := blockTail.shuffleKept before lookahead finite postBound near
+  have toLater : ShuffleKept epoch blockState state := toPost.trans toState
+  rw [slotEpoch] at toFirst toSite toLater
+  -- The signer is in the committee, so it is active in the target epoch.
+  have active := mem_getBeaconCommittee committeeOk (mem_of_committeeAttesters attestersOk inSigners)
+  rw [dataEq, ← slotEpoch] at active
+  -- The site found the same signers.
+  rw [dataEq, toLater.getBeaconCommittee, ← (toFirst.trans toSite).getBeaconCommittee]
+    at committeeOk
+  rw [bitsEq] at attestersOk
+  have attestingOk : getAttestingIndices site attestation = .ok (sortedSet signers) := by
+    have notElectra : ¬Fork.pectra ≤ fork' := not_le_of_before before (by decide)
+    simp only [getAttestingIndices, notElectra, ↓reduceDIte, bind, Except.bind, committeeOk,
+      attestersOk, pure, Except.pure]
+  obtain ⟨indexed', indexedOk', attesting, indexedData, -⟩ :=
+    getIndexedAttestation_of_getAttestingIndices attestingOk
+  cases indexedOk.symm.trans indexedOk'
+  rw [dataEq]
+  exact ⟨epochEq, active, fork', engine, block, validateResult, blockState, post, first, site,
+    recorded, pre, suf, attestation, indexed, blockHead, blockNotDue, applied, blockTail, votesKept,
+    split, prefixOk, siteOk, reads, rfl, indexedOk,
+    by rw [attesting]; exact List.mem_toArray.mpr (mem_sortedSet.mpr inSigners),
+    indexedData, valid, source⟩
+
 /-- Before Altair, a counted voter of a weighing call signed the call's link.
 
 Take a weighing call of a chain that justified a checkpoint, at a fork before Altair.
@@ -352,30 +432,8 @@ theorem WeighingCall.pending_voters_signed {start after : ForkedBeaconState pres
       exact (recent.resolve_right isCurrent).symm
   have origin := head.pending before _ listed
   rw [listEpoch] at origin
-  rcases origin with atStart | ⟨fork', engine, block, validateResult, blockState, post, first,
-    site, recorded, pre, suf, attestation, blockHead, blockNotDue, applied, blockTail, votesKept,
-    shuffleNear, split, prefixOk, siteOk, reads, epochEq, recordedFacts⟩
+  rcases origin with atStart | recordedBy
   · exact .inl ⟨pending, atStart⟩
-  obtain ⟨indexed, bitsEq, dataEq, -, -, indexedOk, valid⟩ := recordedFacts
-  -- The block ran in the same fork as the call, before Altair.
-  have sameFork : fork' = fork := blockTail.fork_eq_of_before before
-  subst sameFork
-  obtain ⟨siteRecent, slotEpoch, _, _, _, _, source⟩ := processAttestation_checks before siteOk
-  rw [epochEq] at siteRecent slotEpoch
-  have siteEpoch : getCurrentEpoch site = getCurrentEpoch blockState := by
-    simp only [getCurrentEpoch, reads.slot]
-  have sitePrevious : getPreviousEpoch site = getPreviousEpoch blockState := by
-    unfold getPreviousEpoch
-    rw [siteEpoch]
-  rw [siteEpoch, sitePrevious] at siteRecent
-  -- The block is in the target's epoch or the one after, and so is the call.
-  have blockBound : checkpoint.epoch ≤ getCurrentEpoch blockState := by
-    apply UInt64.le_iff_toNat_le.mpr
-    have := getPreviousEpoch_toNat blockState
-    rcases siteRecent with same | same <;> rw [same] <;> omega
-  have blockNear : (getCurrentEpoch blockState).toNat ≤ checkpoint.epoch.toNat + 1 := by
-    have := getPreviousEpoch_toNat blockState
-    rcases siteRecent with same | same <;> rw [same] <;> omega
   have stateNear : (getCurrentEpoch state).toNat ≤ checkpoint.epoch.toNat + 1 := by
     have := getPreviousEpoch_toNat state
     rcases recent with same | same <;> rw [same] <;> omega
@@ -392,53 +450,25 @@ theorem WeighingCall.pending_voters_signed {start after : ForkedBeaconState pres
       rcases recent with same | same <;> rw [same] <;> omega
     rw [far, farNat] at epochLe
     omega
-  -- The inputs of the shuffle are the same at the site and at the call, as at the block's start.
-  obtain ⟨-, processed, -⟩ := applySignedBlock_ok applied
-  have toFirst := shuffleNear before lookahead _ finite blockBound blockNear
-  have toSite : ShuffleKept checkpoint.epoch first site :=
-    foldlM_ok_invariant (ShuffleKept checkpoint.epoch first)
-      (fun _ _ _ held ok => held.trans (ShuffleKept.processAttestation before ok))
-      (ShuffleKept.refl _) prefixOk
-  have toPost := ShuffleKept.processBlock before lookahead finite blockBound blockNear processed
-  have postBound : checkpoint.epoch ≤ getCurrentEpoch post := by
-    unfold getCurrentEpoch at blockBound ⊢
-    rw [processBlock_slot processed]
-    exact blockBound
-  obtain ⟨_, toState⟩ := blockTail.shuffleKept before lookahead finite postBound stateNear
-  have toCached : ShuffleKept checkpoint.epoch blockState cached :=
-    toPost.trans (toState.trans (ShuffleKept.processSlot cachedOk))
-  rw [slotEpoch] at toFirst toSite toCached
-  -- So the call finds the signers that the site found.
+  -- The caching keeps the inputs of the shuffle, so the call computes the state's committee.
+  have toCached : ShuffleKept (computeEpochAtSlot preset pending.data.slot) state cached :=
+    ShuffleKept.processSlot cachedOk
   simp only [getPendingAttestingIndices, bind_ok_iff] at signersOk
   obtain ⟨committee, committeeOk, attestersOk⟩ := signersOk
-  -- The voter is in the committee, so it is active in the target epoch, in the call's state.
-  have active := mem_getBeaconCommittee committeeOk (mem_of_committeeAttesters attestersOk inSigners)
-  rw [dataEq, ← slotEpoch] at active
-  rw [dataEq, toCached.getBeaconCommittee, ← (toFirst.trans toSite).getBeaconCommittee]
-    at committeeOk
-  rw [bitsEq] at attestersOk
-  have attestingOk : getAttestingIndices site attestation = .ok (sortedSet signers) := by
-    have notElectra : ¬Fork.pectra ≤ fork' := not_le_of_before before (by decide)
-    simp only [getAttestingIndices, notElectra, ↓reduceDIte, bind, Except.bind, committeeOk,
-      attestersOk, pure, Except.pure]
-  obtain ⟨indexed', indexedOk', attesting, indexedData, -⟩ :=
-    getIndexedAttestation_of_getAttestingIndices attestingOk
-  cases indexedOk.symm.trans indexedOk'
-  have target : attestation.data.target = checkpoint := by
-    rw [dataEq] at targetRoot
+  rw [toCached.getBeaconCommittee] at committeeOk
+  obtain ⟨epochEq, active, vote⟩ :=
+    recordedBy.signed lookahead before stateNear finite committeeOk attestersOk inSigners
+  have activeCached : index ∈ getActiveValidatorIndices cached checkpoint.epoch := by
+    rw [(ShuffleKept.processSlot (epoch := checkpoint.epoch) cachedOk).getActiveValidatorIndices]
+    exact active
+  have target : pending.data.target = checkpoint := by
     cases checkpoint
-    cases dataTarget : attestation.data.target
+    cases dataTarget : pending.data.target
     rw [dataTarget] at epochEq targetRoot
     simp only at epochEq targetRoot
     rw [epochEq, targetRoot]
-  have vote : SignedVote config checks start ⟨fork', state⟩ index attestation.data :=
-    ⟨fork', engine, block, validateResult, blockState, post, first, site, recorded, pre, suf,
-      attestation, indexed, blockHead, blockNotDue, applied, blockTail, votesKept, split, prefixOk,
-      siteOk, reads, rfl, indexedOk,
-      by rw [attesting]; exact List.mem_toArray.mpr (mem_sortedSet.mpr inSigners),
-      indexedData, valid, source⟩
   rw [← cachedEpoch, ← cachedPrevious] at recent
-  exact .inr ⟨attestation.data, target, active, vote,
+  exact .inr ⟨pending.data, target, activeCached, vote,
     vote.source_link (by rw [target]) cachedOk later recent⟩
 
 /-- `WeighingCall.pending_voters_signed` for a call that `JustifiedBy` names. -/
