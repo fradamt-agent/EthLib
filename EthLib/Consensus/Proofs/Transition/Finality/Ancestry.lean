@@ -203,6 +203,54 @@ theorem finality_observations_append {cfg : Config} {checks : SignatureChecks}
       unfold finalityRuns at shared
       simpa only [takeEq, List.foldlM_append, shared, bind, Except.bind] using member
 
+/-- Extending a history retains all observations of its original prefix. -/
+theorem finality_observations_prefix {cfg : Config} {checks : SignatureChecks}
+    {eng : ExecutionEngine p .phase0} {s t : FinalityState p}
+    {earlier : List (FinalityBlock p)} (rest : List (FinalityBlock p))
+    (member : t ∈ finalityObservations cfg checks eng s earlier) :
+    t ∈ finalityObservations cfg checks eng s (earlier ++ rest) := by
+  simp only [finalityObservations, List.mem_cons, List.mem_flatMap] at member
+  rcases member with rfl | ⟨⟨block, i⟩, listed, member⟩
+  · exact List.mem_cons_self
+  have index := List.mk_mem_zipIdx_iff_getElem?.mp listed
+  have inside := (List.getElem?_eq_some_iff.mp index).1
+  apply List.mem_cons_of_mem
+  apply List.mem_flatMap.mpr
+  refine ⟨(block, i), List.mk_mem_zipIdx_iff_getElem?.mpr ?_, ?_⟩
+  · simpa only [List.getElem?_append_left inside] using index
+  · simpa only [List.take_append_of_le_length (by omega : i ≤ earlier.length)] using member
+
+/-- Every hash input retained by smaller state and block pools is retained by larger pools. -/
+theorem finalityMessages_mono {ss tt : List (FinalityState p)}
+    {bs cs : List (FinalityBlock p)}
+    (states : ∀ s ∈ ss, s ∈ tt) (blocks : ∀ b ∈ bs, b ∈ cs)
+    {message : Bytes} (member : message ∈ finalityMessages ss bs) :
+    message ∈ finalityMessages tt cs := by
+  simp only [finalityMessages, List.mem_append, List.mem_flatMap] at member ⊢
+  rcases member with ⟨s, listed, input⟩ | ⟨b, listed, input⟩
+  · exact .inl ⟨s, states s listed, input⟩
+  · exact .inr ⟨b, blocks b listed, input⟩
+
+/-- Zero-root evidence remains checkable when the frozen pools are extended. -/
+theorem FinalityZeroRootFound.mono {ss tt : List (FinalityState p)}
+    {bs cs : List (FinalityBlock p)}
+    (states : ∀ s ∈ ss, s ∈ tt) (blocks : ∀ b ∈ bs, b ∈ cs)
+    (found : FinalityZeroRootFound ss bs) : FinalityZeroRootFound tt cs := by
+  obtain ⟨s, listed, tree, message, zero, traced, member, retained, width, digest⟩ := found
+  exact ⟨s, states s listed, tree, message, zero, traced, member,
+    finalityMessages_mono states blocks retained, width, digest⟩
+
+/-- A collision in smaller pools makes the larger pools' executable search succeed. -/
+theorem FinalityCollisionFound.mono {ss tt : List (FinalityState p)}
+    {bs cs : List (FinalityBlock p)}
+    (states : ∀ s ∈ ss, s ∈ tt) (blocks : ∀ b ∈ bs, b ∈ cs)
+    (found : FinalityCollisionFound ss bs) : FinalityCollisionFound tt cs := by
+  obtain ⟨x, y, searched, collision⟩ := found
+  have members := findMessageCollision_valid searched
+  exact finalityCollisionFound_of_messages
+    (finalityMessages_mono states blocks members.1)
+    (finalityMessages_mono states blocks members.2.1) collision
+
 /-- Every successful block output at its original prefix belongs to the history observations. -/
 theorem finality_observations_block_output {cfg : Config} {checks : SignatureChecks}
     {eng : ExecutionEngine p .phase0} {s before after : FinalityState p}
