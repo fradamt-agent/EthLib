@@ -5,11 +5,11 @@ public import EthLib.Consensus.Proofs.Transition.Finality.Definitions
 /-!
 # Phase 0 slashing credit ledger
 
-The ledger follows `process_proposer_slashing` and `process_attester_slashing`.
+The ledger follows `processProposerSlashing` and `processAttesterSlashing`.
 
-Each entry retains the states on either side of the actual `slash_validator` call.
+Each entry retains the states on either side of the actual `slashValidator` call.
 
-Source: consensus-specs, Phase 0 beacon-chain, the three functions above.
+Each newly slashed validator pays its effective balance divided by the whistleblower quotient.
 -/
 
 @[expose] public section
