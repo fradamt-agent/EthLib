@@ -306,33 +306,24 @@ The voter is a member of the attestation's committee, so it is active in the che
 That data has the checkpoint as target, since the call compares the target root.
 
 Its source is the call's source, except for a target in epoch 1, as from Altair. -/
-theorem JustifiedBy.pending_voters_signed {start after : ForkedBeaconState preset}
-    {checkpoint : Checkpoint}
+theorem WeighingCall.pending_voters_signed {start after : ForkedBeaconState preset}
+    {fork : Fork} {state cached weighed next : BeaconState preset fork}
+    {voters : List ValidatorIndex} {checkpoint : Checkpoint}
     (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
-    (justified : JustifiedBy config checks start after checkpoint) :
-    ∃ (fork : Fork) (state cached : BeaconState preset fork) (voters : List ValidatorIndex),
-      Reaches config checks start ⟨fork, state⟩ ∧
-      Reaches config checks ⟨fork, state⟩ after ∧ processSlot state = .ok cached ∧
-      GENESIS_EPOCH + 1 < getCurrentEpoch cached ∧
-      (checkpoint.epoch = getPreviousEpoch cached ∨ checkpoint.epoch = getCurrentEpoch cached) ∧
-      TargetVoters cached checkpoint.epoch voters ∧ PassesThreshold cached voters ∧
-      getBlockRoot cached checkpoint.epoch = .ok checkpoint.root ∧
-      (fork < .altair → ∀ index ∈ voters,
-        (∃ pending, PendingAtStart start pending) ∨
-        ∃ data, data.target = checkpoint ∧
-          index ∈ getActiveValidatorIndices cached checkpoint.epoch ∧
-          SignedVote config checks start ⟨fork, state⟩ index data ∧
-          (data.source = recordSource cached checkpoint.epoch ∨
-            (checkpoint.epoch.toNat = 1 ∧ ∃ (fork' : Fork) (epochOne : BeaconState preset fork'),
-              Reaches config checks start ⟨fork', epochOne⟩ ∧
-              Reaches config checks ⟨fork', epochOne⟩ ⟨fork, state⟩ ∧
-              (getCurrentEpoch epochOne).toNat = 1 ∧
-              data.source = epochOne.currentJustifiedCheckpoint))) := by
-  obtain ⟨fork, state, cached, _, next, voters, head, notDue, nextOk, tail, _, cachedOk, _, later,
-    recent, counted, passes, rootOk⟩ := justified
-  refine ⟨fork, state, cached, voters, head,
-    (Reaches.refl _).step (.slot notDue nextOk) |>.trans tail, cachedOk, later, recent, counted,
-    passes, rootOk, fun before index member => ?_⟩
+    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    fork < .altair → ∀ index ∈ voters,
+      (∃ pending, PendingAtStart start pending) ∨
+      ∃ data, data.target = checkpoint ∧
+        index ∈ getActiveValidatorIndices cached checkpoint.epoch ∧
+        SignedVote config checks start ⟨fork, state⟩ index data ∧
+        (data.source = recordSource cached checkpoint.epoch ∨
+          (checkpoint.epoch.toNat = 1 ∧ ∃ (fork' : Fork) (epochOne : BeaconState preset fork'),
+            Reaches config checks start ⟨fork', epochOne⟩ ∧
+            Reaches config checks ⟨fork', epochOne⟩ ⟨fork, state⟩ ∧
+            (getCurrentEpoch epochOne).toNat = 1 ∧
+            data.source = epochOne.currentJustifiedCheckpoint)) := by
+  obtain ⟨head, _, nextOk, _, _, cachedOk, _, later, recent, counted, _, rootOk⟩ := call
+  intro before index member
   simp only [TargetVoters, not_le_of_before before (Nat.le_refl _), ↓reduceDIte] at counted
   obtain ⟨attestations, matching, unslashed⟩ := counted
   obtain ⟨pending, pendingMember, signers, signersOk, inSigners⟩ :=
@@ -450,6 +441,33 @@ theorem JustifiedBy.pending_voters_signed {start after : ForkedBeaconState prese
   exact .inr ⟨attestation.data, target, active, vote,
     vote.source_link (by rw [target]) cachedOk later recent⟩
 
+/-- `WeighingCall.pending_voters_signed` for a call that `JustifiedBy` names. -/
+theorem JustifiedBy.pending_voters_signed {start after : ForkedBeaconState preset}
+    {checkpoint : Checkpoint}
+    (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (justified : JustifiedBy config checks start after checkpoint) :
+    ∃ (fork : Fork) (state cached : BeaconState preset fork) (voters : List ValidatorIndex),
+      Reaches config checks start ⟨fork, state⟩ ∧
+      Reaches config checks ⟨fork, state⟩ after ∧ processSlot state = .ok cached ∧
+      GENESIS_EPOCH + 1 < getCurrentEpoch cached ∧
+      (checkpoint.epoch = getPreviousEpoch cached ∨ checkpoint.epoch = getCurrentEpoch cached) ∧
+      TargetVoters cached checkpoint.epoch voters ∧ PassesThreshold cached voters ∧
+      getBlockRoot cached checkpoint.epoch = .ok checkpoint.root ∧
+      (fork < .altair → ∀ index ∈ voters,
+        (∃ pending, PendingAtStart start pending) ∨
+        ∃ data, data.target = checkpoint ∧
+          index ∈ getActiveValidatorIndices cached checkpoint.epoch ∧
+          SignedVote config checks start ⟨fork, state⟩ index data ∧
+          (data.source = recordSource cached checkpoint.epoch ∨
+            (checkpoint.epoch.toNat = 1 ∧ ∃ (fork' : Fork) (epochOne : BeaconState preset fork'),
+              Reaches config checks start ⟨fork', epochOne⟩ ∧
+              Reaches config checks ⟨fork', epochOne⟩ ⟨fork, state⟩ ∧
+              (getCurrentEpoch epochOne).toNat = 1 ∧
+              data.source = epochOne.currentJustifiedCheckpoint))) := by
+  obtain ⟨fork, state, cached, _, _, voters, call⟩ := justified
+  exact ⟨fork, state, cached, voters, call.head, call.toAfter, call.cachedOk, call.later,
+    call.recent, call.counted, call.passes, call.rootOk, call.pending_voters_signed lookahead⟩
+
 /-! ## From genesis -/
 
 /-- A deposit at genesis adds no vote. -/
@@ -497,6 +515,29 @@ theorem genesis_epochPending {forked : ForkedBeaconState preset}
 
 The voter's data has the checkpoint as target and the call's source as source, with no exception.
 -/
+theorem WeighingCall.pending_voters_signed_of_genesis {start after : ForkedBeaconState preset}
+    {fork : Fork} {state cached weighed next : BeaconState preset fork}
+    {voters : List ValidatorIndex} {checkpoint : Checkpoint}
+    (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (genesis : Genesis config checks start)
+    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    fork < .altair → ∀ index ∈ voters,
+      ∃ data, data.target = checkpoint ∧
+        index ∈ getActiveValidatorIndices cached checkpoint.epoch ∧
+        SignedVote config checks start ⟨fork, state⟩ index data ∧
+        data.source = recordSource cached checkpoint.epoch := by
+  intro before index member
+  rcases call.pending_voters_signed lookahead before index member with
+    ⟨pending, startBefore, current, held⟩ | ⟨data, target, active, signed, source⟩
+  · rw [genesis_epochPending genesis startBefore current] at held
+    simp at held
+  refine ⟨data, target, active, signed, ?_⟩
+  rcases source with same | exception
+  · exact same
+  · exact recordSource_of_epochOne ⟨start, genesis, .refl _⟩ call.cachedOk call.later call.recent
+      exception
+
+/-- `WeighingCall.pending_voters_signed_of_genesis` for a call that `JustifiedBy` names. -/
 theorem JustifiedBy.pending_voters_signed_of_genesis {start after : ForkedBeaconState preset}
     {checkpoint : Checkpoint}
     (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
@@ -514,18 +555,9 @@ theorem JustifiedBy.pending_voters_signed_of_genesis {start after : ForkedBeacon
           index ∈ getActiveValidatorIndices cached checkpoint.epoch ∧
           SignedVote config checks start ⟨fork, state⟩ index data ∧
           data.source = recordSource cached checkpoint.epoch) := by
-  obtain ⟨fork, state, cached, voters, head, toAfter, cachedOk, later, recent, counted, passes,
-    rootOk, signers⟩ := justified.pending_voters_signed lookahead
-  refine ⟨fork, state, cached, voters, head, toAfter, cachedOk, later, recent, counted, passes,
-    rootOk, fun before index member => ?_⟩
-  rcases signers before index member with ⟨pending, startBefore, current, held⟩ |
-    ⟨data, target, active, signed, source⟩
-  · rw [genesis_epochPending genesis startBefore current] at held
-    simp at held
-  refine ⟨data, target, active, signed, ?_⟩
-  rcases source with same | exception
-  · exact same
-  · exact recordSource_of_epochOne ⟨start, genesis, .refl _⟩ cachedOk later recent exception
-
+  obtain ⟨fork, state, cached, _, _, voters, call⟩ := justified
+  exact ⟨fork, state, cached, voters, call.head, call.toAfter, call.cachedOk, call.later,
+    call.recent, call.counted, call.passes, call.rootOk,
+    call.pending_voters_signed_of_genesis lookahead genesis⟩
 
 end EthLib.Consensus

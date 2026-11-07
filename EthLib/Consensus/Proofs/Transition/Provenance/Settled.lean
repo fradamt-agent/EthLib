@@ -236,6 +236,31 @@ The call's source for the checkpoint's epoch is one of the start's checkpoints, 
 chain justified it.
 
 Its epoch is below the checkpoint's. -/
+theorem WeighingCall.source {start after : ForkedBeaconState preset} {fork : Fork}
+    {state cached weighed next : BeaconState preset fork} {voters : List ValidatorIndex}
+    {checkpoint : Checkpoint} (reachable : Reachable config checks start)
+    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    JustifiedOrStart config checks start after (recordSource cached checkpoint.epoch) ∧
+      (recordSource cached checkpoint.epoch).epoch.toNat < checkpoint.epoch.toNat := by
+  have head := call.head
+  have toAfter := call.toAfter
+  have cachedOk := call.cachedOk
+  have stateReachable : Reachable config checks ⟨fork, state⟩ := reachable.reaches head
+  have cachedSame : cached.previousJustifiedCheckpoint = state.previousJustifiedCheckpoint ∧
+      cached.currentJustifiedCheckpoint = state.currentJustifiedCheckpoint := by
+    obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+    exact ⟨rfl, rfl⟩
+  obtain ⟨-, previousJustified, currentJustified⟩ := head.checkpoints
+  refine ⟨?_, recordSource_epoch_lt stateReachable cachedOk call.later call.recent⟩
+  unfold recordSource
+  rw [cachedSame.1, cachedSame.2]
+  split
+  · exact currentJustified.extendChain toAfter
+  · exact previousJustified.extendChain toAfter
+
+/-- The source of a weighing call is justified, and earlier than its target, for some call.
+
+This is `WeighingCall.source` for a call that `JustifiedBy` names. -/
 theorem JustifiedBy.source {start after : ForkedBeaconState preset} {checkpoint : Checkpoint}
     (reachable : Reachable config checks start)
     (justified : JustifiedBy config checks start after checkpoint) :
@@ -245,23 +270,9 @@ theorem JustifiedBy.source {start after : ForkedBeaconState preset} {checkpoint 
       (checkpoint.epoch = getPreviousEpoch cached ∨ checkpoint.epoch = getCurrentEpoch cached) ∧
       JustifiedOrStart config checks start after (recordSource cached checkpoint.epoch) ∧
       (recordSource cached checkpoint.epoch).epoch.toNat < checkpoint.epoch.toNat := by
-  obtain ⟨fork, state, cached, _, next, _, head, notDue, nextOk, tail, _, cachedOk, _, later,
-    recent, _⟩ := justified
-  have toAfter : Reaches config checks ⟨fork, state⟩ after :=
-    ((Reaches.refl _).step (.slot notDue nextOk)).trans tail
-  have stateReachable : Reachable config checks ⟨fork, state⟩ := reachable.reaches head
-  have cachedSame : cached.previousJustifiedCheckpoint = state.previousJustifiedCheckpoint ∧
-      cached.currentJustifiedCheckpoint = state.currentJustifiedCheckpoint := by
-    obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
-    exact ⟨rfl, rfl⟩
-  obtain ⟨-, previousJustified, currentJustified⟩ := head.checkpoints
-  refine ⟨fork, state, cached, head, toAfter, cachedOk, recent, ?_, ?_⟩
-  · unfold recordSource
-    rw [cachedSame.1, cachedSame.2]
-    split
-    · exact currentJustified.extendChain toAfter
-    · exact previousJustified.extendChain toAfter
-  · exact recordSource_epoch_lt stateReachable cachedOk later recent
+  obtain ⟨fork, state, cached, _, _, _, call⟩ := justified
+  exact ⟨fork, state, cached, call.head, call.toAfter, call.cachedOk, call.recent,
+    call.source reachable⟩
 
 /-- The source that a vote of epoch 1 read is the call's source, on a chain from genesis.
 
@@ -312,6 +323,30 @@ theorem recordSource_of_epochOne {start : ForkedBeaconState preset} {fork : Fork
 The voter's data has the checkpoint as target and the call's source as source.
 
 Its flag may still come from the upgrade to Altair, or from the start of the chain. -/
+theorem WeighingCall.voters_signed_of_reachable {start after : ForkedBeaconState preset}
+    {fork : Fork} {state cached weighed next : BeaconState preset fork}
+    {voters : List ValidatorIndex} {checkpoint : Checkpoint}
+    (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (reachable : Reachable config checks start)
+    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    .altair ≤ fork → ∀ index ∈ voters,
+      FlagAtStart start index.toNat TIMELY_TARGET_FLAG_INDEX ∨
+      FlagFromAltairUpgrade config checks start ⟨fork, state⟩ index.toNat
+        TIMELY_TARGET_FLAG_INDEX checkpoint.epoch ∨
+      ∃ data, data.target = checkpoint ∧
+        SignedTarget config checks start ⟨fork, state⟩ index data ∧
+        data.source = recordSource cached checkpoint.epoch := by
+  intro altair index member
+  rcases call.voters_signed wide altair index member with atStart | upgraded |
+    ⟨data, target, signed, source⟩
+  · exact .inl atStart
+  · exact .inr (.inl upgraded)
+  refine .inr (.inr ⟨data, target, signed, ?_⟩)
+  rcases source with same | exception
+  · exact same
+  · exact recordSource_of_epochOne reachable call.cachedOk call.later call.recent exception
+
+/-- `WeighingCall.voters_signed_of_reachable` for a call that `JustifiedBy` names. -/
 theorem JustifiedBy.voters_signed_of_reachable {start after : ForkedBeaconState preset}
     {checkpoint : Checkpoint}
     (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
@@ -331,16 +366,8 @@ theorem JustifiedBy.voters_signed_of_reachable {start after : ForkedBeaconState 
         ∃ data, data.target = checkpoint ∧
           SignedTarget config checks start ⟨fork, state⟩ index data ∧
           data.source = recordSource cached checkpoint.epoch) := by
-  obtain ⟨fork, state, cached, voters, head, toAfter, cachedOk, later, recent, counted, passes,
-    rootOk, signers⟩ := justified.voters_signed wide
-  refine ⟨fork, state, cached, voters, head, toAfter, cachedOk, later, recent, counted, passes,
-    rootOk, fun altair index member => ?_⟩
-  rcases signers altair index member with atStart | upgraded | ⟨data, target, signed, source⟩
-  · exact .inl atStart
-  · exact .inr (.inl upgraded)
-  refine .inr (.inr ⟨data, target, signed, ?_⟩)
-  rcases source with same | exception
-  · exact same
-  · exact recordSource_of_epochOne reachable cachedOk later recent exception
+  obtain ⟨fork, state, cached, _, _, voters, call⟩ := justified
+  exact ⟨fork, state, cached, voters, call.head, call.toAfter, call.cachedOk, call.later,
+    call.recent, call.counted, call.passes, call.rootOk, call.voters_signed_of_reachable wide reachable⟩
 
 end EthLib.Consensus

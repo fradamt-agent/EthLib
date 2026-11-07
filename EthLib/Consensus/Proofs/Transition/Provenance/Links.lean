@@ -129,24 +129,18 @@ Or its root is an ancestor of the checkpoint's root, along the parent links of t
 blocks.
 
 Or a state of the chain has the zero root. -/
-theorem JustifiedBy.source_ancestor {start after : ForkedBeaconState preset}
+theorem WeighingCall.source_ancestor {start after : ForkedBeaconState preset} {fork : Fork}
+    {state cached weighed next : BeaconState preset fork} {voters : List ValidatorIndex}
     {checkpoint : Checkpoint}
     (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (genesis : Genesis config checks start)
-    (justified : JustifiedBy config checks start after checkpoint) :
-    ∃ (fork : Fork) (state cached : BeaconState preset fork),
-      Reaches config checks start ⟨fork, state⟩ ∧
-      Reaches config checks ⟨fork, state⟩ after ∧ processSlot state = .ok cached ∧
-      (checkpoint.epoch = getPreviousEpoch cached ∨ checkpoint.epoch = getCurrentEpoch cached) ∧
-      ((recordSource cached checkpoint.epoch).root = Vector.replicate 32 0 ∨
-        ChainAncestor config checks start after (recordSource cached checkpoint.epoch).root
-          checkpoint.root ∨
-        ZeroRootFound config checks start after) := by
-  obtain ⟨fork, state, cached, _, next, _, head, notDue, nextOk, tail, _, cachedOk, _, later,
-    recent, _, _, rootOk⟩ := justified
-  have toAfter : Reaches config checks ⟨fork, state⟩ after :=
-    ((Reaches.refl _).step (.slot notDue nextOk)).trans tail
-  refine ⟨fork, state, cached, head, toAfter, cachedOk, recent, ?_⟩
+    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    (recordSource cached checkpoint.epoch).root = Vector.replicate 32 0 ∨
+      ChainAncestor config checks start after (recordSource cached checkpoint.epoch).root
+        checkpoint.root ∨
+      ZeroRootFound config checks start after := by
+  have toAfter := call.toAfter
+  obtain ⟨head, _, _, _, _, cachedOk, _, later, recent, _, _, rootOk⟩ := call
   obtain ⟨startSlot, startPrevious, startCurrent, startFinalized⟩ := genesis_state genesis
   have cachedSame : cached.previousJustifiedCheckpoint = state.previousJustifiedCheckpoint ∧
       cached.currentJustifiedCheckpoint = state.currentJustifiedCheckpoint ∧
@@ -184,6 +178,24 @@ theorem JustifiedBy.source_ancestor {start after : ForkedBeaconState preset}
     read' below' near' read below near with ancestor | zero
   · exact .inl (ancestor.extendChain toAfter)
   · exact .inr (zero.extendChain toAfter)
+
+/-- `WeighingCall.source_ancestor` for a call that `JustifiedBy` names. -/
+theorem JustifiedBy.source_ancestor {start after : ForkedBeaconState preset}
+    {checkpoint : Checkpoint}
+    (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (genesis : Genesis config checks start)
+    (justified : JustifiedBy config checks start after checkpoint) :
+    ∃ (fork : Fork) (state cached : BeaconState preset fork),
+      Reaches config checks start ⟨fork, state⟩ ∧
+      Reaches config checks ⟨fork, state⟩ after ∧ processSlot state = .ok cached ∧
+      (checkpoint.epoch = getPreviousEpoch cached ∨ checkpoint.epoch = getCurrentEpoch cached) ∧
+      ((recordSource cached checkpoint.epoch).root = Vector.replicate 32 0 ∨
+        ChainAncestor config checks start after (recordSource cached checkpoint.epoch).root
+          checkpoint.root ∨
+        ZeroRootFound config checks start after) := by
+  obtain ⟨fork, state, cached, _, _, _, call⟩ := justified
+  exact ⟨fork, state, cached, call.head, call.toAfter, call.cachedOk, call.recent,
+    call.source_ancestor wide genesis⟩
 
 /-- A checkpoint that a call justified is read again at the end of the chain, while still in
 the buffer. -/
@@ -291,5 +303,16 @@ theorem JustifiedBy.target_nonzero {start after : ForkedBeaconState preset}
     exact .inr ⟨slot, fork', state', cached', ⟨atSlot, cachedOk', next', nextOk', notDue', head',
       toAfter⟩, zero ▸ rootOk'⟩
   · exact .inl zero
+
+/-- `JustifiedBy.target_nonzero` for one named call. -/
+theorem WeighingCall.target_nonzero {start after : ForkedBeaconState preset} {fork : Fork}
+    {state cached weighed next : BeaconState preset fork} {voters : List ValidatorIndex}
+    {checkpoint : Checkpoint}
+    (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint)
+    (fromStart : start.state.slot.toNat ≤
+      checkpoint.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat) :
+    checkpoint.root ≠ Vector.replicate 32 0 ∨ ZeroHeaderFound config checks start after :=
+  call.justifiedBy.target_nonzero wide fromStart
 
 end EthLib.Consensus
