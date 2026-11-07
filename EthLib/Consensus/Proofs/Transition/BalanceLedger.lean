@@ -43,6 +43,10 @@ inductive BalanceFlow where
   | withdrawal
   /-- A reward paid inside a block: to its proposer or to the members of the sync committee. -/
   | blockReward
+  /-- From Electra, the balance above the activation balance, moved back to the pending deposits.
+
+  It moves when a validator switches to compounding credentials. -/
+  | excessQueued
   deriving DecidableEq, Repr
 
 /-- One change to a balance: a credit, or a debit that stops at zero. -/
