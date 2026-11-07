@@ -91,6 +91,8 @@ theorem finality_not_conflicting_zero_horizon {cfg : Config} {checks : Signature
 The two premises are the conclusions of those theorems at this execution.
 
 They impose no new condition on a successful chain.
+
+Collision and zero-root sentinel evidence pass through on the same frozen observation pool.
 -/
 theorem finality_phase0_safety_horizon_of_main_and_churn
     (cfg : Config) (checks : SignatureChecks) (eng : ExecutionEngine p .phase0)
@@ -108,6 +110,8 @@ theorem finality_phase0_safety_horizon_of_main_and_churn
         2 * finalityDeficit c + 2 * finalityAdditions c ss + 2 * finalityExits c ss +
         6 * finalityPreviousGap ss + 6 * p.EFFECTIVE_BALANCE_INCREMENT.toNat) ∨
       FinalityCollisionFound (finalityObservations cfg checks eng g common ++ ss)
+        (common ++ a ++ b) ∨
+      FinalityZeroRootFound (finalityObservations cfg checks eng g common ++ ss)
         (common ++ a ++ b))
     (churn : ∀ (after : FinalityState p) (bs : List (FinalityBlock p)),
       finalityRuns cfg checks eng c bs after →
@@ -122,12 +126,14 @@ theorem finality_phase0_safety_horizon_of_main_and_churn
       3 * (finalitySlashableStake cfg checks eng c a b + finalityLoss c ss) +
         finalityHorizonCorrection cfg c n) ∨
     FinalityCollisionFound (finalityObservations cfg checks eng g common ++ ss)
+      (common ++ a ++ b) ∨
+    FinalityZeroRootFound (finalityObservations cfg checks eng g common ++ ss)
       (common ++ a ++ b) := by
   by_cases zero : n = 0
   · subst n
     exact False.elim (finality_not_conflicting_zero_horizon
       leftRun rightRun leftHorizon rightHorizon conflict)
-  obtain bound | collision := main
+  obtain bound | evidence := main
   · left
     obtain ⟨addedLeft, exitedLeft, gapLeft⟩ := churn left a leftRun leftHorizon
     obtain ⟨addedRight, exitedRight, gapRight⟩ := churn right b rightRun rightHorizon
@@ -151,6 +157,6 @@ theorem finality_phase0_safety_horizon_of_main_and_churn
       simp only [finalityHorizonCorrection, ite_eq_right zero]
       omega
     omega
-  · exact Or.inr collision
+  · exact Or.inr evidence
 
 end EthLib.Consensus
