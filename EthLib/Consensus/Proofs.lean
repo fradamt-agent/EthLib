@@ -84,6 +84,7 @@ public import EthLib.Consensus.Proofs.Transition.BuilderPayments
 public import EthLib.Consensus.Proofs.Transition.BuilderRequests
 public import EthLib.Consensus.Proofs.Transition.ChurnQueues
 public import EthLib.Consensus.Proofs.Transition.DepositChurn
+public import EthLib.Consensus.Proofs.Transition.DepositCredits
 public import EthLib.Consensus.Proofs.Transition.EffectiveBalanceCap
 public import EthLib.Consensus.Proofs.Transition.EffectiveBalanceCeiling
 public import EthLib.Consensus.Proofs.Transition.EpochJustification
