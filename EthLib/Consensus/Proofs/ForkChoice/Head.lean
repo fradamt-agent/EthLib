@@ -580,6 +580,96 @@ theorem isAncestor_getHead (before : fork < .glamsterdam) {head : ForkChoiceNode
     simp [isAncestor, block_ok_iff.mpr justifiedFound, walked, later, bind, Except.bind, pure,
       Except.pure]
 
+/-- From Gloas, the walk from a known node ends at a node whose ancestor at the start's slot has
+the start's root.
+
+The payload status of that ancestor can differ from the start's. -/
+theorem getAncestor_getHeadFrom_of_gloas (gloas : .glamsterdam ≤ fork)
+    {nodes : List ForkChoiceNode} {start head : ForkChoiceNode}
+    (walk : store.getHeadFrom config nodes start = .ok head)
+    {startBlock : BeaconBlock preset fork} (found : store.blocks[start.root]? = some startBlock) :
+    ∃ ancestor, store.getAncestor head startBlock.slot = .ok ancestor ∧
+      ancestor.root = start.root := by
+  induction start using getHeadFrom.induct store generalizing startBlock with
+  | _ start ih =>
+    rw [getHeadFrom] at walk
+    cases chosen : store.heaviestChild config nodes start with
+    | error e => simp [chosen, bind, Except.bind] at walk
+    | ok result =>
+      cases result with
+      | none =>
+        simp [chosen, bind, Except.bind, pure, Except.pure] at walk
+        subst walk
+        exact ⟨_, getAncestor_of_le found (UInt64.le_refl _), rfl⟩
+      | some child =>
+        simp only [chosen, bind, Except.bind] at walk
+        split at walk
+        · rename_i lower
+          obtain ⟨children, weighted, hc, hw, choice⟩ := heaviestChild_eq chosen
+          obtain ⟨key, mem, -⟩ := chooseHeaviest_some choice
+          obtain ⟨source, member, pair⟩ := mapM_ok_mem hw _ mem
+          obtain ⟨rfl, -⟩ := weighNode_ok_iff.mp pair
+          replace member := (List.mem_filter.mp member).1
+          dsimp only at member
+          by_cases pending : start.payloadStatus = .pending
+          · -- The child is the empty or the full node of the same block.
+            rw [getNodeChildren_of_pending gloas pending, Except.ok.injEq] at hc
+            subst hc
+            have sameRoot : child.root = start.root := by
+              simp only [List.mem_cons] at member
+              rcases member with rfl | member
+              · rfl
+              · split at member
+                · rw [List.mem_singleton.mp member]
+                · cases member
+            obtain ⟨ancestor, walked, root⟩ :=
+              ih child lower walk (startBlock := startBlock) (sameRoot ▸ found)
+            exact ⟨ancestor, walked, root.trans sameRoot⟩
+          · -- The child is the pending node of a block that builds on the start.
+            obtain ⟨childPending, childBlock, parent, childFound, parentRoot, parentFound, -⟩ :=
+              (mem_getNodeChildren_of_gloas gloas pending hc).mp member
+            rw [found, Option.some.injEq] at parentFound
+            subst parentFound
+            -- A lower rank from an empty or full node to a pending node is a higher slot.
+            have higher : startBlock.slot < childBlock.slot := by
+              simp only [nodeRank, childFound, found, childPending, pending, ↓reduceIte] at lower
+              have := childBlock.slot.toNat_lt
+              have := startBlock.slot.toNat_lt
+              rw [UInt64.lt_iff_toNat_lt]
+              omega
+            obtain ⟨upper, walked, upperRoot⟩ := ih child lower walk childFound
+            have upperFound : store.blocks[upper.root]? = some childBlock := upperRoot ▸ childFound
+            rw [getAncestor_trans (UInt64.le_of_lt higher) walked,
+              getAncestor_step upperFound (UInt64.not_le.mpr higher)
+                (parentRoot ▸ found) higher, parentRoot]
+            exact ⟨_, getAncestor_of_le (node := ⟨start.root, _⟩) found (UInt64.le_refl _), rfl⟩
+        · cases walk
+
+/-- At every fork, the head descends from the pending node of the justified checkpoint block. -/
+theorem isAncestor_getHead_justified {head : ForkChoiceNode}
+    (found : store.getHead config = .ok head) :
+    store.isAncestor head ⟨store.justifiedCheckpoint.root, .pending⟩ = .ok true := by
+  if before : fork < .glamsterdam then exact isAncestor_getHead before found else
+  have gloas : .glamsterdam ≤ fork := Nat.le_of_not_lt before
+  rw [isAncestor_pending gloas]
+  unfold getHead at found
+  cases tree : store.getFilteredNodeTree config with
+  | error e => simp [tree, bind, Except.bind] at found
+  | ok nodes =>
+    obtain ⟨justifiedBlock, justifiedFound⟩ := filterNodeTree_known tree
+    have walked : ∃ ancestor,
+        store.getAncestor head justifiedBlock.slot = .ok ancestor ∧
+          ancestor.root = store.justifiedCheckpoint.root := by
+      simp only [tree, bind, Except.bind] at found
+      split at found
+      · simp only [pure, Except.pure, Except.ok.injEq] at found
+        subst found
+        exact ⟨_, getAncestor_of_le (node := ⟨_, .empty⟩) justifiedFound (UInt64.le_refl _), rfl⟩
+      · exact getAncestor_getHeadFrom_of_gloas gloas found (start := ⟨_, .pending⟩)
+          justifiedFound
+    obtain ⟨ancestor, walk, root⟩ := walked
+    simp [block_ok_iff.mpr justifiedFound, walk, root, bind, Except.bind, pure, Except.pure]
+
 /-- The head has no child among the viable nodes. -/
 theorem getHead_leaf {head : ForkChoiceNode} (found : store.getHead config = .ok head) :
     ∃ nodes children, store.getFilteredNodeTree config = .ok nodes ∧
