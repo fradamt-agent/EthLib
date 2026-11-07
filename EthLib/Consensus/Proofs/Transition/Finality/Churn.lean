@@ -1492,17 +1492,11 @@ theorem finalityMaxOn_zero {ss : List (FinalityState p)} {f : FinalityState p �
     | succ n ih => simpa only [List.replicate_succ, List.foldl_cons, Nat.max_self] using ih
   exact fold _
 
-/-- All three realized-churn charges vanish for zero slots per epoch. -/
-theorem finality_realized_churn_zero_slots {cfg : Config} {checks : SignatureChecks}
-    {eng : ExecutionEngine p .phase0} {c : FinalityState p} {bs : List (FinalityBlock p)}
-    (zero : p.SLOTS_PER_EPOCH = 0) (inv : Invariant c) :
-    let ss := finalityObservations cfg checks eng c bs
-    finalityAdditions c ss = 0 ∧ finalityExits c ss = 0 ∧ finalityPreviousGap ss = 0 := by
-  dsimp only
-  have active : ∀ s ∈ finalityObservations cfg checks eng c bs, ∀ i,
-      finalityActive s i = finalityActive c i :=
-    fun _ member i => finality_zero_slots_active zero inv member i
-  refine ⟨?_, ?_, ?_⟩
+/-- Equal observed activity flags give no additions and no reference exits. -/
+theorem finality_churn_zero_of_active_eq {c : FinalityState p} {ss : List (FinalityState p)}
+    (active : ∀ s ∈ ss, ∀ i, finalityActive s i = finalityActive c i) :
+    finalityAdditions c ss = 0 ∧ finalityExits c ss = 0 := by
+  constructor
   · apply finalityMaxOn_zero
     intro s member
     apply List.sum_eq_zero_iff_forall_eq_nat.mpr
@@ -1514,24 +1508,87 @@ theorem finality_realized_churn_zero_slots {cfg : Config} {checks : SignatureChe
     apply List.sum_eq_zero_iff_forall_eq_nat.mpr
     intro value inMap
     obtain ⟨i, _, rfl⟩ := List.mem_map.mp inMap
-    have none : (finalityObservations cfg checks eng c bs).any
-        (fun s => !(finalityActive s i)) = !(finalityActive c i) := by
-      cases h : finalityActive c i
-      · apply List.any_eq_true.mpr
-        exact ⟨c, List.mem_cons_self, by simp [h]⟩
-      · apply Bool.eq_false_iff.mpr
-        intro yes
-        obtain ⟨s, member, bad⟩ := List.any_eq_true.mp yes
-        simp only [active s member i, h, Bool.not_true, Bool.false_eq_true] at bad
-    rw [none]
-    cases finalityActive c i <;> rfl
-  · apply finalityMaxOn_zero
-    intro s _
-    apply List.sum_eq_zero_iff_forall_eq_nat.mpr
-    intro value inMap
-    obtain ⟨v, _, rfl⟩ := List.mem_map.mp inMap
-    rw [(finality_epochs_zero zero).1, (finality_epochs_zero zero).2]
-    cases isActiveValidator v 0 <;> rfl
+    by_cases yes : finalityActive c i = true
+    · have absent : ss.any (fun s => !(finalityActive s i)) = false := by
+        apply Bool.eq_false_iff.mpr
+        intro found
+        obtain ⟨s, member, bad⟩ := List.any_eq_true.mp found
+        simp only [active s member i, yes, Bool.not_true, Bool.false_eq_true] at bad
+      simp only [yes, absent, Bool.and_false, Bool.false_eq_true, ↓reduceIte]
+    · simp only [Bool.eq_false_iff.mpr yes, Bool.false_and, Bool.false_eq_true, ↓reduceIte]
+
+/-- All three realized-churn charges vanish for zero slots per epoch. -/
+theorem finality_realized_churn_zero_slots {cfg : Config} {checks : SignatureChecks}
+    {eng : ExecutionEngine p .phase0} {c : FinalityState p} {bs : List (FinalityBlock p)}
+    (zero : p.SLOTS_PER_EPOCH = 0) (inv : Invariant c) :
+    let ss := finalityObservations cfg checks eng c bs
+    finalityAdditions c ss = 0 ∧ finalityExits c ss = 0 ∧ finalityPreviousGap ss = 0 := by
+  dsimp only
+  have active : ∀ s ∈ finalityObservations cfg checks eng c bs, ∀ i,
+      finalityActive s i = finalityActive c i :=
+    fun _ member i => finality_zero_slots_active zero inv member i
+  have charges := finality_churn_zero_of_active_eq active
+  refine ⟨charges.1, charges.2, ?_⟩
+  apply finalityMaxOn_zero
+  intro s _
+  apply List.sum_eq_zero_iff_forall_eq_nat.mpr
+  intro value inMap
+  obtain ⟨v, _, rfl⟩ := List.mem_map.mp inMap
+  rw [(finality_epochs_zero zero).1, (finality_epochs_zero zero).2]
+  cases isActiveValidator v 0 <;> rfl
+
+/-- A successful suffix within C's epoch has no realized entries or reference exits. -/
+theorem finality_realized_churn_zero_horizon {cfg : Config} {checks : SignatureChecks}
+    {eng : ExecutionEngine p .phase0} {c after : FinalityState p}
+    {bs : List (FinalityBlock p)} (inv : Invariant c)
+    (ran : finalityRuns cfg checks eng c bs after)
+    (horizon : (getCurrentEpoch after).toNat - (getCurrentEpoch c).toNat = 0) :
+    let ss := finalityObservations cfg checks eng c bs
+    finalityAdditions c ss = 0 ∧ finalityExits c ss = 0 := by
+  apply finality_churn_zero_of_active_eq
+  intro t member i
+  have reached := finality_observations_active_indices inv (UInt64.le_refl _) member
+  have upper := Nat.div_le_div_right (c := p.SLOTS_PER_EPOCH.toNat)
+    (finality_observations_slot_le ran member)
+  rw [← getCurrentEpoch_toNat, ← getCurrentEpoch_toNat] at upper
+  have lowerSlot : c.slot.toNat ≤ t.slot.toNat := by
+    simp only [finalityObservations, List.mem_cons, List.mem_flatMap] at member
+    rcases member with rfl | ⟨⟨b, j⟩, _, member⟩
+    · omega
+    cases prefixOk : (bs.take j).foldlM
+        (fun s b => stateTransition cfg checks eng s b true) c with
+    | error e => simp [prefixOk] at member
+    | ok before =>
+      have first := stateTransition_chain_slot_le (by decide) prefixOk
+      simp only [prefixOk, List.mem_append, List.mem_cons, List.mem_flatMap] at member
+      rcases member with output | rfl | ⟨count, _, member⟩
+      · cases block : stateTransition cfg checks eng before b true with
+        | error e => simp [block, Except.toOption] at output
+        | ok result =>
+          simp only [block, Except.toOption, Option.toList, List.mem_singleton] at output
+          subst t
+          have second := finality_runs_length (bs := [b]) (by simpa [finalityRuns] using block)
+          omega
+      · exact first
+      · cases slots : advanceSlots cfg count before with
+        | error e => simp [slots] at member
+        | ok atStep =>
+          have moved := advanceSlots_slot count slots
+          simp only [slots, List.mem_cons] at member
+          rcases member with rfl | member
+          · omega
+          · cases cache : processSlot atStep with
+            | error e => simp [cache, Except.toOption] at member
+            | ok cached =>
+              simp only [cache, Except.toOption, Option.toList, List.mem_singleton] at member
+              subst t
+              rw [(frame_processSlot cache).slot]
+              omega
+  have lowerEpoch := Nat.div_le_div_right (c := p.SLOTS_PER_EPOCH.toNat) lowerSlot
+  rw [← getCurrentEpoch_toNat, ← getCurrentEpoch_toNat] at lowerEpoch
+  have equal : getCurrentEpoch t = getCurrentEpoch c := UInt64.toNat_inj.mp (by omega)
+  apply finalityActive_eq_of_indices
+  rwa [equal]
 
 /-- The previous-epoch denominator gap fits one realized exit cohort.
 
