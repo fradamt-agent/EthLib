@@ -2175,8 +2175,17 @@ theorem finalized_source_signers_of_initialized_chain
         3 * sumMarked cached.validators.data (markIndices cached.validators.data.size indices) +
           3 * totalBalanceFloor cached indices ∧
       ∀ index ∈ indices,
+        ∃ pending ∈ attestations,
+        ∃ includedEarlier block includedLater includedAtBlock includedAtSlot,
+          earlierBlocks = includedEarlier ++ block :: includedLater ∧
+          includedEarlier.foldlM
+            (fun state block => stateTransition config checks engine state block true)
+              genesis = .ok includedAtBlock ∧
+          processSlots config includedAtBlock block.message.slot = .ok includedAtSlot ∧
+          PendingIncludedInBlock config checks (by decide) includedAtSlot block.message pending ∧
         ∃ (recorded : BeaconState preset .phase0)
           (indexed : IndexedAttestation preset .phase0),
+          indexed.data = pending.data ∧
           index ∈ indexed.attestingIndices.data ∧
           indexed.data.target.epoch = epoch ∧
           indexed.data.source = after.finalizedCheckpoint ∧
@@ -2207,9 +2216,12 @@ theorem finalized_source_signers_of_initialized_chain
       attestations, indices, isPrefix, prefixOk, advanced, cachedOk, justifiedOk, later,
       matching, indicesOk, raw, ?_⟩
     intro index member
-    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, recorded, _, indexed, _, _, _, signer,
+    obtain ⟨pending, pendingMember, earlier, block, later, includedAtBlock, includedAtSlot,
+      split, includedRun, slotsOk, included, recorded, _, indexed, _, data, _, signer,
       sourceEq, epochEq, _, _, valid⟩ := witnesses index member
-    exact ⟨recorded, indexed, signer, epochEq, sourceEq.trans source, valid⟩
+    exact ⟨pending, pendingMember, earlier, block, later, includedAtBlock, includedAtSlot,
+      split, includedRun, slotsOk, included, recorded, indexed, data, signer, epochEq,
+      sourceEq.trans source, valid⟩
   · obtain ⟨attestations, indices, matching, indicesOk, raw, witnesses⟩ :=
       currentJustification_authenticated_at_cached_slot positive history initialized
         prefixOk advanced cachedOk justifiedOk eligible bit
@@ -2217,9 +2229,161 @@ theorem finalized_source_signers_of_initialized_chain
       attestations, indices, isPrefix, prefixOk, advanced, cachedOk, justifiedOk, later,
       matching, indicesOk, raw, ?_⟩
     intro index member
-    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, recorded, _, indexed, _, _, _, signer,
+    obtain ⟨pending, pendingMember, earlier, block, later, includedAtBlock, includedAtSlot,
+      split, includedRun, slotsOk, included, recorded, _, indexed, _, data, _, signer,
       sourceEq, epochEq, _, _, valid⟩ := witnesses index member
-    exact ⟨recorded, indexed, signer, epochEq, sourceEq.trans source, valid⟩
+    exact ⟨pending, pendingMember, earlier, block, later, includedAtBlock, includedAtSlot,
+      split, includedRun, slotsOk, included, recorded, indexed, data, signer, epochEq,
+      sourceEq.trans source, valid⟩
+
+/-- Inclusion above C's epoch cannot occur in the common prefix of two valid chains.
+
+The conclusion relocates the concrete inclusion witness to the supplied fork suffix. -/
+theorem pending_inclusion_after_common_of_target_gt
+    {engine : ExecutionEngine preset .phase0}
+    {genesis common after atBlock atSlot : BeaconState preset .phase0}
+    {commonBlocks blocks earlier later : List (SignedBeaconBlock preset .phase0)}
+    {block : SignedBeaconBlock preset .phase0} {pending : PendingAttestation preset}
+    (commonRun : commonBlocks.foldlM
+      (fun state block => stateTransition config checks engine state block true)
+        genesis = .ok common)
+    (forkRun : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block true)
+        common = .ok after)
+    (split : commonBlocks ++ blocks = earlier ++ block :: later)
+    (prefixRun : earlier.foldlM
+      (fun state block => stateTransition config checks engine state block true)
+        genesis = .ok atBlock)
+    (slotsOk : processSlots config atBlock block.message.slot = .ok atSlot)
+    (included : PendingIncludedInBlock config checks (by decide) atSlot block.message pending)
+    (laterTarget : getCurrentEpoch common < pending.data.target.epoch) :
+    ∃ earlierFork,
+      earlier = commonBlocks ++ earlierFork ∧
+      blocks = earlierFork ++ block :: later ∧
+      earlierFork.foldlM
+        (fun state block => stateTransition config checks engine state block true)
+          common = .ok atBlock := by
+  have wholeRun : (earlier ++ block :: later).foldlM
+      (fun state block => stateTransition config checks engine state block true)
+        genesis = .ok after := by
+    rw [← split, List.foldlM_append, commonRun]
+    exact forkRun
+  have earlierPrefix : earlier <+: commonBlocks ++ blocks := ⟨block :: later, split.symm⟩
+  have commonPrefix : commonBlocks <+: commonBlocks ++ blocks := List.prefix_append _ _
+  by_cases cut : commonBlocks.length ≤ earlier.length
+  · obtain ⟨earlierFork, eq⟩ := List.prefix_of_prefix_length_le commonPrefix earlierPrefix cut
+    refine ⟨earlierFork, eq.symm, ?_, ?_⟩
+    · rw [← eq, List.append_assoc] at split
+      exact List.append_cancel_left split
+    · rw [← eq, List.foldlM_append, commonRun] at prefixRun
+      exact prefixRun
+  · have throughPrefix : earlier ++ [block] <+: commonBlocks := by
+      apply List.prefix_of_prefix_length_le
+        (show earlier ++ [block] <+: commonBlocks ++ blocks from
+          ⟨later, by simpa only [List.append_assoc, List.singleton_append] using split.symm⟩)
+        commonPrefix
+      simp only [List.length_append, List.length_singleton]
+      omega
+    obtain ⟨remaining, eq⟩ := throughPrefix
+    rw [← eq, List.append_assoc, List.singleton_append, List.foldlM_append, prefixRun]
+      at commonRun
+    obtain ⟨_, equal, commonRun⟩ := bind_ok_iff.mp commonRun
+    cases equal
+    obtain ⟨middle, blockOk, tailOk⟩ := bind_ok_iff.mp commonRun
+    have monotone := stateTransition_chain_slot_le (by decide) tailOk
+    obtain ⟨advanced, _, advancedSlot, _, blockProcessed, _⟩ := stateTransition_ok blockOk
+    have middleSlot : middle.slot = atSlot.slot :=
+      (frame_processBlock (by decide) blockProcessed).slot.trans
+        (advancedSlot.trans (processSlots_slot slotsOk).2.symm)
+    rw [middleSlot] at monotone
+    have epochLe : getCurrentEpoch atSlot ≤ getCurrentEpoch common := by
+      apply UInt64.le_iff_toNat_le.mpr
+      simp only [getCurrentEpoch, computeEpochAtSlot, UInt64.toNat_div]
+      exact Nat.div_le_div_right monotone
+    have targetLe := UInt64.le_trans included.target_epoch_le epochLe
+    exact (UInt64.not_lt.mpr targetLe laterTarget).elim
+
+/-- A finalized source at or above C has only post-C inclusions in its recovered threshold.
+
+The source-epoch premise is separate from the conflicting-root ancestry argument. -/
+theorem finalized_source_signers_after_common
+    {engine : ExecutionEngine preset .phase0}
+    {genesis common after : BeaconState preset .phase0}
+    {eth1BlockHash : Hash32} {eth1Timestamp : UInt64} {deposits : Array Deposit}
+    {commonBlocks blocks : List (SignedBeaconBlock preset .phase0)}
+    (positive : 0 < preset.MIN_SEED_LOOKAHEAD.toNat)
+    (history : preset.MIN_SEED_LOOKAHEAD.toNat + 3 <
+      preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (initialized : initializeBeaconStateFromEth1 config checks eth1BlockHash eth1Timestamp
+      deposits = .ok genesis)
+    (commonRun : commonBlocks.foldlM
+      (fun state block => stateTransition config checks engine state block true)
+        genesis = .ok common)
+    (forkRun : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block true)
+        common = .ok after)
+    (nonGenesis : after.finalizedCheckpoint.epoch ≠ GENESIS_EPOCH)
+    (sourceAfter : getCurrentEpoch common ≤ after.finalizedCheckpoint.epoch) :
+    ∃ earlierBlocks originBlock offset originStep cached justified epoch attestations indices,
+      earlierBlocks <+: commonBlocks ++ blocks ∧
+      earlierBlocks.foldlM
+        (fun state block => stateTransition config checks engine state block true)
+          genesis = .ok originBlock ∧
+      advanceSlots config offset originBlock = .ok originStep ∧
+      processSlot originStep = .ok cached ∧
+      processJustificationAndFinalization cached = .ok justified ∧
+      after.finalizedCheckpoint.epoch.toNat < epoch.toNat ∧
+      getMatchingTargetAttestations cached (by decide) epoch = .ok attestations ∧
+      getUnslashedAttestingIndices cached attestations = .ok indices ∧
+      2 * sumMarked cached.validators.data
+          (markIndices cached.validators.data.size
+            (getActiveValidatorIndices cached (getCurrentEpoch cached))) ≤
+        3 * sumMarked cached.validators.data (markIndices cached.validators.data.size indices) +
+          3 * totalBalanceFloor cached indices ∧
+      ∀ index ∈ indices,
+        ∃ pending ∈ attestations, ∃ earlier block later atBlock atSlot,
+          blocks = earlier ++ block :: later ∧
+          earlier.foldlM
+            (fun state block => stateTransition config checks engine state block true)
+              common = .ok atBlock ∧
+          processSlots config atBlock block.message.slot = .ok atSlot ∧
+          PendingIncludedInBlock config checks (by decide) atSlot block.message pending ∧
+        ∃ (recorded : BeaconState preset .phase0)
+          (indexed : IndexedAttestation preset .phase0),
+          indexed.data = pending.data ∧ index ∈ indexed.attestingIndices.data ∧
+          indexed.data.target.epoch = epoch ∧
+          indexed.data.source = after.finalizedCheckpoint ∧
+          isValidIndexedAttestation config checks recorded indexed = .ok true := by
+  have fullRun : (commonBlocks ++ blocks).foldlM
+      (fun state block => stateTransition config checks engine state block true)
+        genesis = .ok after := by
+    rw [List.foldlM_append, commonRun]
+    exact forkRun
+  obtain ⟨earlierBlocks, originBlock, offset, originStep, cached, justified, epoch, attestations,
+    indices, isPrefix, originRun, advanced, cachedOk, justifiedOk, laterTarget, matching,
+    indicesOk, threshold, signers⟩ :=
+    finalized_source_signers_of_initialized_chain positive history initialized fullRun nonGenesis
+  refine ⟨earlierBlocks, originBlock, offset, originStep, cached, justified, epoch, attestations,
+    indices, isPrefix, originRun, advanced, cachedOk, justifiedOk, laterTarget, matching,
+    indicesOk, threshold, ?_⟩
+  intro index member
+  obtain ⟨pending, pendingMember, earlier, block, later, atBlock, atSlot, split, prefixRun,
+    slotsOk, included, recorded, indexed, data, signer, target, source, valid⟩ :=
+    signers index member
+  obtain ⟨rest, prefixEq⟩ := isPrefix
+  have splitAll : commonBlocks ++ blocks = earlier ++ block :: (later ++ rest) := by
+    rw [← prefixEq, split, List.append_assoc, List.cons_append]
+  have targetGt : getCurrentEpoch common < pending.data.target.epoch := by
+    apply UInt64.lt_iff_toNat_lt.mpr
+    have le := UInt64.le_iff_toNat_le.mp sourceAfter
+    have epochEq : pending.data.target.epoch = epoch := (congrArg (·.target.epoch) data).symm.trans
+      target
+    rw [epochEq]
+    omega
+  obtain ⟨earlierFork, _, forkSplit, forkPrefix⟩ := pending_inclusion_after_common_of_target_gt
+    commonRun forkRun splitAll prefixRun slotsOk included targetGt
+  exact ⟨pending, pendingMember, earlierFork, block, later ++ rest, atBlock, atSlot, forkSplit,
+    forkPrefix, slotsOk, included, recorded, indexed, data, signer, target, source, valid⟩
 
 /-- A candidate state launches the chain exactly when it is late enough.
 

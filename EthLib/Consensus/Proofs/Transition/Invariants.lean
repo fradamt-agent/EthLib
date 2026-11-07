@@ -2344,6 +2344,32 @@ theorem PendingIncludedInBlock.checked {before : fork < .altair}
       exact data.symm
     · cases result
 
+/-- An included Phase 0 attestation cannot target an epoch after its block's slot epoch. -/
+theorem PendingIncludedInBlock.target_epoch_le {before : fork < .altair}
+    {atSlot : BeaconState preset fork} {block : BeaconBlock preset fork}
+    {pending : PendingAttestation preset}
+    (included : PendingIncludedInBlock config checks before atSlot block pending) :
+    pending.data.target.epoch ≤ getCurrentEpoch atSlot := by
+  obtain ⟨header, randao, eth1, proposers, attesters, earlier, attestation, later,
+    inclusion, recorded, headerOk, randaoOk, eth1Ok, proposersOk, attestersOk,
+    _, earlierOk, attestationOk, data, _⟩ := included
+  have earlierFrame := Frame.foldlM
+    (fun _ _ _ ok => frame_processAttestation before ok) earlierOk
+  have attestersFrame := Frame.foldlM
+    (fun _ _ _ ok => frame_processAttesterSlashing ok) attestersOk
+  have proposersFrame := Frame.foldlM
+    (fun _ _ _ ok => frame_processProposerSlashing ok) proposersOk
+  have same : getCurrentEpoch inclusion = getCurrentEpoch atSlot := by
+    simp only [getCurrentEpoch, earlierFrame.slot, attestersFrame.slot,
+      proposersFrame.slot, (frame_processEth1Data eth1Ok).slot,
+      (frame_processRandao randaoOk).slot, (frame_processBlockHeader headerOk).slot]
+  rw [data, ← same]
+  rcases (processAttestation_checks before attestationOk).1 with previous | current
+  · rw [previous]
+    exact getPreviousEpoch_le _
+  · rw [current]
+    exact UInt64.le_refl _
+
 /-- A pending record's inclusion checked the same committee as its block's input state.
 
 Slashings and earlier attestations in the block do not change historical assignments. -/
