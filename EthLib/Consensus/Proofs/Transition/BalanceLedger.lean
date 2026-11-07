@@ -454,7 +454,7 @@ A new key with a valid signature credits a new validator, at the end of the regi
 
 Otherwise the deposit credits nothing.
 
-The registry then stays, or grows by that new validator.
+The registry then stays, or grows by that new validator, which is not withdrawable.
 
 That needs one balance for each validator, and an index that fits 64 bits. -/
 theorem applyPendingDeposit_ledger {deposit : PendingDeposit}
@@ -467,7 +467,7 @@ theorem applyPendingDeposit_ledger {deposit : PendingDeposit}
         target = none ∨ target = some state.validators.data.size) ∧
       (after.validators.data = state.validators.data ∨ ∃ validator,
         after.validators.data = state.validators.data.push validator ∧
-          validator.pubkey = deposit.pubkey) ∧
+          validator.pubkey = deposit.pubkey ∧ validator.withdrawableEpoch = FAR_FUTURE_EPOCH) ∧
       BalanceLedger state after (depositChanges deposit target) := by
   cases known : state.validators.data.findIdx? (·.pubkey == deposit.pubkey) with
   | some j =>
