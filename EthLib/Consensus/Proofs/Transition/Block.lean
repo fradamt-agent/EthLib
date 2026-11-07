@@ -4,7 +4,9 @@ public import EthLib.Base.Proofs.MapM
 public import EthLib.Base.Proofs.Uint64
 public import EthLib.Consensus.Proofs.Accessors
 public import EthLib.Consensus.Proofs.Mutators
+public import EthLib.Consensus.Proofs.Containers.Misc
 public import EthLib.Consensus.Transition.Block
+public import EthLib.Serialization.Proofs.Ssz.Typed.Root
 
 /-!
 # Proofs: the first steps of a block
@@ -546,5 +548,47 @@ theorem sameSizes_processAttesterSlashing {config : Config} {checks : SignatureC
   simp only [pure, Except.pure, Except.ok.injEq] at computed
   obtain ⟨_, _, rfl⟩ := computed
   exact (foldlM_slashIfSlashable _ foldOk).1
+
+/-- A beacon header has no variable-length counts in its SSZ commitment. -/
+theorem beaconBlockHeader_commitmentSized (header : BeaconBlockHeader) :
+    CommitmentSized (desc BeaconBlockHeader) (toValue header) := by
+  apply CommitmentSized.container
+  intro pair member
+  simp only [desc, toValue, SszFields.descs, SszFields.toValues,
+    List.zip_cons_cons, List.zip_nil_left, List.mem_cons, List.not_mem_nil, or_false] at member
+  rcases member with rfl | rfl | rfl | rfl | rfl
+  · exact .uint _ _
+  · exact .uint _ _
+  · exact .byteVector _ _
+  · exact .byteVector _ _
+  · exact .byteVector _ _
+
+/-- Equal header roots give equal headers or an explicit collision in their SHA-256 computations.
+
+The returned search contains only messages actually hashed for these two headers. -/
+theorem beaconBlockHeader_root_binding {left right : BeaconBlockHeader} {root : Root}
+    (leftRoot : hashTreeRoot left = .ok root)
+    (rightRoot : hashTreeRoot right = .ok root) :
+    left = right ∨ ∃ leftTree rightTree,
+      valueTree (desc BeaconBlockHeader) (toValue left) = .ok leftTree ∧
+      valueTree (desc BeaconBlockHeader) (toValue right) = .ok rightTree ∧
+      ∃ x y, findMessageCollision leftTree.messages rightTree.messages = some (x, y) ∧
+        x ∈ leftTree.messages ∧ y ∈ rightTree.messages ∧ MessageCollision x y :=
+  SszType.hashTreeRoot_binding (beaconBlockHeader_commitmentSized left)
+    (beaconBlockHeader_commitmentSized right) leftRoot rightRoot
+
+/-- A processed block's parent root identifies the cached header or exposes a real hash collision.
+
+The other header can come from the competing branch's recorded block history. -/
+theorem processBlockHeader_parent_binding {state after : BeaconState preset fork}
+    {block : BeaconBlock preset fork} {parent : BeaconBlockHeader}
+    (computed : processBlockHeader state block = .ok after)
+    (parentRoot : hashTreeRoot parent = .ok block.parentRoot) :
+    state.latestBlockHeader = parent ∨ ∃ leftTree rightTree,
+      valueTree (desc BeaconBlockHeader) (toValue state.latestBlockHeader) = .ok leftTree ∧
+      valueTree (desc BeaconBlockHeader) (toValue parent) = .ok rightTree ∧
+      ∃ x y, findMessageCollision leftTree.messages rightTree.messages = some (x, y) ∧
+        x ∈ leftTree.messages ∧ y ∈ rightTree.messages ∧ MessageCollision x y :=
+  beaconBlockHeader_root_binding (processBlockHeader_checks computed).2.2.2.1 parentRoot
 
 end EthLib.Consensus
