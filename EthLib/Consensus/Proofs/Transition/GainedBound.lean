@@ -1,7 +1,9 @@
 module
 
+public import Mathlib.Algebra.Order.BigOperators.Group.Finset
 public import EthLib.Consensus.Proofs.Transition.BlockLedger
 public import EthLib.Consensus.Proofs.Transition.ChurnWindows
+public import EthLib.Consensus.Proofs.Transition.EffectiveBalanceCeiling
 
 /-!
 # Proofs: what a balance can gain along a run
@@ -26,10 +28,6 @@ namespace EthLib.Consensus
 open Base Uint64
 
 variable {preset : Preset} {config : Config} {checks : SignatureChecks}
-
-/-- The balance at a position, on natural numbers, or zero past the end. -/
-def balanceAt {fork : Base.Fork} (state : BeaconState preset fork) (index : Nat) : Nat :=
-  ((state.balances.data[index]?).map (·.toNat)).getD 0
 
 /-- `balanceAt` is the balance that ledgers read. -/
 theorem balanceAt_eq_balanceNat {fork : Base.Fork} (state : BeaconState preset fork)
@@ -126,32 +124,69 @@ namespace Run
 
 variable {start : ForkedBeaconState preset}
 
-/-- How much a run raises the balance at a position: the sum of the rise of each step.
+/-- How much a run credits the balance at a position: the sum of the rise of each step.
 
 A step that lowers the balance counts zero. -/
-def rise (index : Nat) : {after : ForkedBeaconState preset} → Run config checks start after → Nat
+def credited (index : Nat) : {after : ForkedBeaconState preset} → Run config checks start after → Nat
   | _, .nil => 0
   | after, .snoc (middle := middle) run _ =>
-    run.rise index + (balanceAt after.state index - balanceAt middle.state index)
+    run.credited index + (balanceAt after.state index - balanceAt middle.state index)
 
-/-- Every balance of a run is at most the balance at the start plus the rise of the run. -/
-theorem balanceAt_le_rise (index : Nat) :
+/-- Every balance of a run is at most the balance at the start plus what the run credits. -/
+theorem balanceAt_le_credited (index : Nat) :
     ∀ {after : ForkedBeaconState preset} (run : Run config checks start after),
       ∀ state ∈ run.states,
-        balanceAt state.state index ≤ balanceAt start.state index + run.rise index
+        balanceAt state.state index ≤ balanceAt start.state index + run.credited index
   | _, .nil, state, member => by
     rw [List.mem_singleton.mp member]
-    simp [rise]
+    simp [credited]
   | after, .snoc (middle := middle) run _, state, member => by
-    have earlier := balanceAt_le_rise index run
+    have earlier := balanceAt_le_credited index run
     have here := earlier middle (end_mem_states run)
     rcases List.mem_append.mp member with member | member
     · have := earlier state member
-      simp only [rise]
+      simp only [credited]
       omega
     · rw [List.mem_singleton.mp member]
-      simp only [rise]
+      simp only [credited]
       omega
+
+/-- An effective balance at the end of a run is at most the larger of the effective balance and
+the balance at the start, plus what the run credits the balance.
+
+It is for a position that holds a validator at the start.
+
+It needs a registry of fewer than `2^64` validators at the end, which holds before Gloas. -/
+theorem effectiveAt_le_credited {after : ForkedBeaconState preset}
+    (run : Run config checks start after) (small : after.state.validators.data.size < 2 ^ 64)
+    (index : Nat) (present : index < start.state.validators.data.size) :
+    effectiveAt after.state index ≤
+      max (effectiveAt start.state index) (balanceAt start.state index) + run.credited index := by
+  obtain ⟨later, found, bound⟩ := run.effectiveBalance_ceiling small index
+    start.state.validators.data[index] (Array.getElem?_eq_getElem present)
+    (max (effectiveAt start.state index) (balanceAt start.state index) + run.credited index)
+    (by simp [effectiveAt, Array.getElem?_eq_getElem present]; omega)
+    (fun state member => by have := balanceAt_le_credited index run state member; omega)
+  simpa [effectiveAt, found] using bound
+
+/-- What the validators at some positions gain in effective balance along a run.
+
+It is at most what their balance exceeds their effective balance at the start, plus what the run
+credits them.
+
+Each position must hold a validator at the start.
+
+It needs a registry of fewer than `2^64` validators at the end, which holds before Gloas. -/
+theorem gained_le {after : ForkedBeaconState preset} (run : Run config checks start after)
+    (small : after.state.validators.data.size < 2 ^ 64) (positions : Finset Nat)
+    (present : ∀ index ∈ positions, index < start.state.validators.data.size) :
+    ∑ index ∈ positions, (effectiveAt after.state index - effectiveAt start.state index) ≤
+      ∑ index ∈ positions,
+        (balanceAt start.state index - effectiveAt start.state index + run.credited index) := by
+  apply Finset.sum_le_sum
+  intro index member
+  have := run.effectiveAt_le_credited small index (present index member)
+  omega
 
 end Run
 
