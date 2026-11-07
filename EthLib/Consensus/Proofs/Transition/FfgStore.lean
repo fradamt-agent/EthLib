@@ -1,6 +1,7 @@
 module
 
 public import EthLib.Consensus.Proofs.ForkChoice.Runs
+public import EthLib.Consensus.Proofs.ForkChoice.StoreConflict
 public import EthLib.Consensus.Proofs.Transition.FfgHistories
 
 /-!
@@ -23,16 +24,17 @@ attestation data that the beacon chain slashes, both checked in blocks of the tw
 
 Otherwise a state or a block header of those chains has the zero root.
 
-The conflict itself is a hypothesis here.
+The pair conflict comes from the store's failed descent check, through the fork-choice proofs.
 
-The store's descent check gives it, or hash evidence, through the fork-choice proofs.
+Its alternatives are hash evidence too: two block headers with one root, or a block whose root is
+zero, which is a SHA-256 output of zero.
 -/
 
 @[expose] public section
 
 namespace EthLib.Consensus
 
-open Base Models Models.Ffg
+open Base Models Models.Ffg Serialization.Ssz SszType
 
 variable {preset : Preset} {config : Config} {checks : SignatureChecks} {fork : Base.Fork}
 
@@ -88,31 +90,112 @@ theorem finalized_of_checkpointFromRuns {anchorState : BeaconState preset fork}
     · exact absurd (by rw [atGenesis]) notGenesis
     · exact ⟨s, head, .inr byCall⟩
 
+/-- The epoch of a checkpoint that a call weighs, times the slots of an epoch, fits in 64 bits:
+it is at most the slot of the call's state. -/
+theorem CallRecord.epoch_fits {start after : ForkedBeaconState preset}
+    {state cached weighed : BeaconState preset fork} {voters : List ValidatorIndex}
+    {c : Checkpoint}
+    (call : CallRecord config checks start after fork state cached weighed voters c) :
+    c.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat < 2 ^ 64 := by
+  have current : c.epoch.toNat ≤ (getCurrentEpoch cached).toNat := by
+    rcases call.recent with h | h
+    · rw [h]
+      exact UInt64.le_iff_toNat_le.mp (getPreviousEpoch_le cached)
+    · rw [h]
+  have slotBound := cached.slot.toNat_lt
+  have epochSlot : (getCurrentEpoch cached).toNat * preset.SLOTS_PER_EPOCH.toNat ≤
+      cached.slot.toNat := by
+    simp only [getCurrentEpoch, computeEpochAtSlot, UInt64.toNat_div]
+    exact Nat.div_mul_le_self _ _
+  calc c.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat
+      ≤ (getCurrentEpoch cached).toNat * preset.SLOTS_PER_EPOCH.toNat :=
+        Nat.mul_le_mul_right _ current
+    _ < 2 ^ 64 := lt_of_le_of_lt epochSlot slotBound
+
+/-- What the store bridge needs of a checkpoint justified on a chain from genesis, off the genesis
+epoch: a nonzero root, a header at or before the first slot of its epoch, and an epoch that fits.
+
+Each holds, or a state or a cached header of the chain has the zero root. -/
+theorem justified_root_facts {g x : ForkedBeaconState preset}
+    (genesis : Genesis config checks g)
+    (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (genesisHeaderSlot : g.state.latestBlockHeader.slot = GENESIS_SLOT) {c : Checkpoint}
+    (notGenesis : c.epoch ≠ GENESIS_EPOCH)
+    (justified : JustifiedOrStart config checks g x c ∨ JustifiedByCall config checks g x c) :
+    (c.root ≠ Vector.replicate 32 0 ∨ ZeroHeaderFound config checks g x) ∧
+      ((∃ header : BeaconBlockHeader, hashTreeRoot header = .ok c.root ∧
+        header.slot.toNat ≤ c.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat) ∨
+        ZeroRootFound config checks g x) ∧
+      c.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat < 2 ^ 64 := by
+  obtain ⟨startSlot, previous, current, finalized⟩ := genesis_state genesis
+  have fromStart : g.state.slot.toNat ≤ c.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat := by
+    rw [startSlot]
+    exact Nat.zero_le _
+  have record : ∃ (fork : Base.Fork) (state cached weighed : BeaconState preset fork)
+      (voters : List ValidatorIndex),
+      CallRecord config checks g x fork state cached weighed voters c := by
+    rcases justified with (rfl | rfl | rfl | ⟨fork, state, cached, weighed, next, voters, call⟩) |
+      ⟨fork, state, cached, weighed, voters, call⟩
+    · exact absurd (by rw [finalized]) notGenesis
+    · exact absurd (by rw [previous]) notGenesis
+    · exact absurd (by rw [current]) notGenesis
+    · exact ⟨fork, state, cached, weighed, voters, call.record⟩
+    · exact ⟨fork, state, cached, weighed, voters, call⟩
+  obtain ⟨fork, state, cached, weighed, voters, call⟩ := record
+  refine ⟨call.target_nonzero wide fromStart, ?_, call.epoch_fits⟩
+  rcases call.root_block wide fromStart with ⟨p, slot, block, below⟩ | ⟨stateRoot, rootOk⟩ |
+    found
+  · obtain ⟨header, rootOk, -, slotEq⟩ := block.header
+    exact .inl ⟨header, rootOk, by rw [slotEq]; exact below⟩
+  · refine .inl ⟨_, rootOk, ?_⟩
+    simp only [genesisHeaderSlot, GENESIS_SLOT]
+    exact Nat.zero_le _
+  · exact .inr found
+
+/-- Hash evidence that the store bridge can find: two block headers with one root, a stored block
+at the zero root, or a block of the chains whose root is zero. -/
+def StoreEvidence (store : Store preset fork) (links : Root → Root → ℕ → Prop) : Prop :=
+  HeaderCollision ∨ (∃ block, store.blocks[(Vector.replicate 32 0 : Root)]? = some block) ∨
+    ∃ parentRoot slot, links parentRoot (Vector.replicate 32 0) slot
+
+variable [NeZero preset.BYTES_PER_LOGS_BLOOM.toNat] [NeZero preset.SYNC_COMMITTEE_SIZE.toNat]
+  [NeZero preset.MAX_COMMITTEES_PER_SLOT.toNat] [NeZero preset.PTC_SIZE.toNat]
+  [NeZero preset.INCLUSION_LIST_COMMITTEE_SIZE.toNat]
+
 open scoped Classical in
 /-- Accountable safety for the checkpoints of a fork-choice store that starts at genesis.
 
 The store's finalized checkpoint `F` is not at the genesis epoch, and its epoch is at most that of
 its justified checkpoint `J`.
 
+Its head computes, and its justified block does not descend from `F` at the epoch of `F`.
+
 Then there are two states `a` and `b` that chains from genesis reached, with `J` justified on the
 chain to `a` and `F` finalized on the chain to `b`, such that the following holds.
 
-If `F` and `J` conflict as epoch-boundary pairs over the parent links of the two chains, then
-validators active in a reference weighing with a third of its stake, less twice the drift bound,
-signed two attestation data that the beacon chain slashes, both checked in blocks of the chains.
+For a reference weighing `ω₀` and a bound `D` on the drift of the calls between the two epochs,
+validators active in `ω₀` with a third of its stake, less `2 * D`, signed two attestation data that
+the beacon chain slashes, both checked in blocks of the chains.
 
-Otherwise a state or a block header of the chains has the zero root. -/
+Otherwise there is hash evidence: a state or a block header of the chains with the zero root, two
+block headers with one root, or a block whose root is zero. -/
 theorem store_accountable_safety {anchorState : BeaconState preset fork}
     {anchorBlock : BeaconBlock preset fork} {store : Store preset fork}
     (genesis : Genesis config checks ⟨fork, anchorState⟩)
+    (genesisHeaderSlot : anchorState.latestBlockHeader.slot = GENESIS_SLOT)
     (wide4 : 4 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (within : ∀ (fork' : Base.Fork) (state : BeaconState preset fork'),
       Reaches config checks ⟨fork, anchorState⟩ ⟨fork', state⟩ → state.RegistryWithinLimit)
     (reachable : Store.ReachableWith config checks anchorState anchorBlock store)
     (notDue : ∀ state : BeaconState preset fork, upgradeDue config ⟨fork, state⟩ = false)
+    (anchorSlot : anchorBlock.slot ≤ anchorState.slot)
+    (anchorParent : anchorBlock.parentRoot = Vector.replicate 32 0)
+    {head : ForkChoiceNode} (headOk : store.getHead config = .ok head)
     (notGenesis : store.finalizedCheckpoint.epoch ≠ GENESIS_EPOCH)
-    (hle : store.finalizedCheckpoint.epoch.toNat ≤ store.justifiedCheckpoint.epoch.toNat) :
+    (hle : store.finalizedCheckpoint.epoch.toNat ≤ store.justifiedCheckpoint.epoch.toNat)
+    (notDescends : store.getCheckpointBlock store.justifiedCheckpoint.root
+      store.finalizedCheckpoint.epoch ≠ .ok store.finalizedCheckpoint.root) :
     ∃ a b : ForkedBeaconState preset,
       OnEither config checks ⟨fork, anchorState⟩ a b a ∧
       OnEither config checks ⟨fork, anchorState⟩ a b b ∧
@@ -121,10 +204,6 @@ theorem store_accountable_safety {anchorState : BeaconState preset fork}
           store.finalizedCheckpoint.epoch.toNat ≤ r.target.epoch.toNat →
           r.target.epoch.toNat ≤ store.justifiedCheckpoint.epoch.toNat →
           Weighing.drift ω₀ r.weighing ≤ D) →
-        Conflicting
-          (EpochBlock.ofCheckpoint (links := historyLinks config checks ⟨fork, anchorState⟩ a b)
-            (slotsPerEpoch := preset.SLOTS_PER_EPOCH.toNat) store.finalizedCheckpoint)
-          (EpochBlock.ofCheckpoint store.justifiedCheckpoint) →
         stake ω₀.stake ω₀.active ≤
           3 * stake ω₀.stake {i ∈ ω₀.active | ∃ data1 data2,
             (i, data1) ∈
@@ -132,7 +211,10 @@ theorem store_accountable_safety {anchorState : BeaconState preset fork}
             (i, data2) ∈
               (historyRefinement (a := a) (b := b) genesis wide4 lookahead within).signed ∧
             isSlashableAttestationData data1 data2 = true} + 2 * D ∨
-          historyEvidence config checks ⟨fork, anchorState⟩ a b := by
+          historyEvidence config checks ⟨fork, anchorState⟩ a b ∨
+          StoreEvidence store (historyLinks config checks ⟨fork, anchorState⟩ a b) := by
+  have wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat := by
+    omega
   obtain ⟨anchorRoot, -, -, justifiedOrigin, finalizedOrigin, -, -⟩ :=
     reachable.checkpointsFromRuns notDue
   have justifiedNotGenesis : store.justifiedCheckpoint.epoch ≠ GENESIS_EPOCH := by
@@ -144,10 +226,45 @@ theorem store_accountable_safety {anchorState : BeaconState preset fork}
     justified_of_checkpointFromRuns genesis rfl justifiedNotGenesis justifiedOrigin
   obtain ⟨sF, headF, finalized⟩ :=
     finalized_of_checkpointFromRuns genesis wide4 rfl notGenesis finalizedOrigin
-  refine ⟨⟨fork, sJ⟩, ⟨fork, sF⟩, ⟨headJ, .inl (.refl _)⟩, ⟨headF, .inr (.refl _)⟩,
-    fun ω₀ D hD conflicting => ?_⟩
-  exact (historyRefinement genesis wide4 lookahead within).accountable_safety_justified
-    ⟨⟨fork, sF⟩, ⟨headF, .inr (.refl _)⟩, finalized⟩
-    ⟨⟨fork, sJ⟩, ⟨headJ, .inl (.refl _)⟩, justified⟩ hle conflicting ω₀ hD
+  let a : ForkedBeaconState preset := ⟨fork, sJ⟩
+  let b : ForkedBeaconState preset := ⟨fork, sF⟩
+  have onA : OnEither config checks ⟨fork, anchorState⟩ a b a := ⟨headJ, .inl (.refl _)⟩
+  have onB : OnEither config checks ⟨fork, anchorState⟩ a b b := ⟨headF, .inr (.refl _)⟩
+  -- The finalized checkpoint is justified on the chain to `b` too.
+  have finalizedJustified :
+      JustifiedOrStart config checks ⟨fork, anchorState⟩ b store.finalizedCheckpoint ∨
+        JustifiedByCall config checks ⟨fork, anchorState⟩ b store.finalizedCheckpoint := by
+    rcases finalized with same | ⟨k, hk, -, cs, h0, -, justifiedAt, -⟩
+    · rw [same]
+      exact .inl headF.checkpoints.1
+    · rw [← h0]
+      exact justifiedAt 0 hk
+  obtain ⟨fNonzero, fHeader, fFits⟩ :=
+    justified_root_facts genesis wide genesisHeaderSlot notGenesis finalizedJustified
+  obtain ⟨jNonzero, -, -⟩ :=
+    justified_root_facts genesis wide genesisHeaderSlot justifiedNotGenesis justified
+  refine ⟨a, b, onA, onB, fun ω₀ D hD => ?_⟩
+  -- Hash evidence on either chain ends the proof.
+  rcases fNonzero with fNonzero | zero
+  swap
+  · exact .inr (.inl ⟨b, onB, .inr zero⟩)
+  rcases jNonzero with jNonzero | zero
+  swap
+  · exact .inr (.inl ⟨a, onA, .inr zero⟩)
+  rcases fHeader with fHeader | found
+  swap
+  · exact .inr (.inl ⟨b, onB, .inl found⟩)
+  rcases reachable.reachable.conflicting_of_not_descends
+      (links := historyLinks config checks ⟨fork, anchorState⟩ a b) anchorSlot anchorParent
+      headOk (fun ⟨_, _, s, block, slotEq⟩ => by
+        obtain ⟨header, rootOk, parent, headerSlot⟩ := block.header
+        exact ⟨header, rootOk, parent, by rw [headerSlot, slotEq]⟩)
+      fFits hle fNonzero jNonzero fHeader notDescends with
+    conflicting | zeroLink | collision | zeroBlock
+  · exact (historyRefinement genesis wide4 lookahead within).accountable_safety_justified
+      ⟨b, onB, finalized⟩ ⟨a, onA, justified⟩ hle conflicting ω₀ hD |>.imp_right .inl
+  · exact .inr (.inr (.inr (.inr zeroLink)))
+  · exact .inr (.inr (.inl collision))
+  · exact .inr (.inr (.inr (.inl zeroBlock)))
 
 end EthLib.Consensus
