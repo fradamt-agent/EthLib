@@ -19,9 +19,15 @@ A vote supports the node that the store gives it.
 
 That is the pending node in the slot of its block, and later the empty or the full node.
 
-The theorem holds away from the payload decisions of the previous slot.
+The empty and the full node of a block of the previous slot are payload decisions.
 
-There the payload committee and the proposer decide, which the model leaves out.
+There the payload committee and the proposer decide: such a node weighs nothing, and the tie
+between the two goes to a tiebreak of their own.
+
+The plain model holds away from these decisions.
+
+The walk of the model by an order with overrides covers them: it gives each decision its weight
+and its tiebreak, and keeps the order of every other node.
 
 The proposer boost counts as one more vote, for the pending node of the boosted block, when the
 store applies the boost.
@@ -412,29 +418,34 @@ theorem mem_children_nodeView {nodes : List ForkChoiceNode} (gloas : .glamsterda
 abbrev nodeOrder : Option Root × Status → Lex (ℕ × ℕ) :=
   nodeKey rootValue
 
-/-- From Gloas, the walk of the store ends where LMD-GHOST over nodes ends, in a model of its
-weights.
+/-- From Gloas, the order in which the store compares two weighed nodes: by weight, then by root
+as bytes, then by tiebreaker. -/
+abbrev weighedKey (y : WeightedNode) : Lex (ℕ × Lex (ℕ × ℕ)) :=
+  toLex (y.2.1.toNat, toLex (rootValue (some y.1.root), y.2.2.toNat))
+
+/-- From Gloas, the walk of the store ends where the walk of the model by a key ends.
 
 The model has the blocks of the view.
 
-Each viable node weighs in the model what the store computes.
+Each viable node has as key the order in which the store weighs it.
 
-No viable node may be a payload decision of the previous slot.
+Two viable children of one node with one key are the same node.
 
 The walk starts from a node in the subtree of the pending node of the justified block. -/
-private theorem getHeadFrom_eq_ghost_of_gloas_of_weights {ν : Type} {V : Finset ν} {w : ν → ℕ}
+private theorem getHeadFrom_eq_ghostBy_of_gloas_of_keys {ν : Type}
     {G : View ν (Option Root × Status) (nodeTree lower)} {nodes : List ForkChoiceNode}
-    (gloas : .glamsterdam ≤ fork)
-    (noDecision : ∀ n ∈ nodes, store.isPreviousSlotPayloadDecision config n = .ok false)
-    (tree : store.getFilteredNodeTree config = .ok nodes)
+    {key : Option Root × Status → Lex (ℕ × Lex (ℕ × ℕ))}
+    (gloas : .glamsterdam ≤ fork) (tree : store.getFilteredNodeTree config = .ok nodes)
     (blocks : G.blocks = (nodeView lower nodes).blocks)
-    (weighs : ∀ {node : ForkChoiceNode} {weightValue : Gwei}, node ∈ nodes →
-      store.getWeight config node = .ok weightValue →
-        weightValue.toNat = weight V w G node.toModel) :
+    (keyed : ∀ {node : ForkChoiceNode} {y : WeightedNode}, node ∈ nodes →
+      store.weighNode config node = .ok y → weighedKey y = key node.toModel)
+    (distinct : ∀ {parent : ForkChoiceNode} {children : List ForkChoiceNode},
+      store.getNodeChildren parent = .ok children → ∀ a ∈ children, ∀ b ∈ children,
+        key a.toModel = key b.toModel → a = b) :
     ∀ {start head : ForkChoiceNode},
       (nodeTree lower).Ancestor (some store.justifiedCheckpoint.root, none) start.toModel →
       store.getHeadFrom config nodes start = .ok head →
-      ghost V w G nodeOrder start.toModel = head.toModel := by
+      ghostBy G key start.toModel = head.toModel := by
   -- The model has the children of the view.
   have sameChildren : ∀ b, Models.ForkChoice.children G b =
       Models.ForkChoice.children (nodeView lower nodes) b := by
@@ -472,7 +483,7 @@ private theorem getHeadFrom_eq_ghost_of_gloas_of_weights {ν : Type} {V : Finset
     rw [chooseHeaviest_eq_none] at choice
     subst choice
     have empty := List.length_eq_zero_iff.mp (mapM_ok_length weightedOk).symm
-    refine ghost_of_not_nonempty _ _ _ _ fun ⟨c, mem⟩ => ?_
+    refine ghostBy_of_not_nonempty _ _ fun ⟨c, mem⟩ => ?_
     obtain ⟨child, rfl⟩ := isNode c mem
     have := (mem_children_nodeView gloas tree below childrenOk).mp (sameChildren _ ▸ mem)
     rw [empty] at this
@@ -490,48 +501,78 @@ private theorem getHeadFrom_eq_ghost_of_gloas_of_weights {ν : Type} {V : Finset
     have inView : source.toModel ∈ Models.ForkChoice.children G start.toModel := by
       rw [sameChildren]
       exact (mem_children_nodeView gloas tree below childrenOk).mpr sourceMem
-    -- A weighed child is known, weighs its model weight, and breaks ties by its status number.
-    have weighed : ∀ c ∈ children.filter (· ∈ nodes), ∀ {y : WeightedNode},
-        store.weighNode config c = .ok y →
-        toLex (y.2.1.toNat, toLex (rootValue (some y.1.root), y.2.2.toNat)) =
-          toLex (weight V w G c.toModel, nodeOrder c.toModel) := by
-      intro c cMem y yOk
-      obtain ⟨-, inNodes⟩ := List.mem_filter.mp cMem
-      replace inNodes : c ∈ nodes := of_decide_eq_true inNodes
-      obtain ⟨yNode, yWeight, yTie⟩ := weighNode_ok_iff.mp yOk
-      rw [weighs inNodes yWeight]
-      simp only [tiebreaker, gloas, ↓reduceDIte,
-        getPayloadStatusTiebreaker_of_not_decision (noDecision c inNodes), Except.ok.injEq]
-        at yTie
-      rw [← yTie, yNode, PayloadStatus.code_toNat]
-      rfl
     -- The chosen child is above every other child, by weight, then by root and status.
     have largestModel : ∀ c ∈ Models.ForkChoice.children G start.toModel,
-        toLex (weight V w G c, nodeOrder c) ≤
-          toLex (weight V w G source.toModel, nodeOrder source.toModel) := by
+        key c ≤ key source.toModel := by
       intro c mem
       obtain ⟨other, rfl⟩ := isNode c mem
       have otherMem := (mem_children_nodeView gloas tree below childrenOk).mp (sameChildren _ ▸ mem)
       obtain ⟨y, yMem, otherOk⟩ := exists_mem_of_mapM_ok weightedOk otherMem
       have le := toLex_le_of_compareWeighted_tiebreaker (largest _ yMem)
-      rwa [weighed other otherMem otherOk, weighed source sourceMem sourceOk] at le
-    have injective : Set.InjOn nodeOrder (Models.ForkChoice.children G start.toModel) := by
+      have inNodes : ∀ {c}, c ∈ children.filter (· ∈ nodes) → c ∈ nodes :=
+        fun cMem => of_decide_eq_true (List.mem_filter.mp cMem).2
+      change weighedKey y ≤ weighedKey (source, childKey) at le
+      rwa [keyed (inNodes otherMem) otherOk, keyed (inNodes sourceMem) sourceOk] at le
+    have injective : Set.InjOn key (Models.ForkChoice.children G start.toModel) := by
       intro a aMem b bMem same
       obtain ⟨na, rfl⟩ := isNode a aMem
       obtain ⟨nb, rfl⟩ := isNode b bMem
-      obtain ⟨roots, codes⟩ := Prod.ext_iff.mp (toLex.injective same)
-      have rootsEq := rootValue_some_injective roots
-      have statuses : na.payloadStatus = nb.payloadStatus := by
-        have := codes
-        simp only [ForkChoiceNode.toModel] at this
-        rw [← PayloadStatus.code_toNat, ← PayloadStatus.code_toNat] at this
-        cases h : na.payloadStatus <;> cases h' : nb.payloadStatus <;> simp_all [PayloadStatus.code]
-      simp [ForkChoiceNode.toModel, rootsEq, statuses]
+      have naMem := (mem_children_nodeView gloas tree below childrenOk).mp (sameChildren _ ▸ aMem)
+      have nbMem := (mem_children_nodeView gloas tree below childrenOk).mp (sameChildren _ ▸ bMem)
+      rw [distinct childrenOk na (List.mem_filter.mp naMem).1 nb (List.mem_filter.mp nbMem).1
+        same]
     have step : (nodeTree lower).parent source.toModel = start.toModel :=
       (isChild_of_mem_getNodeChildren gloas childrenOk (List.mem_filter.mp sourceMem).1).2
-    rw [ghost_of_nonempty _ _ _ _ ⟨_, inView⟩,
-      Models.ForkChoice.heaviestChild_eq inView largestModel injective]
+    rw [ghostBy_of_nonempty _ _ ⟨_, inView⟩, heaviestChildBy_eq inView largestModel injective]
     exact ih source ‹_› (below.trans ⟨1, step⟩) walk
+
+
+/-- From Gloas, the walk of the store ends where LMD-GHOST over nodes ends, in a model of its
+weights.
+
+The model has the blocks of the view.
+
+Each viable node weighs in the model what the store computes.
+
+No viable node may be a payload decision of the previous slot.
+
+The walk starts from a node in the subtree of the pending node of the justified block. -/
+private theorem getHeadFrom_eq_ghost_of_gloas_of_weights {ν : Type} {V : Finset ν} {w : ν → ℕ}
+    {G : View ν (Option Root × Status) (nodeTree lower)} {nodes : List ForkChoiceNode}
+    (gloas : .glamsterdam ≤ fork)
+    (noDecision : ∀ n ∈ nodes, store.isPreviousSlotPayloadDecision config n = .ok false)
+    (tree : store.getFilteredNodeTree config = .ok nodes)
+    (blocks : G.blocks = (nodeView lower nodes).blocks)
+    (weighs : ∀ {node : ForkChoiceNode} {weightValue : Gwei}, node ∈ nodes →
+      store.getWeight config node = .ok weightValue →
+        weightValue.toNat = weight V w G node.toModel) :
+    ∀ {start head : ForkChoiceNode},
+      (nodeTree lower).Ancestor (some store.justifiedCheckpoint.root, none) start.toModel →
+      store.getHeadFrom config nodes start = .ok head →
+      ghost V w G nodeOrder start.toModel = head.toModel := by
+  intro start head below walk
+  rw [ghost_eq_ghostBy]
+  refine getHeadFrom_eq_ghostBy_of_gloas_of_keys gloas tree blocks ?_ ?_ below walk
+  · -- A viable node weighs its model weight, and breaks ties by its status number.
+    intro c y inNodes yOk
+    obtain ⟨yNode, yWeight, yTie⟩ := weighNode_ok_iff.mp yOk
+    simp only [tiebreaker, gloas, ↓reduceDIte,
+      getPayloadStatusTiebreaker_of_not_decision (noDecision c inNodes), Except.ok.injEq] at yTie
+    rw [weighedKey, weighs inNodes yWeight, ← yTie, yNode, PayloadStatus.code_toNat]
+    rfl
+  · -- Root and status tell nodes apart.
+    intro _ _ _ na _ nb _ same
+    obtain ⟨-, codes⟩ := Prod.ext_iff.mp (toLex.injective same)
+    obtain ⟨roots, codes⟩ := Prod.ext_iff.mp (toLex.injective codes)
+    have rootsEq := rootValue_some_injective roots
+    have statuses : na.payloadStatus = nb.payloadStatus := by
+      have := codes
+      simp only [ForkChoiceNode.toModel] at this
+      rw [← PayloadStatus.code_toNat, ← PayloadStatus.code_toNat] at this
+      cases h : na.payloadStatus <;> cases h' : nb.payloadStatus <;> simp_all [PayloadStatus.code]
+    obtain ⟨_, _⟩ := na
+    obtain ⟨_, _⟩ := nb
+    simp_all
 
 /-- From Gloas, the walk of the store ends where LMD-GHOST over nodes ends.
 
@@ -641,6 +682,255 @@ theorem getHead_eq_ghost_withBoost_of_gloas {nodes : List ForkChoiceNode} {head 
     fun ⟨_, empty⟩ => someViable (List.isEmpty_iff.mp empty)
   simp only [getHead, tree, notEmpty, ↓reduceIte, bind, Except.bind] at found
   exact getHeadFrom_eq_ghost_withBoost_of_gloas gloas noDecision justifiedState tree (.refl _) found
+
+/-! ## Payload decisions of the previous slot
+
+The empty and the full node of a block of the previous slot weigh nothing in the store.
+
+The tie between them goes to a tiebreak of their own, which the proposer and the payload committee
+decide, and not to their status numbers.
+
+The model keeps every other node, and overrides the weight and the tiebreak of these nodes. -/
+
+/-- The status of a payload for a status of the model. -/
+def _root_.EthLib.Consensus.PayloadStatus.ofStatus : Status → PayloadStatus
+  | none => .pending
+  | some false => .empty
+  | some true => .full
+
+/-- The node of the store for a node of the model.
+
+The common root has no node, and gets the pending node of the zero root. -/
+def _root_.EthLib.Consensus.ForkChoiceNode.ofModel : Option Root × Status → ForkChoiceNode
+  | (some root, status) => ⟨root, PayloadStatus.ofStatus status⟩
+  | (none, _) => ⟨Vector.replicate 32 0, .pending⟩
+
+@[simp] theorem _root_.EthLib.Consensus.ForkChoiceNode.ofModel_toModel (node : ForkChoiceNode) :
+    ForkChoiceNode.ofModel node.toModel = node := by
+  obtain ⟨root, _ | _ | _⟩ := node <;> rfl
+
+variable (store config) in
+/-- From Gloas, the tiebreak of a payload decision of the previous slot.
+
+The empty node gets 1.
+
+The full node gets 2 when the proposer should build on its payload, and 0 otherwise. -/
+def decisionTiebreak (gloas : .glamsterdam ≤ fork) (node : ForkChoiceNode) : ℕ :=
+  if node.payloadStatus = .empty then 1
+  else
+    match store.shouldExtendPayload config gloas node.root with
+    | .ok true => 2
+    | _ => 0
+
+variable (store config) in
+/-- From Gloas, the override of the order for a node of the model.
+
+A payload decision of the previous slot weighs 0 and takes its own tiebreak, after its root.
+
+Every other node keeps its weight and its order by root and status. -/
+def decisionOverride (gloas : .glamsterdam ≤ fork) (node : Option Root × Status) :
+    Option (ℕ × Lex (ℕ × ℕ)) :=
+  match store.isPreviousSlotPayloadDecision config (ForkChoiceNode.ofModel node) with
+  | .ok true =>
+    some (0, toLex (rootValue node.1, store.decisionTiebreak config gloas (.ofModel node)))
+  | _ => none
+
+variable (store config) in
+/-- From Gloas, the order of the model with the payload decisions of the previous slot.
+
+It is by weight, then by root, then by tiebreak, with the decisions overridden. -/
+abbrev decisionKey (gloas : .glamsterdam ≤ fork) (weightOf : Option Root × Status → ℕ) :
+    Option Root × Status → Lex (ℕ × Lex (ℕ × ℕ)) :=
+  overrideKey weightOf nodeOrder (store.decisionOverride config gloas)
+
+/-- The order with the decisions keeps the root of a node in second place. -/
+theorem decisionKey_root (gloas : .glamsterdam ≤ fork) (weightOf : Option Root × Status → ℕ)
+    (node : ForkChoiceNode) :
+    (ofLex (ofLex (store.decisionKey config gloas weightOf node.toModel)).2).1 =
+      rootValue (some node.root) := by
+  unfold decisionKey overrideKey decisionOverride
+  rw [ForkChoiceNode.ofModel_toModel]
+  cases store.isPreviousSlotPayloadDecision config node with
+  | error e => rfl
+  | ok decided => cases decided <;> rfl
+
+/-- The empty and the full node of a block are payload decisions together, or neither is. -/
+theorem isPreviousSlotPayloadDecision_empty_full (root : Root) :
+    store.isPreviousSlotPayloadDecision config ⟨root, .empty⟩ =
+      store.isPreviousSlotPayloadDecision config ⟨root, .full⟩ := by
+  simp [isPreviousSlotPayloadDecision]
+
+/-- The empty and the full node of a block have different tiebreaks in the order with decisions.
+-/
+theorem decisionKey_empty_ne_full (gloas : .glamsterdam ≤ fork)
+    (weightOf : Option Root × Status → ℕ) (root : Root) :
+    (ofLex (ofLex (store.decisionKey config gloas weightOf (some root, some false))).2).2 ≠
+      (ofLex (ofLex (store.decisionKey config gloas weightOf (some root, some true))).2).2 := by
+  have same := isPreviousSlotPayloadDecision_empty_full (store := store) (config := config) root
+  unfold decisionKey overrideKey decisionOverride
+  simp only [ForkChoiceNode.ofModel, PayloadStatus.ofStatus] at same ⊢
+  rw [← same]
+  cases store.isPreviousSlotPayloadDecision config ⟨root, .empty⟩ with
+  | error e => simp [nodeOrder, nodeKey, Status.code]
+  | ok decided =>
+    cases decided
+    · simp [nodeOrder, nodeKey, Status.code]
+    · simp only [decisionTiebreak, ofLex_toLex]
+      simp only [↓reduceIte, reduceCtorEq]
+      split <;> simp
+
+/-- From Gloas, the walk of the store ends where the walk of the model with decisions ends.
+
+The model has the blocks of the view, and each node that is not a decision weighs in it what the
+store computes.
+
+The decisions of the previous slot weigh 0, and take their own tiebreak.
+
+The walk starts from a node in the subtree of the pending node of the justified block. -/
+private theorem getHeadFrom_eq_ghostBy_decisionKey {ν : Type} {V : Finset ν} {w : ν → ℕ}
+    {G : View ν (Option Root × Status) (nodeTree lower)} {nodes : List ForkChoiceNode}
+    (gloas : .glamsterdam ≤ fork) (tree : store.getFilteredNodeTree config = .ok nodes)
+    (blocks : G.blocks = (nodeView lower nodes).blocks)
+    (weighs : ∀ {node : ForkChoiceNode} {weightValue : Gwei}, node ∈ nodes →
+      store.isPreviousSlotPayloadDecision config node = .ok false →
+      store.getWeight config node = .ok weightValue →
+        weightValue.toNat = weight V w G node.toModel) :
+    ∀ {start head : ForkChoiceNode},
+      (nodeTree lower).Ancestor (some store.justifiedCheckpoint.root, none) start.toModel →
+      store.getHeadFrom config nodes start = .ok head →
+      ghostBy G (store.decisionKey config gloas (weight V w G)) start.toModel = head.toModel := by
+  intro start head below walk
+  refine getHeadFrom_eq_ghostBy_of_gloas_of_keys gloas tree blocks ?_ ?_ below walk
+  · intro c y inNodes yOk
+    obtain ⟨yNode, yWeight, yTie⟩ := weighNode_ok_iff.mp yOk
+    obtain ⟨node, weightValue, tie⟩ := y
+    simp only at yNode yWeight yTie
+    subst yNode
+    simp only [tiebreaker, gloas, ↓reduceDIte] at yTie
+    unfold decisionKey overrideKey decisionOverride
+    rw [ForkChoiceNode.ofModel_toModel]
+    cases decision : store.isPreviousSlotPayloadDecision config node with
+    | error e => simp [getWeight, gloas, decision, bind, Except.bind] at yWeight
+    | ok decided =>
+    cases decided with
+    | false =>
+      rw [weighedKey, weighs inNodes decision yWeight]
+      rw [getPayloadStatusTiebreaker_of_not_decision decision, Except.ok.injEq] at yTie
+      simp only
+      rw [← yTie, PayloadStatus.code_toNat]
+      rfl
+    | true =>
+      rw [getWeight_of_payloadDecision gloas decision, Except.ok.injEq] at yWeight
+      subst yWeight
+      simp only [weighedKey]
+      congr 2
+      unfold getPayloadStatusTiebreaker at yTie
+      simp only [decision, bind, Except.bind, ↓reduceIte] at yTie
+      unfold decisionTiebreak
+      by_cases empty : node.payloadStatus = .empty
+      · simp [empty, pure, Except.pure] at yTie
+        simp [empty, ← yTie, ForkChoiceNode.toModel]
+      · simp only [empty, ↓reduceIte] at yTie ⊢
+        cases extend : store.shouldExtendPayload config gloas node.root with
+        | error e => simp [extend] at yTie
+        | ok extend' =>
+          cases extend' <;> simp [extend, pure, Except.pure] at yTie <;>
+            simp [← yTie, ForkChoiceNode.toModel]
+  · intro parent children childrenOk a aMem b bMem same
+    by_cases pending : parent.payloadStatus = .pending
+    · -- The children are the empty and the full node of the parent's block.
+      rw [getNodeChildren_of_pending gloas pending, Except.ok.injEq] at childrenOk
+      subst childrenOk
+      have members : ∀ c ∈ (⟨parent.root, .empty⟩ :: if store.isPayloadVerified gloas parent.root
+          then [⟨parent.root, .full⟩] else [] : List ForkChoiceNode),
+          c = ⟨parent.root, .empty⟩ ∨ c = ⟨parent.root, .full⟩ := by
+        intro c mem
+        simp only [List.mem_cons] at mem
+        rcases mem with rfl | mem
+        · exact .inl rfl
+        · split at mem
+          · exact .inr (List.mem_singleton.mp mem)
+          · cases mem
+      have tie := congrArg (fun k => (ofLex (ofLex k).2).2) same
+      have differ := decisionKey_empty_ne_full (store := store) (config := config) gloas
+        (weight V w G) parent.root
+      rcases members a aMem with rfl | rfl <;> rcases members b bMem with rfl | rfl
+      · rfl
+      · exact absurd tie differ
+      · exact absurd tie.symm differ
+      · rfl
+    · -- The children are the pending nodes of blocks with distinct roots.
+      obtain ⟨aPending, -⟩ := (mem_getNodeChildren_of_gloas gloas pending childrenOk).mp aMem
+      obtain ⟨bPending, -⟩ := (mem_getNodeChildren_of_gloas gloas pending childrenOk).mp bMem
+      have roots := congrArg (fun k => (ofLex (ofLex k).2).1) same
+      simp only [decisionKey_root] at roots
+      have rootsEq := rootValue_some_injective roots
+      obtain ⟨_, _⟩ := a
+      obtain ⟨_, _⟩ := b
+      simp_all
+
+/-- From Gloas, the walk of the store ends where LMD-GHOST over nodes with the boost and the
+decisions of the previous slot ends.
+
+The boost is a vote for the pending node of the boosted block, with the score of the boost as its
+stake.
+
+A payload decision of the previous slot weighs 0, and takes its own tiebreak.
+
+It starts from a node in the subtree of the pending node of the justified block. -/
+theorem getHeadFrom_eq_ghostBy_withBoost_of_gloas {nodes : List ForkChoiceNode}
+    (gloas : .glamsterdam ≤ fork)
+    (justifiedState : store.checkpointState store.justifiedCheckpoint = .ok state)
+    (tree : store.getFilteredNodeTree config = .ok nodes) :
+    ∀ {start head : ForkChoiceNode},
+      (nodeTree lower).Ancestor (some store.justifiedCheckpoint.root, none) start.toModel →
+      store.getHeadFrom config nodes start = .ok head →
+      ghostBy ((nodeView lower nodes).withBoost (store.boostedNode config gloas))
+        (store.decisionKey config gloas (weight (voters state).insertNone
+          (boostStake (balanceAt state) (store.boostScoreOfGloas config gloas))
+          ((nodeView lower nodes).withBoost (store.boostedNode config gloas))))
+        start.toModel = head.toModel :=
+  getHeadFrom_eq_ghostBy_decisionKey
+    (G := (nodeView lower nodes).withBoost (store.boostedNode config gloas)) gloas tree rfl
+    fun inNodes decision computed =>
+    have ⟨_, ⟨_, found⟩, _⟩ := filterNodeTree_mem tree _ inNodes
+    getWeight_eq_weight_withBoost_of_gloas gloas decision justifiedState found nodes computed
+
+variable (lower) in
+/-- From Gloas, the head of the store is the head of LMD-GHOST over nodes with the boost and the
+decisions of the previous slot.
+
+Each known block must sit at a later slot than its known parent, and some node must be viable.
+
+The model starts at the pending node of the justified block, over the view of the viable nodes.
+
+Its voters are the validators active and not slashed in the justified state.
+
+Its stakes are their effective balances, and an equivocator has no vote.
+
+The boost is one more vote, for the pending node of the boosted block, and its stake is the score
+of the boost.
+
+A child is greater by weight, then by root as bytes, then by status number.
+
+A payload decision of the previous slot weighs 0 instead, and takes its own tiebreak.
+
+Its tiebreak is 1 for the empty node, and for the full node 2 when the proposer should build on the
+payload, and 0 otherwise. -/
+theorem getHead_eq_ghostBy_withBoost_of_gloas {nodes : List ForkChoiceNode}
+    {head : ForkChoiceNode} (gloas : .glamsterdam ≤ fork)
+    (justifiedState : store.checkpointState store.justifiedCheckpoint = .ok state)
+    (tree : store.getFilteredNodeTree config = .ok nodes) (someViable : nodes ≠ [])
+    (found : store.getHead config = .ok head) :
+    ghostBy ((nodeView lower nodes).withBoost (store.boostedNode config gloas))
+      (store.decisionKey config gloas (weight (voters state).insertNone
+        (boostStake (balanceAt state) (store.boostScoreOfGloas config gloas))
+        ((nodeView lower nodes).withBoost (store.boostedNode config gloas))))
+      (some store.justifiedCheckpoint.root, none) = head.toModel := by
+  have notEmpty : ¬ (.glamsterdam ≤ fork ∧ nodes.isEmpty = true) :=
+    fun ⟨_, empty⟩ => someViable (List.isEmpty_iff.mp empty)
+  simp only [getHead, tree, notEmpty, ↓reduceIte, bind, Except.bind] at found
+  exact getHeadFrom_eq_ghostBy_withBoost_of_gloas gloas justifiedState tree (.refl _) found
 
 /-! ## Every payload present -/
 

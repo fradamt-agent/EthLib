@@ -409,6 +409,100 @@ theorem ancestor_ghost_of_majority {a b : β} (hb : b ∈ G.blocks) (hab : T.Anc
     obtain ⟨c, hc, hcb⟩ := hab.exists_child hba
     exact absurd ⟨c, mem_children.mpr ⟨G.mem_of_ancestor hb hcb, hc⟩⟩ h
 
+/-! ## LMD-GHOST by any order
+
+The walk of LMD-GHOST only needs an order on the children of each block.
+
+The rule above orders them by weight, then by root.
+
+A fork choice may order some blocks otherwise, with a weight and a tiebreak of its own.
+
+`ghostBy` takes the order as a parameter, and `overrideKey` builds an order with such overrides. -/
+
+section By
+
+variable {κ : Type*} [LinearOrder κ] (key : β → κ)
+
+/-- The child that the walk picks: the greatest by the key.
+
+Two children with one key leave the choice open. -/
+noncomputable def heaviestChildBy (b : β) (h : (children G b).Nonempty) : β :=
+  Classical.choose ((children G b).exists_max_image key h)
+
+theorem heaviestChildBy_spec (b : β) (h : (children G b).Nonempty) :
+    heaviestChildBy G key b h ∈ children G b ∧
+      ∀ c ∈ children G b, key c ≤ key (heaviestChildBy G key b h) :=
+  Classical.choose_spec ((children G b).exists_max_image key h)
+
+variable {G key} in
+/-- A child above every other child by the key is the child that the walk picks.
+
+The keys of the children must differ. -/
+theorem heaviestChildBy_eq {b c : β} (hc : c ∈ children G b)
+    (hmax : ∀ c' ∈ children G b, key c' ≤ key c) (hkey : Set.InjOn key (children G b)) :
+    heaviestChildBy G key b ⟨c, hc⟩ = c := by
+  obtain ⟨hmem, hle⟩ := heaviestChildBy_spec G key b ⟨c, hc⟩
+  exact hkey hmem hc (le_antisymm (hmax _ hmem) (hle c hc))
+
+/-- LMD-GHOST from the block `b` by a key: move to the greatest child until there is none. -/
+noncomputable def ghostBy (b : β) : β :=
+  if h : (children G b).Nonempty then ghostBy (heaviestChildBy G key b h) else b
+termination_by G.blocks.sup T.height - T.height b
+decreasing_by exact height_lt_of_mem_children (heaviestChildBy_spec G key b h).1
+
+theorem ghostBy_of_nonempty {b : β} (h : (children G b).Nonempty) :
+    ghostBy G key b = ghostBy G key (heaviestChildBy G key b h) := by
+  rw [ghostBy]
+  simp only [h, ↓reduceDIte]
+
+theorem ghostBy_of_not_nonempty {b : β} (h : ¬(children G b).Nonempty) : ghostBy G key b = b := by
+  rw [ghostBy]
+  simp only [h, ↓reduceDIte]
+
+/-- The head by a key is in the subtree of the starting block. -/
+theorem ancestor_ghostBy (b : β) : T.Ancestor b (ghostBy G key b) := by
+  induction b using ghostBy.induct G key with
+  | case1 b h ih =>
+    rw [ghostBy_of_nonempty G key h]
+    exact ((mem_children.mp (heaviestChildBy_spec G key b h).1).2.ancestor).trans ih
+  | case2 b h => rw [ghostBy_of_not_nonempty G key h]; exact .refl b
+
+/-- The head by a key is a leaf of the view. -/
+theorem children_ghostBy (b : β) : children G (ghostBy G key b) = ∅ := by
+  induction b using ghostBy.induct G key with
+  | case1 b h ih => rwa [ghostBy_of_nonempty G key h]
+  | case2 b h =>
+    rw [ghostBy_of_not_nonempty G key h]
+    exact Finset.not_nonempty_iff_eq_empty.mp h
+
+/-- LMD-GHOST is the walk by weight, then by root. -/
+theorem ghost_eq_ghostBy (b : β) :
+    ghost V w G root b = ghostBy G (fun c => toLex (weight V w G c, root c)) b := by
+  induction b using ghost.induct V w G root with
+  | case1 b h ih =>
+    rw [ghost_of_nonempty V w G root h, ghostBy_of_nonempty _ _ h]
+    exact ih
+  | case2 b h =>
+    rw [ghost_of_not_nonempty V w G root h, ghostBy_of_not_nonempty _ _ h]
+
+end By
+
+/-- An order by weight, then by a key, where some blocks override both.
+
+A block without an override is ordered by its weight, then by its key.
+
+A block with an override is ordered by the weight and the key that the override gives. -/
+def overrideKey (weight : β → ℕ) (key : β → ρ) (override : β → Option (ℕ × ρ)) (b : β) :
+    Lex (ℕ × ρ) :=
+  match override b with
+  | some pair => toLex pair
+  | none => toLex (weight b, key b)
+
+/-- Without overrides, the walk by the overridden order is LMD-GHOST. -/
+theorem ghostBy_overrideKey_none (b : β) :
+    ghostBy G (overrideKey (weight V w G) root fun _ => none) b = ghost V w G root b :=
+  (ghost_eq_ghostBy V w G root b).symm
+
 /-! ## Proposer boost
 
 The boost gives a timely block of the current slot the weight of an attestation of `W_p`.
