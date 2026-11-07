@@ -1,5 +1,6 @@
 module
 
+public import EthLib.Consensus.Proofs.Containers.Block
 public import EthLib.Consensus.Proofs.ForkChoice.Runs
 public import EthLib.Consensus.Proofs.Transition.Provenance.Ancestry
 
@@ -41,28 +42,6 @@ open Base Serialization.Ssz SszType
 
 variable {preset : Preset} {fork : Fork} {config : Config} {checks : SignatureChecks}
 
-/-- A block step of a chain links its parent root to its own root, and its block has the slot.
-
-This is `ChainBlock` with the slot of the block. -/
-def ChainBlockAt (config : Config) (checks : SignatureChecks)
-    (start after : ForkedBeaconState preset) (parentRoot root : Root) (slot : Slot) : Prop :=
-  ∃ (fork : Fork) (engine : ExecutionEngine preset fork) (signed : SignedBeaconBlock preset fork)
-    (validateResult : Bool) (state post : BeaconState preset fork) (bodyRoot stateRoot : Root),
-    Reaches config checks start ⟨fork, state⟩ ∧ upgradeDue config ⟨fork, state⟩ = false ∧
-    applySignedBlock config checks engine state signed validateResult = .ok post ∧
-    Reaches config checks ⟨fork, post⟩ after ∧
-    hashTreeRoot signed.message.body = .ok bodyRoot ∧ hashTreeRoot post = .ok stateRoot ∧
-    signed.message.parentRoot = parentRoot ∧ signed.message.slot = slot ∧
-    hashTreeRoot { signed.message.header bodyRoot with stateRoot } = .ok root
-
-theorem ChainBlockAt.chainBlock {start after : ForkedBeaconState preset} {parentRoot root : Root}
-    {slot : Slot} (block : ChainBlockAt config checks start after parentRoot root slot) :
-    ChainBlock config checks start after parentRoot root :=
-  have ⟨fork, engine, signed, validateResult, state, post, bodyRoot, stateRoot, head, notDue,
-    applied, tail, bodyOk, stateOk, parent, _, rootOk⟩ := block
-  ⟨fork, engine, signed, validateResult, state, post, bodyRoot, stateRoot, head, notDue, applied,
-    tail, bodyOk, stateOk, parent, rootOk⟩
-
 /-- Every block step of a chain has the slot of its block. -/
 theorem ChainBlock.exists_slot {start after : ForkedBeaconState preset} {parentRoot root : Root}
     (block : ChainBlock config checks start after parentRoot root) :
@@ -70,14 +49,14 @@ theorem ChainBlock.exists_slot {start after : ForkedBeaconState preset} {parentR
   have ⟨fork, engine, signed, validateResult, state, post, bodyRoot, stateRoot, head, notDue,
     applied, tail, bodyOk, stateOk, parent, rootOk⟩ := block
   ⟨_, fork, engine, signed, validateResult, state, post, bodyRoot, stateRoot, head, notDue,
-    applied, tail, bodyOk, stateOk, parent, rfl, rootOk⟩
+    applied, tail, bodyOk, stateOk, parent, rootOk, rfl⟩
 
 /-- A block step of a chain has a header with its root, its parent root and its slot. -/
 theorem ChainBlockAt.header {start after : ForkedBeaconState preset} {parentRoot root : Root}
     {slot : Slot} (block : ChainBlockAt config checks start after parentRoot root slot) :
     ∃ header : BeaconBlockHeader, hashTreeRoot header = .ok root ∧
       header.parentRoot = parentRoot ∧ header.slot = slot :=
-  have ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, parent, slot, rootOk⟩ := block
+  have ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, parent, rootOk, slot⟩ := block
   ⟨_, rootOk, parent, slot⟩
 
 /-- Two different headers have one root, and a search over their hash inputs finds a collision.
@@ -91,39 +70,16 @@ namespace Store
 
 variable {store : Store preset fork}
 
-/-- The store keys each block by its own root, and the body of each block has a root. -/
+/-- The store keys each block by its own root. -/
 def KeysAreRoots (store : Store preset fork) : Prop :=
   ∀ {root : Root} {block : BeaconBlock preset fork}, store.blocks[root]? = some block →
-    hashTreeRoot block = .ok root ∧ ∃ bodyRoot, hashTreeRoot block.body = .ok bodyRoot
-
-/-- A header with the root of a block that the store keys by its root is the block's header, or
-two headers collide.
-
-The block's header has its slot and its parent root. -/
-theorem KeysAreRoots.header_eq (keys : store.KeysAreRoots) {root : Root}
-    {block : BeaconBlock preset fork} (found : store.blocks[root]? = some block)
-    {header : BeaconBlockHeader} (headerRoot : hashTreeRoot header = .ok root) :
-    (header.slot = block.slot ∧ header.parentRoot = block.parentRoot) ∨ HeaderCollision := by
-  obtain ⟨blockRoot, bodyRoot, bodyRootOk⟩ := keys found
-  have blockHeader : hashTreeRoot (block.toHeader bodyRoot) = .ok root := by
-    rw [hashTreeRoot_toHeader bodyRootOk]
-    exact blockRoot
-  rcases beaconBlockHeader_root_binding headerRoot blockHeader with same | collision
-  · subst same
-    exact .inl ⟨rfl, rfl⟩
-  · by_cases same : header = block.toHeader bodyRoot
-    · subst same
-      exact .inl ⟨rfl, rfl⟩
-    · exact .inr ⟨_, _, root, same, headerRoot, blockHeader, collision⟩
+    hashTreeRoot block = .ok root
 
 variable {config : Config} {anchorState : BeaconState preset fork}
   {anchorBlock : BeaconBlock preset fork}
 
-/-- A reachable store keys each block by its own root, and each body has a root.
-
-The body of the anchor block must have a root: the store takes the anchor without running it. -/
-theorem Reachable.keysAreRoots (reachable : Reachable config anchorState anchorBlock store)
-    (anchorBody : ∃ bodyRoot, hashTreeRoot anchorBlock.body = .ok bodyRoot) :
+/-- A reachable store keys each block by its own root. -/
+theorem Reachable.keysAreRoots (reachable : Reachable config anchorState anchorBlock store) :
     store.KeysAreRoots := by
   induction reachable with
   | anchor made =>
@@ -134,7 +90,7 @@ theorem Reachable.keysAreRoots (reachable : Reachable config anchorState anchorB
     · rename_i same
       cases found
       rw [← same]
-      exact ⟨rootOk, anchorBody⟩
+      exact rootOk
     · simp at found
   | tick _ ticked ih =>
     intro r b found
@@ -159,24 +115,17 @@ theorem Reachable.keysAreRoots (reachable : Reachable config anchorState anchorB
     intro r b found
     rw [(onInclusionList_frame accepted).2.1] at found
     exact ih found
-  | @block _ _ _ _ signed _ added ih =>
-    obtain same | ⟨blockRoot, rootOk, -, blocks, pre, state, -, transition, -⟩ :=
-      onBlock_same_or_insert added
+  | block _ added ih =>
+    obtain same | ⟨blockRoot, rootOk, -, blocks, -⟩ := onBlock_same_or_insert added
     · subst same
       exact ih
-    -- The state transition ran the block, so its body has a root.
-    have bodyOk : ∃ bodyRoot, SszType.hashTreeRoot signed.message.body = .ok bodyRoot := by
-      simp only [stateTransition, bind_ok_iff] at transition
-      obtain ⟨_, _, applied⟩ := transition
-      obtain ⟨-, -, -, ⟨bodyRoot, bodyRootOk, -⟩, -⟩ := applySignedBlock_roots applied
-      exact ⟨bodyRoot, bodyRootOk⟩
     intro r b found
     rw [blocks, getElem?_insert_root] at found
     split at found
     · rename_i same
       cases found
       rw [← same]
-      exact ⟨rootOk, bodyOk⟩
+      exact rootOk
     · exact ih found
 
 /-! ## The walk to a slot, by roots -/
@@ -208,6 +157,30 @@ theorem getCheckpointBlock_eq {root : Root} {epoch : Epoch} {start : Slot}
   cases store.getAncestor ⟨root, .pending⟩ start <;> rfl
 
 /-! ## Following the links of a chain -/
+
+variable [NeZero preset.BYTES_PER_LOGS_BLOOM.toNat] [NeZero preset.SYNC_COMMITTEE_SIZE.toNat]
+  [NeZero preset.MAX_COMMITTEES_PER_SLOT.toNat] [NeZero preset.PTC_SIZE.toNat]
+  [NeZero preset.INCLUSION_LIST_COMMITTEE_SIZE.toNat]
+
+/-- A header with the root of a block that the store keys by its root is the block's header, or
+two headers collide.
+
+The block's header has its slot and its parent root. -/
+theorem KeysAreRoots.header_eq (keys : store.KeysAreRoots) {root : Root}
+    {block : BeaconBlock preset fork} (found : store.blocks[root]? = some block)
+    {header : BeaconBlockHeader} (headerRoot : hashTreeRoot header = .ok root) :
+    (header.slot = block.slot ∧ header.parentRoot = block.parentRoot) ∨ HeaderCollision := by
+  obtain ⟨bodyRoot, bodyRootOk⟩ := SszType.hashTreeRoot_total block.body
+  have blockHeader : hashTreeRoot (block.toHeader bodyRoot) = .ok root := by
+    rw [hashTreeRoot_toHeader bodyRootOk]
+    exact keys found
+  rcases beaconBlockHeader_root_binding headerRoot blockHeader with same | collision
+  · subst same
+    exact .inl ⟨rfl, rfl⟩
+  · by_cases same : header = block.toHeader bodyRoot
+    · subst same
+      exact .inl ⟨rfl, rfl⟩
+    · exact .inr ⟨_, _, root, same, headerRoot, blockHeader, collision⟩
 
 /-- Along a path of links to blocks after a slot, the store's walk to the slot follows the path.
 
@@ -289,17 +262,11 @@ theorem getCheckpointBlock_of_links (keys : store.KeysAreRoots) (lower : store.P
   · exact .inr (.inr (.inr collision))
 
 
-/-- A link of some chain to a block after a slot. -/
-def ChainLinkAfter (config : Config) (checks : SignatureChecks) (slot : Slot)
-    (parentRoot root : Root) : Prop :=
-  ∃ (start after : ForkedBeaconState preset) (blockSlot : Slot),
-    ChainBlockAt config checks start after parentRoot root blockSlot ∧ slot < blockSlot
-
 variable {config : Config} {checks : SignatureChecks} {anchorState : BeaconState preset fork}
   {anchorBlock : BeaconBlock preset fork}
 
 /-- In a reachable store, the checkpoint block of a known root at an epoch is the start of each
-path of chain links to blocks after the first slot of the epoch.
+path of chain links to blocks after the first slot of the epoch, along one chain.
 
 The store must hold the start at or before the first slot of the epoch.
 
@@ -309,36 +276,35 @@ Otherwise one of three things happened:
 - The path passes through the parent root of the anchor.
 - Two headers collide.
 
-The anchor block must sit at or before the slot of the anchor state, and its body must have a
-root.
+The anchor block must sit at or before the slot of the anchor state.
+
+Every block body must have a root, which the positive sizes of the preset give.
 
 The parent root of the anchor must name no known block. -/
 theorem Reachable.getCheckpointBlock_of_chainLinks
     (reachable : Reachable config anchorState anchorBlock store)
     (anchorSlot : anchorBlock.slot ≤ anchorState.slot)
     (unknown : store.blocks[anchorBlock.parentRoot]? = none)
-    (anchorBody : ∃ bodyRoot, hashTreeRoot anchorBlock.body = .ok bodyRoot)
     {epoch : Epoch} {start : Slot} (startOk : computeStartSlotAtEpoch preset epoch = .ok start)
-    {f j : Root}
-    (path : Relation.ReflTransGen (ChainLinkAfter (preset := preset) config checks start) f j)
+    {first last : ForkedBeaconState preset} {f j : Root}
+    (path : PastAncestor config checks first last start.toNat f j)
     {jBlock : BeaconBlock preset fork} (jFound : store.blocks[j]? = some jBlock) :
     store.getCheckpointBlock j epoch = .ok f ∨
       (∃ fBlock, store.blocks[f]? = some fBlock ∧ start < fBlock.slot) ∨
-      Relation.ReflTransGen (ChainLinkAfter (preset := preset) config checks start) f
-        anchorBlock.parentRoot ∨
+      PastAncestor config checks first last start.toNat f anchorBlock.parentRoot ∨
       HeaderCollision := by
-  have keys : store.KeysAreRoots := reachable.keysAreRoots anchorBody
+  have keys : store.KeysAreRoots := reachable.keysAreRoots
   have lower := reachable.parentsBelow anchorSlot unknown
   have linked := (reachable.linked anchorSlot).resolve_right (by
     rw [Std.TreeMap.contains_eq_isSome_getElem?, unknown]
     simp)
   have headerOf : ∀ {parentRoot root : Root},
-      ChainLinkAfter (preset := preset) config checks start parentRoot root →
+      ChainBlockAfter config checks first last start.toNat parentRoot root →
       ∃ header : BeaconBlockHeader, hashTreeRoot header = .ok root ∧
         header.parentRoot = parentRoot ∧ start < header.slot := by
-    rintro parentRoot root ⟨_, _, blockSlot, block, after⟩
+    rintro parentRoot root ⟨blockSlot, block, after⟩
     obtain ⟨header, rootOk, parent, slot⟩ := block.header
-    exact ⟨header, rootOk, parent, slot ▸ after⟩
+    exact ⟨header, rootOk, parent, UInt64.lt_iff_toNat_lt.mpr (slot ▸ after)⟩
   rcases getCheckpointBlock_of_links keys lower startOk headerOf path jFound with
     same | late | ⟨known, knownBlock, head, knownFound, knownLate, parentUnknown⟩ | collision
   · exact .inl same
