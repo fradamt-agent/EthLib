@@ -1,6 +1,8 @@
 module
 
+public import EthLib.Consensus.Proofs.Transition.DepositChurn
 public import EthLib.Consensus.Proofs.Transition.EffectiveBalanceCap
+public import EthLib.Consensus.Proofs.Transition.GainedBound
 public import EthLib.Consensus.Proofs.Transition.ExitStake
 public import EthLib.Consensus.Proofs.Transition.Lifecycle
 public import EthLib.Consensus.Proofs.WeakSubjectivity
@@ -460,5 +462,71 @@ theorem gloasExitChurn_mainnet_values :
         (((2 ^ 23 + 2 ^ 15) * 10 ^ 9 : Gwei) / Config.mainnet.CHURN_LIMIT_QUOTIENT_GLOAS)) =
         257 * 10 ^ 9 := by
   decide
+
+/-! ## The stake that joins, and both sides together
+
+`Run.joiningStakePrev_le` bounds the stake that joins by three parts.
+
+- The stake waiting to be active at the start.
+- The growth of the validators of the start that join.
+- The effective balance of the validators that the run adds.
+
+`Run.gained_le` bounds the growth by two parts.
+
+- The excess of balance over effective balance at the start.
+- What the run credits each validator.
+
+What the run credits includes deposits, rewards and consolidations, which no churn bounds alone.
+-/
+
+theorem effectiveAt_eq_effectiveBalanceAtPosition {fork : Base.Fork}
+    (state : BeaconState preset fork) (index : Nat) :
+    effectiveAt state index = effectiveBalanceAtPosition state index := by
+  unfold effectiveAt effectiveBalanceAtPosition
+  cases state.validators.data[index]? <;> rfl
+
+/-- The stake that joins the active set over a run from Electra, with its growth bounded.
+
+The bound on the growth is what the run credits.
+
+Take the validators active at the previous or current epoch of the last state.
+
+Keep those not active at the current epoch of the first.
+
+Their effective balance in the last state is at most four parts.
+
+- The stake waiting to be active in the first state.
+- For those of the first state, the excess of their balance over their effective balance there.
+- For those of the first state, what the run credits their balances.
+- For those that the run adds, their effective balance at the end. -/
+theorem Run.joiningStakePrev_le_credited {start after : ForkedBeaconState preset}
+    (electra : .pectra ≤ start.fork) (run : Run config checks start after)
+    (small : after.state.validators.data.size < 2 ^ 64)
+    (epochs : getCurrentEpoch start.state ≤ getCurrentEpoch after.state) :
+    let joins := fun position =>
+      ((after.state.validators.data[position]?).any
+          (isActiveValidator · (getPreviousEpoch after.state)) ||
+        (after.state.validators.data[position]?).any
+          (isActiveValidator · (getCurrentEpoch after.state))) &&
+        !(start.state.validators.data[position]?).any
+          (isActiveValidator · (getCurrentEpoch start.state))
+    (((List.range after.state.validators.data.size).filter joins).map
+        fun position => effectiveBalanceAtPosition after.state position).sum ≤
+      pendingActivationStake start.state +
+        ∑ position ∈ ((Finset.range after.state.validators.data.size).filter fun position =>
+            joins position = true ∧ position < start.state.validators.data.size),
+          (balanceAt start.state position - effectiveAt start.state position +
+            run.credited position) +
+        ∑ position ∈ ((Finset.range after.state.validators.data.size).filter fun position =>
+            joins position = true ∧ ¬ position < start.state.validators.data.size),
+          effectiveBalanceAtPosition after.state position := by
+  intro joins
+  have joined := run.joiningStakePrev_le electra small epochs
+  have gained := run.gained_le small
+    ((Finset.range after.state.validators.data.size).filter fun position =>
+      joins position = true ∧ position < start.state.validators.data.size)
+    (fun position member => (Finset.mem_filter.mp member).2.2)
+  simp only [effectiveAt_eq_effectiveBalanceAtPosition] at gained ⊢
+  exact Nat.le_trans joined (Nat.add_le_add_right (Nat.add_le_add_left gained _) _)
 
 end EthLib.Consensus
