@@ -744,4 +744,96 @@ theorem computeConsolidationEpochAndUpdateChurn_trace {config : Config}
     computeConsolidationEpochAndUpdateChurn_eq computed
   exact ⟨⟨firstEpoch, perEpochChurn, balance⟩, rfl, churn, .cons queued (.nil _ _)⟩
 
+/-! ## The churns as functions of the total active balance -/
+
+/-- Rounding down to an increment never raises an amount. -/
+theorem roundToIncrement_le (preset : Preset) (amount : Gwei) :
+    (roundToIncrement preset amount).toNat ≤ amount.toNat := by
+  unfold roundToIncrement
+  have le : amount % preset.EFFECTIVE_BALANCE_INCREMENT ≤ amount := by
+    rw [UInt64.le_iff_toNat_le, UInt64.toNat_mod]
+    exact Nat.mod_le _ _
+  rw [UInt64.toNat_sub_of_le _ _ le]
+  omega
+
+/-- The whole churn is at most the minimum churn or a share of the total active balance. -/
+theorem getBalanceChurnLimit_le {config : Config} {state : BeaconState preset fork}
+    {total churn : Gwei} (totalOk : getTotalActiveBalance state = .ok total)
+    (computed : getBalanceChurnLimit config state = .ok churn) :
+    churn.toNat ≤
+      max config.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA.toNat
+        (total.toNat / config.CHURN_LIMIT_QUOTIENT.toNat) := by
+  simp only [getBalanceChurnLimit, totalOk, bind, Except.bind, pure, Except.pure,
+    Except.ok.injEq] at computed
+  subst computed
+  refine Nat.le_trans (roundToIncrement_le _ _) ?_
+  rw [UInt64.max_def]
+  split
+  · rw [UInt64.toNat_div]
+    omega
+  · omega
+
+/-- The churn of exits is at most the minimum churn or a share of the total active balance.
+
+The share is `CHURN_LIMIT_QUOTIENT` before Gloas and `CHURN_LIMIT_QUOTIENT_GLOAS` from Gloas. -/
+theorem exitChurnLimit_le_total {config : Config} {state : BeaconState preset fork}
+    {total churn : Gwei} (totalOk : getTotalActiveBalance state = .ok total)
+    (computed : exitChurnLimit config state = .ok churn) :
+    churn.toNat ≤ max config.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA.toNat (total.toNat /
+      (if .glamsterdam ≤ fork then config.CHURN_LIMIT_QUOTIENT_GLOAS
+        else config.CHURN_LIMIT_QUOTIENT).toNat) := by
+  unfold exitChurnLimit at computed
+  split at computed
+  · rename_i gloas
+    simp only [getExitChurnLimit, totalOk, bind, Except.bind, pure, Except.pure,
+      Except.ok.injEq] at computed
+    subst computed
+    simp only [gloas, ↓reduceIte]
+    refine Nat.le_trans (roundToIncrement_le _ _) ?_
+    rw [UInt64.max_def]
+    split
+    · rw [UInt64.toNat_div]
+      omega
+    · omega
+  · rename_i notGloas
+    simp only [notGloas, ↓reduceIte]
+    simp only [getActivationExitChurnLimit, bind_ok_iff, pure, Except.pure,
+      Except.ok.injEq] at computed
+    obtain ⟨whole, wholeOk, rfl⟩ := computed
+    have := getBalanceChurnLimit_le totalOk wholeOk
+    rw [UInt64.min_def]
+    split
+    · rename_i le
+      have := UInt64.le_iff_toNat_le.mp le
+      omega
+    · exact this
+
+/-- The churn of consolidations is at most a share of the total active balance.
+
+Before Gloas the share is that of the whole churn, which the minimum churn may raise.
+
+From Gloas it is `CONSOLIDATION_CHURN_LIMIT_QUOTIENT`. -/
+theorem getConsolidationChurnLimit_le_total {config : Config} {state : BeaconState preset fork}
+    {total churn : Gwei} (totalOk : getTotalActiveBalance state = .ok total)
+    (computed : getConsolidationChurnLimit config state = .ok churn) :
+    churn.toNat ≤ if .glamsterdam ≤ fork then
+        total.toNat / config.CONSOLIDATION_CHURN_LIMIT_QUOTIENT.toNat
+      else max config.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA.toNat
+        (total.toNat / config.CHURN_LIMIT_QUOTIENT.toNat) := by
+  by_cases gloas : .glamsterdam ≤ fork
+  · simp only [getConsolidationChurnLimit, gloas, ↓reduceIte, totalOk, bind, Except.bind, pure,
+      Except.pure, Except.ok.injEq] at computed
+    subst computed
+    simp only [gloas, ↓reduceIte]
+    refine Nat.le_trans (roundToIncrement_le _ _) ?_
+    simp only [UInt64.toNat_div, Nat.le_refl]
+  · simp only [gloas, ↓reduceIte]
+    -- Before Gloas the churn of consolidations is a part of the whole churn.
+    have whole := computed
+    simp only [getConsolidationChurnLimit, gloas, ↓reduceIte, bind_ok_iff] at whole
+    obtain ⟨wholeChurn, wholeOk, part, partOk, _⟩ := whole
+    have sum := getConsolidationChurnLimit_add (Nat.lt_of_not_le gloas) computed partOk wholeOk
+    have := getBalanceChurnLimit_le totalOk wholeOk
+    omega
+
 end EthLib.Consensus

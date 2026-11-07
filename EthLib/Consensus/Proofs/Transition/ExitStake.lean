@@ -2834,4 +2834,86 @@ theorem Run.exitsKept {start after : ForkedBeaconState preset} (electra : .pectr
       fun _ validator _ => Nat.le_of_lt validator.effectiveBalance.toNat_lt⟩)
     (fun _ => ⟨Nat.le_of_lt (UInt64.toNat_lt _), Nat.le_of_lt (UInt64.toNat_lt _)⟩)).2.1
 
+/-! ## The stake that leaves the active set -/
+
+/-- A sum over the positions of a list filter is a sum over the matching finite set. -/
+theorem sum_map_filter_range (size : Nat) (test : Nat → Bool) (value : Nat → Nat) :
+    (((List.range size).filter test).map value).sum =
+      ∑ position ∈ (Finset.range size).filter (fun position => test position = true),
+        value position := by
+  simp only [Finset.sum, Finset.filter_val, Finset.range_val, Multiset.range, Multiset.filter_coe,
+    Multiset.map_coe, Multiset.sum_coe, Bool.decide_eq_true]
+
+/-- The stake that leaves the active set over a run from Electra on.
+
+Take the validators active at the current epoch of the first state, and not at that of the last.
+
+Their effective balance in the first state is at most that of two groups.
+
+- Those that already have an exit epoch in the first state, up to the last state's epoch.
+- Those that start to exit over the run, up to the last state's epoch.
+
+The first group is read from the first state.
+
+`Run.exitingStake_le` bounds the second.
+
+A validator active in the first state must keep its activation epoch.
+
+The lifecycle of validators gives that.
+
+The last state's epoch must be at least the first's and below the far future epoch.
+
+This holds while the registry has fewer than `2^64` validators. -/
+theorem Run.leavingStake_le {start after : ForkedBeaconState preset}
+    (electra : .pectra ≤ start.fork) (run : Run config checks start after)
+    (small : after.state.validators.data.size < 2 ^ 64)
+    (epochs : getCurrentEpoch start.state ≤ getCurrentEpoch after.state)
+    (finite : getCurrentEpoch after.state < FAR_FUTURE_EPOCH)
+    (activations : ∀ (position : Nat) (validator later : Validator),
+      start.state.validators.data[position]? = some validator →
+        after.state.validators.data[position]? = some later →
+        isActiveValidator validator (getCurrentEpoch start.state) = true →
+          later.activationEpoch = validator.activationEpoch) :
+    (((List.range start.state.validators.data.size).filter fun position =>
+        (start.state.validators.data[position]?).any
+            (isActiveValidator · (getCurrentEpoch start.state)) &&
+          !(after.state.validators.data[position]?).any
+            (isActiveValidator · (getCurrentEpoch after.state))).map
+        fun position => effectiveBalanceAtPosition start.state position).sum ≤
+      (((List.range start.state.validators.data.size).filter fun position =>
+          (start.state.validators.data[position]?).any fun validator =>
+            isActiveValidator validator (getCurrentEpoch start.state) &&
+              decide (validator.exitEpoch ≤ getCurrentEpoch after.state)).map
+          fun position => effectiveBalanceAtPosition start.state position).sum +
+        ∑ position ∈ exitsBetween start.state after.state 0 (getCurrentEpoch after.state).toNat,
+          effectiveBalanceAtPosition start.state position := by
+  rw [sum_map_filter_range, sum_map_filter_range]
+  have kept := Run.exitsKept electra run small
+  -- Each leaving validator is queued at the start, or starts to exit over the run.
+  refine (Finset.sum_le_sum_of_subset (fun position member => ?_)).trans
+    (Nat.le.intro Finset.sum_union_inter)
+  obtain ⟨inside, leaves⟩ := Finset.mem_filter.mp member
+  have inside := Finset.mem_range.mp inside
+  obtain ⟨validator, found⟩ : ∃ validator,
+      start.state.validators.data[position]? = some validator :=
+    ⟨_, Array.getElem?_eq_getElem inside⟩
+  obtain ⟨later, laterFound, exits⟩ := kept.exits small position validator found
+  simp only [found, laterFound, Option.any_some, Bool.and_eq_true, Bool.not_eq_true'] at leaves
+  obtain ⟨active, inactive⟩ := leaves
+  have same := activations position validator later found laterFound active
+  -- The validator is active then not, with the same activation epoch, so it left by then.
+  have left : later.exitEpoch ≤ getCurrentEpoch after.state := by
+    simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq, Bool.and_eq_false_iff,
+      decide_eq_false_iff_not] at active inactive
+    rcases inactive with notActivated | notBefore
+    · exact absurd (same ▸ UInt64.le_trans active.1 epochs) notActivated
+    · exact UInt64.not_lt.mp notBefore
+  rcases exits with sameExit | far
+  · refine Finset.mem_union_left _ (Finset.mem_filter.mpr ⟨Finset.mem_range.mpr inside, ?_⟩)
+    simp [found, active, sameExit ▸ left]
+  · refine Finset.mem_union_right _ (mem_exitsBetween.mpr ⟨inside, ?_⟩)
+    have set : later.exitEpoch ≠ FAR_FUTURE_EPOCH := fun same =>
+      absurd (same ▸ left) (UInt64.not_le.mpr finite)
+    simp [found, laterFound, startsExit, far, set, UInt64.le_iff_toNat_le.mp left]
+
 end EthLib.Consensus
