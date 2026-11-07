@@ -1827,6 +1827,400 @@ theorem matchingTarget_included_after_common_at_cached_slot
   rw [(getMatchingTargetAttestations_slot_epoch epochs matching member).1]
   exact laterTarget
 
+/-- Every counted index above C's epoch has an included pending record on the fork suffix.
+
+The pending record keeps the source and target selected by the actual matching query. -/
+theorem matchingTarget_signer_included_after_common_at_cached_slot
+    {engine : ExecutionEngine preset fork}
+    {genesis common after atStep cached : BeaconState preset fork}
+    {eth1BlockHash : Hash32} {eth1Timestamp : UInt64} {deposits : Array Deposit}
+    {commonBlocks blocks : List (SignedBeaconBlock preset fork)} {count : Nat}
+    {epoch : Epoch} {attestations : Array (PendingAttestation preset)}
+    {indices : List ValidatorIndex} {index : ValidatorIndex}
+    (before : fork < .altair)
+    (initialized : initializeBeaconStateFromEth1 config checks eth1BlockHash eth1Timestamp
+      deposits = .ok genesis)
+    (commonRun : commonBlocks.foldlM
+      (fun state block => stateTransition config checks engine state block true)
+        genesis = .ok common)
+    (forkRun : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block true) common = .ok after)
+    (advanced : advanceSlots config count after = .ok atStep)
+    (cachedOk : processSlot atStep = .ok cached)
+    (matching : getMatchingTargetAttestations cached before epoch = .ok attestations)
+    (indicesOk : getUnslashedAttestingIndices cached attestations = .ok indices)
+    (member : index ∈ indices)
+    (laterTarget : getCurrentEpoch common < epoch) :
+    ∃ pending ∈ attestations, ∃ signers earlier block later atBlock atSlot root,
+      getPendingAttestingIndices cached pending = .ok signers ∧ index ∈ signers ∧
+      pending.data.target.epoch = epoch ∧
+      pending.data.source =
+        (if epoch = getCurrentEpoch cached then cached.currentJustifiedCheckpoint
+          else cached.previousJustifiedCheckpoint) ∧
+      getBlockRoot cached epoch = .ok root ∧ pending.data.target.root = root ∧
+      blocks = earlier ++ block :: later ∧
+      earlier.foldlM
+        (fun state block => stateTransition config checks engine state block true)
+          common = .ok atBlock ∧
+      processSlots config atBlock block.message.slot = .ok atSlot ∧
+      PendingIncludedInBlock config checks before atSlot block.message pending := by
+  obtain ⟨⟨pending, pendingMember, signers, signersOk, signer⟩, _⟩ :=
+    mem_getUnslashedAttestingIndices indicesOk member
+  obtain ⟨earlier, block, later, atBlock, atSlot, split, prefixOk, slotsOk, included⟩ :=
+    matchingTarget_included_after_common_at_cached_slot before initialized commonRun forkRun
+      advanced cachedOk matching pendingMember laterTarget
+  have fullRun : (commonBlocks ++ blocks).foldlM
+      (fun state block => stateTransition config checks engine state block true) genesis =
+        .ok after := by
+    rw [List.foldlM_append, commonRun]
+    exact forkRun
+  obtain ⟨sources, epochs⟩ := pending_invariants_at_cached_slot_of_initialized_chain
+    before initialized fullRun advanced cachedOk
+  obtain ⟨_, root, _, rootOk, _, rootEq⟩ :=
+    getMatchingTargetAttestations_mem matching pendingMember
+  refine ⟨pending, pendingMember, signers, earlier, block, later, atBlock, atSlot, root,
+    signersOk, signer, (getMatchingTargetAttestations_slot_epoch epochs matching pendingMember).1,
+    getMatchingTargetAttestations_source sources matching pendingMember, rootOk, rootEq,
+    split, prefixOk, slotsOk, included⟩
+
+/-- The newest true bit on an initialized Phase 0 chain names its current justified epoch. -/
+theorem newest_bit_epoch_of_initialized_chain
+    {engine : ExecutionEngine preset .phase0}
+    {genesis after : BeaconState preset .phase0}
+    {eth1BlockHash : Hash32} {eth1Timestamp : UInt64} {deposits : Array Deposit}
+    {blocks : List (SignedBeaconBlock preset .phase0)}
+    (initialized : initializeBeaconStateFromEth1 config checks eth1BlockHash eth1Timestamp
+      deposits = .ok genesis)
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block true)
+        genesis = .ok after)
+    (bit : after.justificationBits.bits[0] = true) :
+    after.currentJustifiedCheckpoint.epoch.toNat + 1 = (getCurrentEpoch after).toNat := by
+  have invariant := foldlM_ok_invariant
+    (fun state : BeaconState preset .phase0 =>
+      (getCurrentEpoch state ≤ GENESIS_EPOCH + 1 →
+        ∀ index : Fin 4, state.justificationBits.bits[index] = false) ∧
+      (state.justificationBits.bits[0] = true →
+        state.currentJustifiedCheckpoint.epoch.toNat + 1 = (getCurrentEpoch state).toNat))
+    (fun _ _ _ holds ok => ⟨stateTransition_early_bits (by decide) holds.1 ok,
+      stateTransition_newest_bit_epoch (by decide) holds.2 holds.1 ok⟩) ?_ computed
+  · exact invariant.2 bit
+  · have cleared := initializeBeaconStateFromEth1_bits (by decide) initialized
+    refine ⟨fun _ => cleared, ?_⟩
+    intro bit
+    have zero := cleared 0
+    simp_all
+
+/-- Caching after empty slots keeps the epoch identified by the newest true bit. -/
+theorem newest_bit_epoch_at_cached_slot_of_initialized_chain
+    {engine : ExecutionEngine preset .phase0}
+    {genesis after atStep cached : BeaconState preset .phase0}
+    {eth1BlockHash : Hash32} {eth1Timestamp : UInt64} {deposits : Array Deposit}
+    {blocks : List (SignedBeaconBlock preset .phase0)} {count : Nat}
+    (initialized : initializeBeaconStateFromEth1 config checks eth1BlockHash eth1Timestamp
+      deposits = .ok genesis)
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block true)
+        genesis = .ok after)
+    (advanced : advanceSlots config count after = .ok atStep)
+    (cachedOk : processSlot atStep = .ok cached)
+    (bit : cached.justificationBits.bits[0] = true) :
+    cached.currentJustifiedCheckpoint.epoch.toNat + 1 = (getCurrentEpoch cached).toNat := by
+  have earlyBits : getCurrentEpoch after ≤ GENESIS_EPOCH + 1 →
+      ∀ index : Fin 4, after.justificationBits.bits[index] = false := by
+    apply foldlM_ok_invariant
+      (fun state => getCurrentEpoch state ≤ GENESIS_EPOCH + 1 →
+        ∀ index : Fin 4, state.justificationBits.bits[index] = false)
+      (fun _ _ _ holds ok => stateTransition_early_bits (by decide) holds ok) _ computed
+    intro _ index
+    exact initializeBeaconStateFromEth1_bits (by decide) initialized index
+  have frame := frame_processSlot cachedOk
+  have atBit : atStep.justificationBits.bits[0] = true := by
+    simpa only [frame.justificationBits] using bit
+  have epoch := advanceSlots_newest_bit_epoch (by decide)
+    (newest_bit_epoch_of_initialized_chain initialized computed) earlyBits advanced atBit
+  simpa only [frame.currentJustified, getCurrentEpoch, frame.slot] using epoch
+
+/-- An old current justified checkpoint prevents the previous bit from being inherited.
+
+Thus a previous bit used with a source two epochs back needs a fresh previous threshold. -/
+theorem previous_bit_not_inherited_at_cached_slot
+    {engine : ExecutionEngine preset .phase0}
+    {genesis after atStep cached : BeaconState preset .phase0}
+    {eth1BlockHash : Hash32} {eth1Timestamp : UInt64} {deposits : Array Deposit}
+    {blocks : List (SignedBeaconBlock preset .phase0)} {count : Nat}
+    (initialized : initializeBeaconStateFromEth1 config checks eth1BlockHash eth1Timestamp
+      deposits = .ok genesis)
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block true)
+        genesis = .ok after)
+    (advanced : advanceSlots config count after = .ok atStep)
+    (cachedOk : processSlot atStep = .ok cached)
+    (old : cached.currentJustifiedCheckpoint.epoch.toNat + 2 ≤
+      (getCurrentEpoch cached).toNat) :
+    cached.justificationBits.bits[0] = false := by
+  cases bit : cached.justificationBits.bits[0]
+  · rfl
+  · have epoch := newest_bit_epoch_at_cached_slot_of_initialized_chain
+      initialized computed advanced cachedOk bit
+    omega
+
+/-- A cached newest bit has a current threshold with exactly its stored source and target.
+
+The source is the cached previous checkpoint, including when the bit survived empty slots. -/
+theorem newest_bit_source_at_cached_slot_of_initialized_chain
+    {engine : ExecutionEngine preset .phase0}
+    {genesis after atStep cached : BeaconState preset .phase0}
+    {eth1BlockHash : Hash32} {eth1Timestamp : UInt64} {deposits : Array Deposit}
+    {blocks : List (SignedBeaconBlock preset .phase0)} {count : Nat}
+    (initialized : initializeBeaconStateFromEth1 config checks eth1BlockHash eth1Timestamp
+      deposits = .ok genesis)
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block true)
+        genesis = .ok after)
+    (advanced : advanceSlots config count after = .ok atStep)
+    (cachedOk : processSlot atStep = .ok cached)
+    (bit : cached.justificationBits.bits[0] = true) :
+    ∃ earlierBlocks atBlock offset originStep originCached epoched justified total previous current,
+      earlierBlocks <+: blocks ∧
+      earlierBlocks.foldlM
+        (fun state block => stateTransition config checks engine state block true)
+          genesis = .ok atBlock ∧
+      advanceSlots config offset atBlock = .ok originStep ∧
+      processSlot originStep = .ok originCached ∧
+      processEpoch config originCached = .ok epoched ∧
+      processJustificationAndFinalization originCached = .ok justified ∧
+      weighJustificationAndFinalization originCached total previous current = .ok justified ∧
+      justified.justificationBits.bits[0] = true ∧
+      cached.currentJustifiedCheckpoint = justified.currentJustifiedCheckpoint ∧
+      cached.previousJustifiedCheckpoint = originCached.currentJustifiedCheckpoint := by
+  have frame := frame_processSlot cachedOk
+  have atBit : atStep.justificationBits.bits[0] = true := by
+    simpa only [frame.justificationBits] using bit
+  rcases advanceSlots_newest_bit_source (by decide) advanced atBit with inherited | occurred
+  · obtain ⟨target, source, oldBit⟩ := inherited
+    rcases stateTransition_chain_newest_bit_source (by decide) computed oldBit with
+        inherited | occurred
+    · have cleared := initializeBeaconStateFromEth1_bits (by decide) initialized 0
+      simp_all
+    · obtain ⟨earlierBlocks, block, later, atBlock, offset, originStep, next, originCached,
+        epoched, justified, total, previous, current, split, prefixOk, _, advancedOk, _,
+        originCache, epochOk, justifiedOk, weighed, originBit, originTarget, originSource⟩ :=
+        occurred
+      exact ⟨earlierBlocks, atBlock, offset, originStep, originCached, epoched, justified,
+        total, previous, current, ⟨block :: later, split.symm⟩, prefixOk, advancedOk,
+        originCache, epochOk, justifiedOk, weighed, originBit,
+        frame.currentJustified.trans (target.trans originTarget),
+        frame.previousJustified.trans (source.trans originSource)⟩
+  · obtain ⟨offset, originStep, next, originCached, epoched, justified, total, previous, current,
+      _, advancedOk, _, originCache, epochOk, justifiedOk, weighed, originBit,
+      originTarget, originSource⟩ := occurred
+    exact ⟨blocks, after, offset, originStep, originCached, epoched, justified, total,
+      previous, current, ⟨[], by simp⟩, computed, advancedOk, originCache, epochOk,
+      justifiedOk, weighed, originBit, frame.currentJustified.trans originTarget,
+      frame.previousJustified.trans originSource⟩
+
+/-- A changed finalization has a fresh threshold whose stored source is that finalized checkpoint.
+
+An inherited previous bit uses its original current threshold and original source.
+
+The selected target is strictly after the finalized epoch in every finalization rule. -/
+theorem finalized_source_threshold_at_cached_slot_of_initialized_chain
+    {engine : ExecutionEngine preset .phase0}
+    {genesis after atStep cached justified : BeaconState preset .phase0}
+    {eth1BlockHash : Hash32} {eth1Timestamp : UInt64} {deposits : Array Deposit}
+    {blocks : List (SignedBeaconBlock preset .phase0)} {count : Nat}
+    {total previous current : Gwei}
+    (initialized : initializeBeaconStateFromEth1 config checks eth1BlockHash eth1Timestamp
+      deposits = .ok genesis)
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block true)
+        genesis = .ok after)
+    (advanced : advanceSlots config count after = .ok atStep)
+    (cachedOk : processSlot atStep = .ok cached)
+    (justifiedOk : processJustificationAndFinalization cached = .ok justified)
+    (weighed : weighJustificationAndFinalization cached total previous current = .ok justified)
+    (changed : justified.finalizedCheckpoint ≠ cached.finalizedCheckpoint) :
+    ∃ earlierBlocks atBlock offset originStep originCached originJustified t p c,
+      ∃ currentTarget : Bool,
+      earlierBlocks <+: blocks ∧
+      earlierBlocks.foldlM
+        (fun state block => stateTransition config checks engine state block true)
+          genesis = .ok atBlock ∧
+      advanceSlots config offset atBlock = .ok originStep ∧
+      processSlot originStep = .ok originCached ∧
+      processJustificationAndFinalization originCached = .ok originJustified ∧
+      weighJustificationAndFinalization originCached t p c = .ok originJustified ∧
+      (if currentTarget then originJustified.justificationBits.bits[0] = true else
+        originJustified.justificationBits.bits[1] = true ∧
+          originCached.justificationBits.bits[0] = false) ∧
+      (if currentTarget then originCached.currentJustifiedCheckpoint else
+        originCached.previousJustifiedCheckpoint) = justified.finalizedCheckpoint ∧
+      justified.finalizedCheckpoint.epoch.toNat <
+        (if currentTarget then getCurrentEpoch originCached else
+          getPreviousEpoch originCached).toNat := by
+  rcases weighJustificationAndFinalization_finalized_target_gt weighed changed with
+      ⟨assigned, bit, later⟩ | ⟨assigned, bit, later⟩
+  · exact ⟨blocks, after, count, atStep, cached, justified, total, previous, current,
+      true, ⟨[], by simp⟩, computed, advanced, cachedOk, justifiedOk, weighed,
+      bit, assigned.symm, later⟩
+  · by_cases inherited : cached.justificationBits.bits[0] = true
+    · obtain ⟨earlierBlocks, atBlock, offset, originStep, originCached, epoched,
+        originJustified, t, p, c, isPrefix, prefixOk, originAdvanced, originCache, _, originOk,
+        originWeighed, originBit, target, source⟩ :=
+        newest_bit_source_at_cached_slot_of_initialized_chain
+          initialized computed advanced cachedOk inherited
+      have targetEpoch := (weighJustificationAndFinalization_current_checkpoint
+        originWeighed originBit).1
+      have newestEpoch := newest_bit_epoch_at_cached_slot_of_initialized_chain
+        initialized computed advanced cachedOk inherited
+      refine ⟨earlierBlocks, atBlock, offset, originStep, originCached, originJustified,
+        t, p, c, true, isPrefix, prefixOk, originAdvanced, originCache, originOk, originWeighed,
+        originBit, source.symm.trans assigned.symm, ?_⟩
+      have targetValue := congrArg (fun checkpoint : Checkpoint => checkpoint.epoch.toNat) target
+      have previousValue := getPreviousEpoch_toNat cached
+      have targetEpochValue := congrArg UInt64.toNat targetEpoch
+      simp only [↓reduceIte]
+      omega
+    · have cleared : cached.justificationBits.bits[0] = false := by
+        cases bit : cached.justificationBits.bits[0] <;> simp_all
+      exact ⟨blocks, after, count, atStep, cached, justified, total, previous, current,
+        false, ⟨[], by simp⟩, computed, advanced, cachedOk, justifiedOk, weighed,
+        ⟨bit, cleared⟩, assigned.symm, later⟩
+
+/-- A non-genesis finalized checkpoint has a threshold that uses that exact source checkpoint.
+
+The witness records an actual successful weighing call in the initialized execution. -/
+theorem finalized_source_threshold_of_initialized_chain
+    {engine : ExecutionEngine preset .phase0}
+    {genesis after : BeaconState preset .phase0}
+    {eth1BlockHash : Hash32} {eth1Timestamp : UInt64} {deposits : Array Deposit}
+    {blocks : List (SignedBeaconBlock preset .phase0)}
+    (initialized : initializeBeaconStateFromEth1 config checks eth1BlockHash eth1Timestamp
+      deposits = .ok genesis)
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block true)
+        genesis = .ok after)
+    (nonGenesis : after.finalizedCheckpoint.epoch ≠ GENESIS_EPOCH) :
+    ∃ earlierBlocks atBlock offset originStep cached justified total previous current,
+      ∃ currentTarget : Bool,
+      earlierBlocks <+: blocks ∧
+      earlierBlocks.foldlM
+        (fun state block => stateTransition config checks engine state block true)
+          genesis = .ok atBlock ∧
+      advanceSlots config offset atBlock = .ok originStep ∧
+      processSlot originStep = .ok cached ∧
+      processJustificationAndFinalization cached = .ok justified ∧
+      weighJustificationAndFinalization cached total previous current = .ok justified ∧
+      (if currentTarget then justified.justificationBits.bits[0] = true else
+        justified.justificationBits.bits[1] = true ∧ cached.justificationBits.bits[0] = false) ∧
+      (if currentTarget then cached.currentJustifiedCheckpoint else
+        cached.previousJustifiedCheckpoint) = after.finalizedCheckpoint ∧
+      after.finalizedCheckpoint.epoch.toNat <
+        (if currentTarget then getCurrentEpoch cached else getPreviousEpoch cached).toNat := by
+  have changed : after.finalizedCheckpoint ≠ genesis.finalizedCheckpoint := by
+    intro same
+    apply nonGenesis
+    exact (congrArg (·.epoch) same).trans
+      (initializeBeaconStateFromEth1_checkpoint_epochs (by decide) initialized).2.2
+  obtain ⟨earlier, block, later, atBlock, offset, atStep, next, cached, epoched, justified,
+    split, prefixOk, _, _, advanced, _, cachedOk, _, justifiedOk, assigned, changed⟩ :=
+    stateTransition_chain_finalized_origin (by decide) computed changed
+  rcases processJustificationAndFinalization_ok justifiedOk with same |
+      ⟨total, previous, current, weighed⟩
+  · exact (changed (same ▸ rfl)).elim
+  · obtain ⟨earlierBlocks, originBlock, originOffset, originStep, originCached,
+      originJustified, t, p, c, currentTarget, isPrefix, originPrefix, originAdvanced,
+      originCache, originOk, originWeighed, bit, source, targetGt⟩ :=
+      finalized_source_threshold_at_cached_slot_of_initialized_chain initialized prefixOk
+        advanced cachedOk justifiedOk weighed changed
+    refine ⟨earlierBlocks, originBlock, originOffset, originStep, originCached,
+      originJustified, t, p, c, currentTarget, ?_, originPrefix, originAdvanced, originCache,
+      originOk, originWeighed, bit, source.trans assigned.symm, ?_⟩
+    · obtain ⟨rest, restEq⟩ := isPrefix
+      exact ⟨rest ++ block :: later, by rw [← List.append_assoc, restEq, ← split]⟩
+    · simpa only [assigned] using targetGt
+
+/-- Finalization supplies a concrete threshold whose authenticated signers name its exact source.
+
+The target is later than that source, and the weights belong to the historical cached state. -/
+theorem finalized_source_signers_of_initialized_chain
+    {engine : ExecutionEngine preset .phase0}
+    {genesis after : BeaconState preset .phase0}
+    {eth1BlockHash : Hash32} {eth1Timestamp : UInt64} {deposits : Array Deposit}
+    {blocks : List (SignedBeaconBlock preset .phase0)}
+    (positive : 0 < preset.MIN_SEED_LOOKAHEAD.toNat)
+    (history : preset.MIN_SEED_LOOKAHEAD.toNat + 3 <
+      preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (initialized : initializeBeaconStateFromEth1 config checks eth1BlockHash eth1Timestamp
+      deposits = .ok genesis)
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block true)
+        genesis = .ok after)
+    (nonGenesis : after.finalizedCheckpoint.epoch ≠ GENESIS_EPOCH) :
+    ∃ earlierBlocks atBlock offset atStep cached justified epoch attestations indices,
+      earlierBlocks <+: blocks ∧
+      earlierBlocks.foldlM
+        (fun state block => stateTransition config checks engine state block true)
+          genesis = .ok atBlock ∧
+      advanceSlots config offset atBlock = .ok atStep ∧
+      processSlot atStep = .ok cached ∧
+      processJustificationAndFinalization cached = .ok justified ∧
+      after.finalizedCheckpoint.epoch.toNat < epoch.toNat ∧
+      getMatchingTargetAttestations cached (by decide) epoch = .ok attestations ∧
+      getUnslashedAttestingIndices cached attestations = .ok indices ∧
+      2 * sumMarked cached.validators.data
+          (markIndices cached.validators.data.size
+            (getActiveValidatorIndices cached (getCurrentEpoch cached))) ≤
+        3 * sumMarked cached.validators.data (markIndices cached.validators.data.size indices) +
+          3 * totalBalanceFloor cached indices ∧
+      ∀ index ∈ indices,
+        ∃ (recorded : BeaconState preset .phase0)
+          (indexed : IndexedAttestation preset .phase0),
+          index ∈ indexed.attestingIndices.data ∧
+          indexed.data.target.epoch = epoch ∧
+          indexed.data.source = after.finalizedCheckpoint ∧
+          isValidIndexedAttestation config checks recorded indexed = .ok true := by
+  obtain ⟨earlierBlocks, atBlock, offset, atStep, cached, justified, total, previous, current,
+    currentTarget, isPrefix, prefixOk, advanced, cachedOk, justifiedOk, weighed, bit, source,
+    later⟩ := finalized_source_threshold_of_initialized_chain initialized computed nonGenesis
+  have eligible : ¬getCurrentEpoch cached ≤ GENESIS_EPOCH + 1 := by
+    intro early
+    have same : justified = cached := by
+      simpa only [processJustificationAndFinalization_early (by decide) early,
+        Except.ok.injEq] using justifiedOk.symm
+    cases currentTarget
+    · have cleared := early_justificationBits_at_cached_slot initialized prefixOk advanced
+        cachedOk early 1
+      have set : cached.justificationBits.bits[1] = true := by simpa only [same] using bit.1
+      simp_all
+    · have cleared := early_justificationBits_at_cached_slot initialized prefixOk advanced
+        cachedOk early 0
+      have set : cached.justificationBits.bits[0] = true := by
+        simpa only [same, ↓reduceIte] using bit
+      simp_all
+  cases currentTarget
+  · obtain ⟨attestations, indices, matching, indicesOk, raw, witnesses⟩ :=
+      previousJustification_authenticated_at_cached_slot positive history initialized
+        prefixOk advanced cachedOk justifiedOk eligible bit.1 bit.2
+    refine ⟨earlierBlocks, atBlock, offset, atStep, cached, justified, getPreviousEpoch cached,
+      attestations, indices, isPrefix, prefixOk, advanced, cachedOk, justifiedOk, later,
+      matching, indicesOk, raw, ?_⟩
+    intro index member
+    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, recorded, _, indexed, _, _, _, signer,
+      sourceEq, epochEq, _, _, valid⟩ := witnesses index member
+    exact ⟨recorded, indexed, signer, epochEq, sourceEq.trans source, valid⟩
+  · obtain ⟨attestations, indices, matching, indicesOk, raw, witnesses⟩ :=
+      currentJustification_authenticated_at_cached_slot positive history initialized
+        prefixOk advanced cachedOk justifiedOk eligible bit
+    refine ⟨earlierBlocks, atBlock, offset, atStep, cached, justified, getCurrentEpoch cached,
+      attestations, indices, isPrefix, prefixOk, advanced, cachedOk, justifiedOk, later,
+      matching, indicesOk, raw, ?_⟩
+    intro index member
+    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, recorded, _, indexed, _, _, _, signer,
+      sourceEq, epochEq, _, _, valid⟩ := witnesses index member
+    exact ⟨recorded, indexed, signer, epochEq, sourceEq.trans source, valid⟩
+
 /-- A candidate state launches the chain exactly when it is late enough.
 
 It must also have enough validators active at the genesis epoch. -/

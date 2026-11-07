@@ -4732,4 +4732,310 @@ theorem stateTransition_chain_latestBlockHeader_slot (before : fork < .altair)
       rw [header, (frame_processBlock before blockOk).slot, (processSlots_slot slotsOk).2]
     | cons next rest => exact ih (by simp) tail
 
+/-- A true newest bit after a slot still names the stored current justified epoch.
+
+After an epoch transition, bit zero names the epoch that has just ended. -/
+theorem advanceSlot_newest_bit_epoch (before : fork < .altair)
+    (holds : state.justificationBits.bits[0] = true →
+      state.currentJustifiedCheckpoint.epoch.toNat + 1 = (getCurrentEpoch state).toNat)
+    (earlyBits : getCurrentEpoch state ≤ GENESIS_EPOCH + 1 →
+      ∀ index : Fin 4, state.justificationBits.bits[index] = false)
+    (computed : advanceSlot config state = .ok after)
+    (bit : after.justificationBits.bits[0] = true) :
+    after.currentJustifiedCheckpoint.epoch.toNat + 1 = (getCurrentEpoch after).toNat := by
+  simp only [advanceSlot, bind_ok_iff, liftAccessor_ok, liftArith, mapError_ok_iff,
+    addChecked_ok_iff, pure, Except.pure, Except.ok.injEq] at computed
+  obtain ⟨next, ⟨_, sum⟩, cached, cachedOk, epoched, epochedOk, rfl⟩ := computed
+  have frame := frame_processSlot cachedOk
+  simp only [UInt64.toNat_one] at sum
+  unfold epochIfLast at epochedOk
+  split at epochedOk
+  · rename_i boundary
+    have boundary' : next.toNat % preset.SLOTS_PER_EPOCH.toNat = 0 := by
+      simpa [UInt64.toNat_mod] using congrArg UInt64.toNat boundary
+    have step : next.toNat / preset.SLOTS_PER_EPOCH.toNat =
+        state.slot.toNat / preset.SLOTS_PER_EPOCH.toNat + 1 := by
+      rw [sum]
+      exact Nat.succ_div_of_dvd (Nat.dvd_of_mod_eq_zero (sum ▸ boundary'))
+    obtain ⟨justified, justifiedOk, bits, current, _⟩ :=
+      processEpoch_justification before epochedOk
+    change epoched.justificationBits.bits[0] = true at bit
+    rw [bits] at bit
+    by_cases early : getCurrentEpoch cached ≤ GENESIS_EPOCH + 1
+    · rw [processJustificationAndFinalization_early before early] at justifiedOk
+      cases justifiedOk
+      have cleared := earlyBits (by simpa only [getCurrentEpoch, frame.slot] using early) 0
+      simp_all [frame.justificationBits]
+    · have weighed := justifiedOk
+      unfold processJustificationAndFinalization at weighed
+      split at weighed
+      · exact absurd ‹_› (Nat.not_le_of_lt before)
+      simp only [bind_ok_iff, liftAccessor_ok] at weighed
+      obtain ⟨_, _, _, _, _, _, _, _, _, _, weighed⟩ := weighed
+      have epoch := (weighJustificationAndFinalization_current_checkpoint weighed bit).1
+      change epoched.currentJustifiedCheckpoint.epoch.toNat + 1 =
+        next.toNat / preset.SLOTS_PER_EPOCH.toNat
+      rw [current, epoch, getCurrentEpoch_toNat, frame.slot, step]
+  · rename_i notBoundary
+    cases epochedOk
+    have notBoundary' : ¬preset.SLOTS_PER_EPOCH.toNat ∣ state.slot.toNat + 1 := by
+      intro divides
+      apply notBoundary
+      apply UInt64.toNat_inj.mp
+      simpa [UInt64.toNat_mod, sum] using Nat.mod_eq_zero_of_dvd divides
+    have step : next.toNat / preset.SLOTS_PER_EPOCH.toNat =
+        state.slot.toNat / preset.SLOTS_PER_EPOCH.toNat := by
+      rw [sum]
+      exact Nat.succ_div_of_not_dvd notBoundary'
+    have old := holds (frame.justificationBits ▸ bit)
+    change cached.currentJustifiedCheckpoint.epoch.toNat + 1 =
+      next.toNat / preset.SLOTS_PER_EPOCH.toNat
+    rw [frame.currentJustified, step]
+    exact old
+
+/-- Empty-slot advancement preserves the epoch identified by the newest true bit. -/
+theorem advanceSlots_newest_bit_epoch (before : fork < .altair) {count : Nat}
+    (holds : state.justificationBits.bits[0] = true →
+      state.currentJustifiedCheckpoint.epoch.toNat + 1 = (getCurrentEpoch state).toNat)
+    (earlyBits : getCurrentEpoch state ≤ GENESIS_EPOCH + 1 →
+      ∀ index : Fin 4, state.justificationBits.bits[index] = false)
+    (computed : advanceSlots config count state = .ok after) :
+    after.justificationBits.bits[0] = true →
+      after.currentJustifiedCheckpoint.epoch.toNat + 1 = (getCurrentEpoch after).toNat := by
+  induction count generalizing state with
+  | zero => cases computed; exact holds
+  | succ count ih =>
+    obtain ⟨middle, first, rest⟩ := bind_ok_iff.mp computed
+    exact ih (advanceSlot_newest_bit_epoch before holds earlyBits first)
+      (advanceSlot_early_bits before earlyBits first) rest
+
+/-- A valid Phase 0 block preserves the epoch identified by the newest true bit. -/
+theorem stateTransition_newest_bit_epoch (before : fork < .altair)
+    {signed : SignedBeaconBlock preset fork}
+    (holds : state.justificationBits.bits[0] = true →
+      state.currentJustifiedCheckpoint.epoch.toNat + 1 = (getCurrentEpoch state).toNat)
+    (earlyBits : getCurrentEpoch state ≤ GENESIS_EPOCH + 1 →
+      ∀ index : Fin 4, state.justificationBits.bits[index] = false)
+    (computed : stateTransition config checks engine state signed true = .ok after) :
+    after.justificationBits.bits[0] = true →
+      after.currentJustifiedCheckpoint.epoch.toNat + 1 = (getCurrentEpoch after).toNat := by
+  obtain ⟨advanced, slotsOk, _, _, blockOk, _⟩ := stateTransition_ok computed
+  have frame := frame_processBlock before blockOk
+  simp only [processSlots, bind_ok_iff, ensure_ok_iff] at slotsOk
+  obtain ⟨_, _, advancedOk⟩ := slotsOk
+  simpa only [frame.justificationBits, frame.currentJustified, getCurrentEpoch, frame.slot] using
+    advanceSlots_newest_bit_epoch before holds earlyBits advancedOk
+
+/-- Within one epoch a slot preserves both justified checkpoints and the justification bits. -/
+theorem advanceSlot_justification_of_same_epoch
+    (computed : advanceSlot config state = .ok after)
+    (sameEpoch : getCurrentEpoch after = getCurrentEpoch state) :
+    after.currentJustifiedCheckpoint = state.currentJustifiedCheckpoint ∧
+      after.previousJustifiedCheckpoint = state.previousJustifiedCheckpoint ∧
+      after.justificationBits = state.justificationBits := by
+  simp only [advanceSlot, bind_ok_iff, liftAccessor_ok, liftArith, mapError_ok_iff,
+    addChecked_ok_iff, pure, Except.pure, Except.ok.injEq] at computed
+  obtain ⟨next, ⟨_, sum⟩, cached, cachedOk, epoched, epochedOk, rfl⟩ := computed
+  have frame := frame_processSlot cachedOk
+  simp only [UInt64.toNat_one] at sum
+  unfold epochIfLast at epochedOk
+  split at epochedOk
+  · rename_i boundary
+    have boundary' : next.toNat % preset.SLOTS_PER_EPOCH.toNat = 0 := by
+      simpa [UInt64.toNat_mod] using congrArg UInt64.toNat boundary
+    have step := Nat.succ_div_of_dvd (Nat.dvd_of_mod_eq_zero (sum ▸ boundary'))
+    have epochs := congrArg UInt64.toNat sameEpoch
+    simp only [getCurrentEpoch_toNat] at epochs
+    rw [sum] at epochs
+    omega
+  · cases epochedOk
+    exact ⟨frame.currentJustified, frame.previousJustified, frame.justificationBits⟩
+
+/-- An empty-slot run within one epoch preserves both justified checkpoints and all bits. -/
+theorem advanceSlots_justification_of_same_epoch {count : Nat}
+    (computed : advanceSlots config count state = .ok after)
+    (sameEpoch : getCurrentEpoch after = getCurrentEpoch state) :
+    after.currentJustifiedCheckpoint = state.currentJustifiedCheckpoint ∧
+      after.previousJustifiedCheckpoint = state.previousJustifiedCheckpoint ∧
+      after.justificationBits = state.justificationBits := by
+  induction count generalizing state with
+  | zero => cases computed; exact ⟨rfl, rfl, rfl⟩
+  | succ count ih =>
+    obtain ⟨middle, first, rest⟩ := bind_ok_iff.mp computed
+    have moved := advanceSlot_slot first
+    have remaining := advanceSlots_slot count rest
+    have lower : state.slot.toNat / preset.SLOTS_PER_EPOCH.toNat ≤
+        middle.slot.toNat / preset.SLOTS_PER_EPOCH.toNat :=
+      Nat.div_le_div_right (by omega)
+    have upper : middle.slot.toNat / preset.SLOTS_PER_EPOCH.toNat ≤
+        after.slot.toNat / preset.SLOTS_PER_EPOCH.toNat :=
+      Nat.div_le_div_right (by omega)
+    have epochs := congrArg UInt64.toNat sameEpoch
+    simp only [getCurrentEpoch_toNat] at epochs
+    have middleEpoch : getCurrentEpoch middle = getCurrentEpoch state := by
+      apply UInt64.toNat_inj.mp
+      simp only [getCurrentEpoch_toNat]
+      omega
+    obtain ⟨current, previous, bits⟩ :=
+      ih rest (sameEpoch.trans middleEpoch.symm)
+    obtain ⟨firstCurrent, firstPrevious, firstBits⟩ :=
+      advanceSlot_justification_of_same_epoch first middleEpoch
+    exact ⟨current.trans firstCurrent, previous.trans firstPrevious, bits.trans firstBits⟩
+
+/-- A newest bit preserves both checkpoints or comes from a current threshold at this slot.
+
+In the threshold case the old current checkpoint is the source stored for the next epoch. -/
+theorem advanceSlot_newest_bit_source (before : fork < .altair)
+    (computed : advanceSlot config state = .ok after)
+    (bit : after.justificationBits.bits[0] = true) :
+    (after.currentJustifiedCheckpoint = state.currentJustifiedCheckpoint ∧
+      after.previousJustifiedCheckpoint = state.previousJustifiedCheckpoint ∧
+      state.justificationBits.bits[0] = true) ∨
+    ∃ cached epoched justified total previous current,
+      processSlot state = .ok cached ∧ processEpoch config cached = .ok epoched ∧
+      processJustificationAndFinalization cached = .ok justified ∧
+      weighJustificationAndFinalization cached total previous current = .ok justified ∧
+      justified.justificationBits.bits[0] = true ∧
+      after.currentJustifiedCheckpoint = justified.currentJustifiedCheckpoint ∧
+      after.previousJustifiedCheckpoint = cached.currentJustifiedCheckpoint := by
+  simp only [advanceSlot, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+    Except.ok.injEq] at computed
+  obtain ⟨next, _, cached, cachedOk, epoched, epochedOk, rfl⟩ := computed
+  have frame := frame_processSlot cachedOk
+  unfold epochIfLast at epochedOk
+  split at epochedOk
+  · obtain ⟨justified, justifiedOk, bits, current, previous, _⟩ :=
+      processEpoch_justification before epochedOk
+    change epoched.justificationBits.bits[0] = true at bit
+    rw [bits] at bit
+    rcases processJustificationAndFinalization_ok justifiedOk with same |
+        ⟨total, previousBalance, currentBalance, weighed⟩
+    · subst justified
+      exact .inl ⟨current.trans frame.currentJustified,
+        previous.trans frame.previousJustified, frame.justificationBits ▸ bit⟩
+    · exact .inr ⟨cached, epoched, justified, total, previousBalance, currentBalance,
+        cachedOk, epochedOk, justifiedOk, weighed, bit, current,
+        previous.trans (weighJustificationAndFinalization_checkpoints weighed).1⟩
+  · cases epochedOk
+    exact .inl ⟨frame.currentJustified, frame.previousJustified, frame.justificationBits ▸ bit⟩
+
+/-- A newest bit in a slot run retains its original source and target checkpoints. -/
+theorem advanceSlots_newest_bit_source (before : fork < .altair) {count : Nat}
+    (computed : advanceSlots config count state = .ok after)
+    (bit : after.justificationBits.bits[0] = true) :
+    (after.currentJustifiedCheckpoint = state.currentJustifiedCheckpoint ∧
+      after.previousJustifiedCheckpoint = state.previousJustifiedCheckpoint ∧
+      state.justificationBits.bits[0] = true) ∨
+    ∃ offset atStep next cached epoched justified total previous current,
+      offset < count ∧ advanceSlots config offset state = .ok atStep ∧
+      advanceSlot config atStep = .ok next ∧
+      processSlot atStep = .ok cached ∧ processEpoch config cached = .ok epoched ∧
+      processJustificationAndFinalization cached = .ok justified ∧
+      weighJustificationAndFinalization cached total previous current = .ok justified ∧
+      justified.justificationBits.bits[0] = true ∧
+      after.currentJustifiedCheckpoint = justified.currentJustifiedCheckpoint ∧
+      after.previousJustifiedCheckpoint = cached.currentJustifiedCheckpoint := by
+  induction count generalizing state with
+  | zero => cases computed; exact .inl ⟨rfl, rfl, bit⟩
+  | succ count ih =>
+    obtain ⟨middle, first, rest⟩ := bind_ok_iff.mp computed
+    rcases ih rest with ⟨sameCurrent, samePrevious, oldBit⟩ | occurred
+    · rcases advanceSlot_newest_bit_source before first oldBit with inherited | occurred
+      · exact .inl ⟨sameCurrent.trans inherited.1,
+          samePrevious.trans inherited.2.1, inherited.2.2⟩
+      · obtain ⟨cached, epoched, justified, total, previous, current, cachedOk, epochOk,
+          justifiedOk, weighed, bit, target, source⟩ := occurred
+        exact .inr ⟨0, state, middle, cached, epoched, justified, total, previous, current,
+          by omega, rfl, first, cachedOk, epochOk, justifiedOk, weighed, bit,
+          sameCurrent.trans target, samePrevious.trans source⟩
+    · obtain ⟨offset, atStep, next, cached, epoched, justified, total, previous, current,
+        inside, prefixOk, stepOk, cachedOk, epochOk, justifiedOk, weighed, bit, target, source⟩ :=
+        occurred
+      refine .inr ⟨offset + 1, atStep, next, cached, epoched, justified, total, previous,
+        current, by omega, ?_, stepOk, cachedOk, epochOk, justifiedOk, weighed, bit, target, source⟩
+      simp only [advanceSlots, bind_ok_iff]
+      exact ⟨middle, first, prefixOk⟩
+
+/-- A newest bit after a block retains its threshold's exact source and target. -/
+theorem stateTransition_newest_bit_source (before : fork < .altair)
+    {signed : SignedBeaconBlock preset fork}
+    (computed : stateTransition config checks engine state signed true = .ok after)
+    (bit : after.justificationBits.bits[0] = true) :
+    (after.currentJustifiedCheckpoint = state.currentJustifiedCheckpoint ∧
+      after.previousJustifiedCheckpoint = state.previousJustifiedCheckpoint ∧
+      state.justificationBits.bits[0] = true) ∨
+    ∃ offset atStep next cached epoched justified total previous current,
+      offset < signed.message.slot.toNat - state.slot.toNat ∧
+      advanceSlots config offset state = .ok atStep ∧
+      advanceSlot config atStep = .ok next ∧
+      processSlot atStep = .ok cached ∧ processEpoch config cached = .ok epoched ∧
+      processJustificationAndFinalization cached = .ok justified ∧
+      weighJustificationAndFinalization cached total previous current = .ok justified ∧
+      justified.justificationBits.bits[0] = true ∧
+      after.currentJustifiedCheckpoint = justified.currentJustifiedCheckpoint ∧
+      after.previousJustifiedCheckpoint = cached.currentJustifiedCheckpoint := by
+  obtain ⟨advanced, slotsOk, _, _, blockOk, _⟩ := stateTransition_ok computed
+  have frame := frame_processBlock before blockOk
+  have advancedBit : advanced.justificationBits.bits[0] = true := by
+    simpa only [frame.justificationBits] using bit
+  simp only [processSlots, bind_ok_iff, ensure_ok_iff] at slotsOk
+  obtain ⟨_, _, advancedOk⟩ := slotsOk
+  rcases advanceSlots_newest_bit_source before advancedOk advancedBit with inherited | occurred
+  · exact .inl ⟨frame.currentJustified.trans inherited.1,
+      frame.previousJustified.trans inherited.2.1, inherited.2.2⟩
+  · obtain ⟨offset, atStep, next, cached, epoched, justified, total, previous, current,
+      inside, prefixOk, stepOk, cachedOk, epochOk, justifiedOk, weighed, bit, target, source⟩ :=
+      occurred
+    exact .inr ⟨offset, atStep, next, cached, epoched, justified, total, previous, current,
+      inside, prefixOk, stepOk, cachedOk, epochOk, justifiedOk, weighed, bit,
+      frame.currentJustified.trans target, frame.previousJustified.trans source⟩
+
+/-- A chain's newest bit retains the two checkpoints of its original current threshold. -/
+theorem stateTransition_chain_newest_bit_source (before : fork < .altair)
+    {blocks : List (SignedBeaconBlock preset fork)}
+    (computed : blocks.foldlM
+      (fun state block => stateTransition config checks engine state block true)
+        state = .ok after)
+    (bit : after.justificationBits.bits[0] = true) :
+    (after.currentJustifiedCheckpoint = state.currentJustifiedCheckpoint ∧
+      after.previousJustifiedCheckpoint = state.previousJustifiedCheckpoint ∧
+      state.justificationBits.bits[0] = true) ∨
+    ∃ earlier block later atBlock offset atStep next cached epoched justified total previous,
+      ∃ current,
+      blocks = earlier ++ block :: later ∧
+      earlier.foldlM
+        (fun state block => stateTransition config checks engine state block true)
+          state = .ok atBlock ∧
+      offset < block.message.slot.toNat - atBlock.slot.toNat ∧
+      advanceSlots config offset atBlock = .ok atStep ∧
+      advanceSlot config atStep = .ok next ∧
+      processSlot atStep = .ok cached ∧ processEpoch config cached = .ok epoched ∧
+      processJustificationAndFinalization cached = .ok justified ∧
+      weighJustificationAndFinalization cached total previous current = .ok justified ∧
+      justified.justificationBits.bits[0] = true ∧
+      after.currentJustifiedCheckpoint = justified.currentJustifiedCheckpoint ∧
+      after.previousJustifiedCheckpoint = cached.currentJustifiedCheckpoint := by
+  induction blocks generalizing state with
+  | nil => cases computed; exact .inl ⟨rfl, rfl, bit⟩
+  | cons first rest ih =>
+    obtain ⟨middle, firstOk, restOk⟩ := bind_ok_iff.mp computed
+    rcases ih restOk with ⟨sameCurrent, samePrevious, oldBit⟩ | occurred
+    · rcases stateTransition_newest_bit_source before firstOk oldBit with inherited | occurred
+      · exact .inl ⟨sameCurrent.trans inherited.1,
+          samePrevious.trans inherited.2.1, inherited.2.2⟩
+      · obtain ⟨offset, atStep, next, cached, epoched, justified, total, previous, current,
+          inside, prefixOk, stepOk, cachedOk, epochOk, justifiedOk, weighed, bit, target, source⟩ :=
+          occurred
+        exact .inr ⟨[], first, rest, state, offset, atStep, next, cached, epoched, justified,
+          total, previous, current, rfl, rfl, inside, prefixOk, stepOk, cachedOk, epochOk,
+          justifiedOk, weighed, bit, sameCurrent.trans target, samePrevious.trans source⟩
+    · obtain ⟨earlier, block, later, atBlock, offset, atStep, next, cached, epoched, justified,
+        total, previous, current, split, blocksOk, inside, prefixOk, stepOk, cachedOk, epochOk,
+        justifiedOk, weighed, bit, target, source⟩ := occurred
+      refine .inr ⟨first :: earlier, block, later, atBlock, offset, atStep, next, cached,
+        epoched, justified, total, previous, current, by simp [split], ?_, inside, prefixOk,
+        stepOk, cachedOk, epochOk, justifiedOk, weighed, bit, target, source⟩
+      simp only [List.foldlM_cons, bind_ok_iff]
+      exact ⟨middle, firstOk, blocksOk⟩
+
 end EthLib.Consensus

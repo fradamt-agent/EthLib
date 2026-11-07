@@ -1130,6 +1130,27 @@ theorem weighJustificationAndFinalization_bits {total previous current : Gwei}
   rw [pwOk.2, thresholdOk.2, cwOk.2]
   simp [Nat.mul_comm]
 
+/-- A current threshold sets the justified checkpoint to that exact epoch and cached root.
+
+This also holds when the checkpoint value does not change. -/
+theorem weighJustificationAndFinalization_current_checkpoint {total previous current : Gwei}
+    (computed : weighJustificationAndFinalization state total previous current = .ok after)
+    (bit : after.justificationBits.bits[0] = true) :
+    after.currentJustifiedCheckpoint.epoch = getCurrentEpoch state ∧
+      getBlockRoot state (getCurrentEpoch state) = .ok after.currentJustifiedCheckpoint.root := by
+  simp only [weighJustificationAndFinalization, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+    Except.ok.injEq] at computed
+  obtain ⟨_, _, _, _, _, _, weight, weightOk, checkpoint, checkpointOk,
+    _, _, _, _, _, _, _, _, rfl⟩ := computed
+  simp only [Vector.getElem_set_self, decide_eq_true_eq] at bit
+  simp only [justifyCheckpoint] at checkpointOk
+  split at checkpointOk
+  · simp only [bind_ok_iff, liftAccessor_ok, pure, Except.pure, Except.ok.injEq] at checkpointOk
+    obtain ⟨root, rootOk, rfl⟩ := checkpointOk
+    exact ⟨rfl, rootOk⟩
+  · rename_i notEnough
+    exact (notEnough (by simpa using bit)).elim
+
 /-- A changed justified checkpoint has the true bit for its selected target epoch.
 
 The previous bit is allowed to be inherited here; the current threshold always sets bit zero. -/
@@ -1451,6 +1472,25 @@ theorem weighJustificationAndFinalization_finalized_endpoint {total previous cur
   · exact .inl ⟨assigned, one.1, .inl (assigned ▸ one.2.2)⟩
   · exact .inr ⟨assigned, three.1, .inr (assigned ▸ three.2.2.2)⟩
   · exact .inr ⟨assigned, two.1, .inl (assigned ▸ two.2.2)⟩
+
+/-- The last target required by a changed finalization is strictly after its checkpoint.
+
+Both previous-checkpoint rules use the previous epoch, not the current epoch. -/
+theorem weighJustificationAndFinalization_finalized_target_gt {total previous current : Gwei}
+    (computed : weighJustificationAndFinalization state total previous current = .ok after)
+    (changed : after.finalizedCheckpoint ≠ state.finalizedCheckpoint) :
+    (after.finalizedCheckpoint = state.currentJustifiedCheckpoint ∧
+      after.justificationBits.bits[0] = true ∧
+      after.finalizedCheckpoint.epoch.toNat < (getCurrentEpoch state).toNat) ∨
+    (after.finalizedCheckpoint = state.previousJustifiedCheckpoint ∧
+      after.justificationBits.bits[1] = true ∧
+      after.finalizedCheckpoint.epoch.toNat < (getPreviousEpoch state).toNat) := by
+  rcases weighJustificationAndFinalization_finalized_endpoint computed changed with
+      ⟨assigned, bit, gap⟩ | ⟨assigned, bit, gap⟩
+  · exact .inl ⟨assigned, bit, by rcases gap with gap | gap <;> omega⟩
+  · refine .inr ⟨assigned, bit, ?_⟩
+    simp only [getPreviousEpoch, toNat_saturatingSub, UInt64.toNat_one]
+    rcases gap with gap | gap <;> omega
 
 /-- Every changed finalization has a true bit for the epoch immediately after its checkpoint.
 
