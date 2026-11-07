@@ -5,6 +5,7 @@ public import EthLib.Consensus.Proofs.Transition.EpochPending
 public import EthLib.Consensus.Proofs.Transition.Invariants
 public import EthLib.Consensus.Proofs.Transition.EpochRewards
 public import EthLib.Consensus.Proofs.Transition.Requests
+public import EthLib.Consensus.Proofs.Transition.SlashingBalances
 public import EthLib.Consensus.Proofs.Transition.WithdrawalAmounts
 
 /-!
@@ -110,20 +111,6 @@ theorem setValidator_balances {index : ValidatorIndex} {validator : Validator}
     (set : state.setValidator index validator = .ok after) : after.balances = state.balances := by
   obtain ⟨_, rfl⟩ := setValidator_ok set
   rfl
-
-/-- Starting the exit of a validator keeps the balances. -/
-theorem initiateValidatorExit_balances {index : ValidatorIndex}
-    (computed : initiateValidatorExit config state index = .ok after) :
-    after.balances = state.balances := by
-  unfold initiateValidatorExit at computed
-  simp only [bind_ok_iff] at computed
-  obtain ⟨_, _, computed⟩ := computed
-  split at computed
-  · cases computed
-    rfl
-  · simp only [bind_ok_iff] at computed
-    obtain ⟨⟨queued, _⟩, queuedOk, _, _, set⟩ := computed
-    rw [setValidator_balances set, (exitQueue_validators queuedOk).2]
 
 /-- A fold whose every step keeps the balances keeps them. -/
 theorem foldlM_balances {α ε : Type}
@@ -865,7 +852,7 @@ theorem sameSizes_processEth1DataReset {before : fork < .hegota}
 
 /-- What the slashings of an epoch do to the balances: one debit at each position.
 
-A theorem of the slashings proves this ledger; the epoch ledger takes it as given here. -/
+`slashingsLedger` proves it from the balances that the slashings leave. -/
 def SlashingsLedger (preset : Preset) (fork : Base.Fork) : Prop :=
   ∀ state after : BeaconState preset fork, state.RegistryWithinLimit →
     processSlashings state = .ok after →
@@ -888,7 +875,7 @@ That state comes after justification and the inactivity scores.
 The deposits and consolidations are those of the state that the pending balances step reads.
 
 No other step of the epoch changes a balance. -/
-theorem processEpochAltair_ledger (slashings : SlashingsLedger preset fork)
+theorem processEpochAltair_ledger_of_slashings (slashings : SlashingsLedger preset fork)
     {altair : .altair ≤ fork} (within : state.RegistryWithinLimit) (holds : BalancesMatch state)
     (room : state.validators.data.size + preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat < 2 ^ 64)
     (computed : processEpochAltair config checks state altair = .ok after) :
@@ -1012,7 +999,7 @@ Each balance takes the rewards and penalties of the epoch, then the penalty of t
 The rewards are those of the state after justification.
 
 No other step of the epoch changes a balance. -/
-theorem processEpoch_ledger_of_lt_altair (slashings : SlashingsLedger preset fork)
+theorem processEpoch_ledger_of_lt_altair_of_slashings (slashings : SlashingsLedger preset fork)
     (before : fork < .altair) (computed : processEpoch config checks state = .ok after) :
     ∃ (justified : BeaconState preset fork) (deltas : List (Array Gwei × Array Gwei))
       (penalty : Nat → Nat),
@@ -1047,5 +1034,84 @@ theorem processEpoch_ledger_of_lt_altair (slashings : SlashingsLedger preset for
   refine ((((one.trans rewards).trans three).trans slashed).trans
     (BalanceLedger.of_balances rest)).congr fun i => ?_
   simp only [size1.1, size1.2, List.nil_append, List.append_nil, List.foldl_append]
+
+/-! ## The slashings of an epoch -/
+
+/-- For a registry within its limit, the slashings of an epoch debit each balance by its penalty.
+
+The penalty is the one of `processSlashings_balances`. -/
+theorem slashingsLedger : SlashingsLedger preset fork := by
+  intro state after within computed
+  have small : state.validators.data.size < 2 ^ 64 := by
+    have bound : state.validators.data.size ≤ _ := within
+    have := preset.VALIDATOR_REGISTRY_LIMIT.toNat_lt
+    omega
+  obtain ⟨total, slashedSum, _, _, _, balances⟩ := processSlashings_balances small computed
+  refine ⟨fun i => epochSlashingPenalty preset fork (getCurrentEpoch state) total.toNat
+    (min (slashedSum.toNat * (parameters preset fork).PROPORTIONAL_SLASHING_MULTIPLIER.toNat)
+      total.toNat) state.validators.data[i]?, fun i => ?_⟩
+  unfold balanceNat
+  rw [balances i]
+  cases state.balances.data[i]? <;> simp [BalanceChange.apply]
+
+/-- From Altair, the ledger of an epoch.
+
+The registry must be within its limit, with one balance for each validator.
+
+It also needs room in 64 bits for the new validators of the pending deposits.
+
+Each balance takes the rewards and penalties of the epoch first, then its slashing penalty.
+
+It then takes the deposits credited, then the consolidation transfers.
+
+No other step of the epoch changes a balance. -/
+theorem processEpochAltair_ledger {altair : .altair ≤ fork} (within : state.RegistryWithinLimit)
+    (holds : BalancesMatch state)
+    (room : state.validators.data.size + preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat < 2 ^ 64)
+    (computed : processEpochAltair config checks state altair = .ok after) :
+    ∃ (justified rewarded pending : BeaconState preset fork)
+      (deltas : List (Array Gwei × Array Gwei)) (penalty : Nat → Nat)
+      (deposits transfers : Nat → List BalanceChange),
+      (∃ middle, processJustificationAndFinalization state = .ok middle ∧
+        processInactivityUpdates config middle altair = .ok justified) ∧
+      processRewardsAndPenalties config justified = .ok rewarded ∧
+      (getCurrentEpoch justified ≠ GENESIS_EPOCH →
+        ∃ flags inactivity, (List.finRange PARTICIPATION_FLAG_WEIGHTS.length).mapM
+            (getFlagIndexDeltas justified altair) = .ok flags ∧
+          getInactivityPenaltyDeltas config justified = .ok inactivity ∧
+          deltas = flags ++ [inactivity]) ∧
+      (getCurrentEpoch justified = GENESIS_EPOCH → deltas = []) ∧
+      (∃ deposited, processPendingBalances config checks pending = .ok deposited ∧
+        (∀ electra : .pectra ≤ fork, ∃ middle,
+          processPendingDeposits config checks pending electra = .ok middle ∧
+          processPendingConsolidations middle electra = .ok deposited ∧
+          BalanceLedger pending middle deposits ∧ BalanceLedger middle deposited transfers) ∧
+        (fork < .pectra → (∀ i, deposits i = []) ∧ ∀ i, transfers i = [])) ∧
+      BalanceLedger state after fun i =>
+        (if i < state.validators.data.size ∧ i < state.balances.data.size then
+          deltaChanges deltas i else []) ++
+        [.debit .slashing (penalty i)] ++ deposits i ++ transfers i :=
+  processEpochAltair_ledger_of_slashings slashingsLedger within holds room computed
+
+/-- Before Altair, the ledger of an epoch.
+
+Each balance takes the rewards and penalties of the epoch, then its slashing penalty.
+
+The rewards are those of the state after justification.
+
+No other step of the epoch changes a balance. -/
+theorem processEpoch_ledger_of_lt_altair (before : fork < .altair)
+    (computed : processEpoch config checks state = .ok after) :
+    ∃ (justified : BeaconState preset fork) (deltas : List (Array Gwei × Array Gwei))
+      (penalty : Nat → Nat),
+      processJustificationAndFinalization state = .ok justified ∧
+      (getCurrentEpoch justified ≠ GENESIS_EPOCH →
+        ∃ attestation, getAttestationDeltas config justified before = .ok attestation ∧
+          deltas = [attestation]) ∧
+      (getCurrentEpoch justified = GENESIS_EPOCH → deltas = []) ∧
+      BalanceLedger state after fun i =>
+        (if i < state.validators.data.size ∧ i < state.balances.data.size then
+          deltaChanges deltas i else []) ++ [.debit .slashing (penalty i)] :=
+  processEpoch_ledger_of_lt_altair_of_slashings slashingsLedger before computed
 
 end EthLib.Consensus
