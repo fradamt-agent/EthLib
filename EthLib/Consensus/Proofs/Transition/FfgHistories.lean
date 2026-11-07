@@ -229,4 +229,45 @@ theorem accountable_safety_histories {g a b : ForkedBeaconState preset}
   (historyRefinement genesis wide lookahead within open_).accountable_safety
     ⟨x₁, on₁, rfl⟩ ⟨x₂, on₂, rfl⟩ conflicting ω₀ hD
 
+open scoped Classical in
+/-- Accountable safety for a finalized checkpoint and a later justified one of two histories.
+
+`xF` is a state on the histories, and its finalized checkpoint is `F`.
+
+`xJ` is a state on the histories, and its current justified checkpoint is `J`.
+
+A fork-choice store holds such a pair: its finalized and its justified checkpoint each come from
+a state that its chain reached, possibly on different branches.
+
+If the epoch of `F` is at most that of `J` and their blocks conflict, the conclusion of
+`accountable_safety_histories` holds. -/
+theorem accountable_safety_histories_justified {g a b : ForkedBeaconState preset}
+    (genesis : Genesis config checks g)
+    (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (within : ∀ (fork : Base.Fork) (state : BeaconState preset fork),
+      Reaches config checks g ⟨fork, state⟩ → state.RegistryWithinLimit)
+    (open_ : HistoryObligations config checks g a b)
+    {xF xJ : ForkedBeaconState preset} (onF : OnEither config checks a b xF)
+    (onJ : OnEither config checks a b xJ) (fromG : Reaches config checks g xJ)
+    (hle : xF.state.finalizedCheckpoint.epoch.toNat ≤
+      xJ.state.currentJustifiedCheckpoint.epoch.toNat)
+    (conflicting : Conflicting
+      (LinkedRoot.ofRoot (links := historyLinks config checks g a b)
+        xF.state.finalizedCheckpoint.root)
+      (LinkedRoot.ofRoot xJ.state.currentJustifiedCheckpoint.root))
+    (ω₀ : Weighing ValidatorIndex) {D : ℕ}
+    (hD : ∀ r ∈ (historyRefinement genesis wide lookahead within open_).records,
+      xF.state.finalizedCheckpoint.epoch.toNat ≤ r.target.epoch.toNat →
+      r.target.epoch.toNat ≤ xJ.state.currentJustifiedCheckpoint.epoch.toNat →
+      Weighing.drift ω₀ r.weighing ≤ D) :
+    stake ω₀.stake ω₀.active ≤
+      3 * stake ω₀.stake {i ∈ ω₀.active | ∃ data1 data2,
+        (i, data1) ∈ (historyRefinement genesis wide lookahead within open_).signed ∧
+        (i, data2) ∈ (historyRefinement genesis wide lookahead within open_).signed ∧
+        isSlashableAttestationData data1 data2 = true} + 2 * D ∨
+      historyEvidence config checks g a b :=
+  (historyRefinement genesis wide lookahead within open_).accountable_safety_justified
+    ⟨xF, onF, rfl⟩ ⟨xJ, onJ, fromG.checkpoints.2.2⟩ hle conflicting ω₀ hD
+
 end EthLib.Consensus
