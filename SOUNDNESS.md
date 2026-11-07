@@ -1330,10 +1330,26 @@ Under it, `validateLightClientUpdate_signed` shows that every member whose bit i
 `SignatureChecks.not_aggregateSound_acceptAll` shows that the assumption has content: the checks that accept every signature do not meet it.
 The header slots of the store never move back.
 `applyLightClientUpdate_slots`, `processLightClientUpdate_slots` and `processLightClientStoreForceUpdate_slots` show that the finalized and optimistic slots never decrease.
+`processLightClientFinalityUpdate_slots` and `processLightClientOptimisticUpdate_slots` show the same for the two short forms of an update.
 They also show that a finalized slot at or below the optimistic slot stays there.
 `initializeLightClientStore_headers` shows that a new store starts with one header for both.
 `LightClientStore.upgrade_beacon` shows that the upgrade of a store to a later fork keeps both beacon headers, so it keeps both slots too.
-So every store that these four steps reach from a bootstrap keeps that order.
+So every store that these steps reach from a bootstrap keeps that order.
+
+The committees of the store stay in their periods.
+`Consensus/Proofs/LightClient/Store.lean` takes a relation `serves`, which says which committee serves each period of the chain that the client follows.
+`LightClientStore.Invariant` holds when the finalized slot is at or below the optimistic slot, and the current committee serves the period of the finalized header.
+A next committee that the store knows must serve the period after it.
+The best valid update must fit the store: its slots are ordered, and it is signed in a period whose committee the store knows.
+`initializeLightClientStore_invariant` shows that a new store meets the invariant when the committee of its bootstrap serves its period.
+`processLightClientUpdate_invariant`, `processLightClientFinalityUpdate_invariant`, `processLightClientOptimisticUpdate_invariant` and `processLightClientStoreForceUpdate_invariant` show that each handler keeps it.
+`LightClientStore.upgrade_invariant` shows that the upgrade to a later fork keeps it too.
+The theorem for an update assumes that a next committee which the update proves serves the period after its attested header.
+The two short forms prove no committee, so they need no assumption.
+`validateLightClientUpdate_nextSyncCommittee_state` justifies the assumption: the proved root is the root of the next committee of the attested state, or SHA-256 has a collision.
+`processLightClientUpdate_period` and `processLightClientStoreForceUpdate_period` show that the finalized header never skips a period, and moves to the next one only when the store knows its committee.
+`processLightClientUpdate_syncCommittees_of_period_eq` and `processLightClientStoreForceUpdate_syncCommittees_of_period_eq` show that a store which knows its next committee keeps both committees while its finalized period stays.
+`processLightClientOptimisticUpdate_finalized` shows that an optimistic update changes neither the finalized header nor the committees.
 No theorem links an honest signer to the canonical chain; that is a property of the validators, not of the protocol text.
 
 ### Casper FFG

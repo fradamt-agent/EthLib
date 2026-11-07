@@ -19,6 +19,8 @@ Neither the new update nor the old best update ranks above a kept best valid upd
 
 The finalized and optimistic slots of a store never move back.
 
+This holds for an update, a finality update, an optimistic update and a forced update.
+
 A new store starts with one header for both.
 
 The finalized slot then stays at or below the optimistic slot.
@@ -446,6 +448,34 @@ theorem processLightClientStoreForceUpdate_slots {store after : LightClientStore
     all_goals
       simp only [gt_iff_lt, UInt64.le_iff_toNat_le] at *
       omega
+
+/-- Processing a finality update never moves the finalized slot or the optimistic slot back.
+
+A finalized slot at or below the optimistic slot stays at or below it. -/
+theorem processLightClientFinalityUpdate_slots {config : Config} {checks : SignatureChecks}
+    {store after : LightClientStore preset fork} {update : LightClientFinalityUpdate preset fork}
+    {currentSlot : Slot} {genesisValidatorsRoot : Root}
+    (computed : processLightClientFinalityUpdate config checks store update currentSlot
+      genesisValidatorsRoot = .ok after) :
+    store.finalizedHeader.beacon.slot ≤ after.finalizedHeader.beacon.slot ∧
+      store.optimisticHeader.beacon.slot ≤ after.optimisticHeader.beacon.slot ∧
+      (store.finalizedHeader.beacon.slot ≤ store.optimisticHeader.beacon.slot →
+        after.finalizedHeader.beacon.slot ≤ after.optimisticHeader.beacon.slot) :=
+  processLightClientUpdate_slots computed
+
+/-- Processing an optimistic update never moves the finalized slot or the optimistic slot back.
+
+A finalized slot at or below the optimistic slot stays at or below it. -/
+theorem processLightClientOptimisticUpdate_slots {config : Config} {checks : SignatureChecks}
+    {store after : LightClientStore preset fork} {update : LightClientOptimisticUpdate preset fork}
+    {currentSlot : Slot} {genesisValidatorsRoot : Root}
+    (computed : processLightClientOptimisticUpdate config checks store update currentSlot
+      genesisValidatorsRoot = .ok after) :
+    store.finalizedHeader.beacon.slot ≤ after.finalizedHeader.beacon.slot ∧
+      store.optimisticHeader.beacon.slot ≤ after.optimisticHeader.beacon.slot ∧
+      (store.finalizedHeader.beacon.slot ≤ store.optimisticHeader.beacon.slot →
+        after.finalizedHeader.beacon.slot ≤ after.optimisticHeader.beacon.slot) :=
+  processLightClientUpdate_slots computed
 
 end Slots
 
