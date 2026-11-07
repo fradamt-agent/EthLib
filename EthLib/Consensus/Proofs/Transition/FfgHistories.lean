@@ -10,7 +10,8 @@ Two histories of the beacon chain start at one genesis state `g` and end at `a` 
 
 This file builds the `FfgRefinement` of the pair from the provenance proofs.
 
-- Blocks: `LinkedRoot` over the parent links of the actual blocks of both histories.
+- Blocks: epoch-boundary pairs, `EpochBlock`, over the parent links of the actual blocks of both
+  histories, with each child's slot.
 - Evidence: a state with the zero root, or a cached header with the zero root, on either history.
 - Signed votes: data that a validator signed in an attestation checked in a block of either
   history.
@@ -51,8 +52,9 @@ def OnEither (x : ForkedBeaconState preset) : Prop :=
   Reaches config checks g x ∧ (Reaches config checks x a ∨ Reaches config checks x b)
 
 /-- The parent links of the actual blocks of both histories. -/
-def historyLinks (p r : Root) : Prop :=
-  ∃ x, OnEither config checks g a b x ∧ ChainBlock config checks g x p r
+def historyLinks (p r : Root) (slot : ℕ) : Prop :=
+  ∃ x, OnEither config checks g a b x ∧
+    ∃ s : Slot, ChainBlockAt config checks g x p r s ∧ s.toNat = slot
 
 /-- A hash with zero output on either history: a state root or a cached header root. -/
 def historyEvidence : Prop :=
@@ -77,10 +79,20 @@ structure HistoryObligations : Prop where
 end Histories
 
 /-- The genesis checkpoint maps to the genesis block. -/
-theorem genesis_toFfg {links : Root → Root → Prop} :
-    Checkpoint.toModel (fun c => LinkedRoot.ofRoot (links := links) c.root)
+theorem genesis_toFfg {links : Root → Root → ℕ → Prop} {spe : ℕ} :
+    Checkpoint.toModel (EpochBlock.ofCheckpoint (links := links) (slotsPerEpoch := spe))
         ⟨GENESIS_EPOCH, Vector.replicate 32 0⟩ = ⟨⟨none⟩, 0⟩ := by
-  simp [Checkpoint.toModel, LinkedRoot.ofRoot, GENESIS_EPOCH]
+  simp [Checkpoint.toModel, EpochBlock.ofCheckpoint, GENESIS_EPOCH]
+
+/-- Ancestry along blocks of one history past the first slot of an epoch is ancestry in the pair
+order of both histories. -/
+theorem pastAncestor_history {g a b x : ForkedBeaconState preset}
+    (hx : OnEither config checks g a b x) {e : ℕ} {r r' : Root}
+    (path : PastAncestor config checks g x (e * preset.SLOTS_PER_EPOCH.toNat) r r') :
+    Relation.ReflTransGen
+      (EpochBlock.after (historyLinks config checks g a b) preset.SLOTS_PER_EPOCH.toNat e) r r' :=
+  Relation.ReflTransGen.mono (fun _ _ ⟨s, at_, lt⟩ => ⟨s.toNat, ⟨x, hx, s, at_, rfl⟩, lt⟩) _ _
+    path
 
 /-- The FFG refinement of two histories from genesis. -/
 def historyRefinement {g a b : ForkedBeaconState preset} (genesis : Genesis config checks g)
@@ -89,8 +101,9 @@ def historyRefinement {g a b : ForkedBeaconState preset} (genesis : Genesis conf
     (within : ∀ (fork : Base.Fork) (state : BeaconState preset fork),
       Reaches config checks g ⟨fork, state⟩ → state.RegistryWithinLimit)
     (open_ : HistoryObligations config checks g a b) :
-    FfgRefinement (LinkedRoot (historyLinks config checks g a b)) where
-  block c := LinkedRoot.ofRoot c.root
+    FfgRefinement
+      (EpochBlock (historyLinks config checks g a b) preset.SLOTS_PER_EPOCH.toNat) where
+  block := EpochBlock.ofCheckpoint
   genesis := ⟨none⟩
   evidence := historyEvidence config checks g a b
   signed := {p | ∃ y x, OnEither config checks g a b x ∧ Reaches config checks y x ∧
@@ -121,10 +134,13 @@ def historyRefinement {g a b : ForkedBeaconState preset} (genesis : Genesis conf
     have fromStart : g.state.slot.toNat ≤ c.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat := by
       rw [(genesis_state genesis).1]
       exact Nat.zero_le _
-    exact source_le_target_model (chain := ChainBlock config checks g x)
-      (fun _ _ h => ⟨x, hx, h⟩) (call.source_ancestor (by omega) genesis)
-      (fun z => ⟨x, hx, .inl z⟩)
-      ((call.target_nonzero (by omega) fromStart).imp_right fun z => ⟨x, hx, .inr z⟩)
+    rcases call.source_pastAncestor (by omega) genesis with zero | path | found
+    · exact .inl (EpochBlock.ofCheckpoint_le (.inl zero))
+    · rcases call.target_nonzero (by omega) fromStart with nonzero | header
+      · exact .inl (EpochBlock.ofCheckpoint_le (.inr ⟨
+          (call.source ⟨g, genesis, .refl g⟩).2.le, pastAncestor_history hx path, nonzero⟩))
+      · exact .inr ⟨x, hx, .inr header⟩
+    · exact .inr ⟨x, hx, .inl found⟩
   voters_signed := by
     rintro r ⟨x, hx, fork, state, cached, weighed, next, voters, c, call, rfl⟩ i hi
     simp only [Weighing.ofState, List.mem_toFinset] at hi
@@ -173,16 +189,18 @@ def historyRefinement {g a b : ForkedBeaconState preset} (genesis : Genesis conf
       _, ⟨x, hx, fork, state, cached, weighed, next, voters, cs k, call, rfl⟩, source, rfl⟩
     rcases ancestors i hi with path | zero
     · rcases nonzero (i + 1) hi (Nat.le_add_left 1 i) with ne | header
-      · exact .inl (LinkedRoot.ofRoot_le (.inr ⟨Relation.ReflTransGen.mono
-          (fun _ _ h => ⟨x, hx, h⟩) _ _ path, ne⟩))
+      · have ei := epochs i hi.le
+        have ej := epochs (i + 1) hi
+        exact .inl (EpochBlock.ofCheckpoint_le (.inr ⟨by omega, pastAncestor_history hx path, ne⟩))
       · exact .inr ⟨x, hx, .inr header⟩
     · exact .inr ⟨x, hx, .inl zero⟩
 
 open scoped Classical in
 /-- Accountable safety for two histories of the beacon chain from one genesis.
 
-Take a state on each history, or two states of one, whose finalized checkpoints conflict:
-neither root leads to the other through the parent links of both histories.
+Take a state on each history, or two states of one, whose finalized checkpoints conflict as
+epoch-boundary pairs: neither is the epoch-boundary block, at its epoch, of the other's chain,
+through the parent links of both histories.
 
 Take a reference weighing `ω₀`, and a bound `D` on the drift from it of every weighing call of
 either history with a target between the two finalized epochs.
@@ -203,9 +221,10 @@ theorem accountable_safety_histories {g a b : ForkedBeaconState preset}
     {x₁ x₂ : ForkedBeaconState preset} (on₁ : OnEither config checks g a b x₁)
     (on₂ : OnEither config checks g a b x₂)
     (conflicting : Conflicting
-      (LinkedRoot.ofRoot (links := historyLinks config checks g a b)
-        x₁.state.finalizedCheckpoint.root)
-      (LinkedRoot.ofRoot x₂.state.finalizedCheckpoint.root))
+      (EpochBlock.ofCheckpoint (links := historyLinks config checks g a b)
+        (slotsPerEpoch := preset.SLOTS_PER_EPOCH.toNat)
+        x₁.state.finalizedCheckpoint)
+      (EpochBlock.ofCheckpoint x₂.state.finalizedCheckpoint))
     (ω₀ : Weighing ValidatorIndex) {D : ℕ}
     (hD : ∀ r ∈ (historyRefinement genesis wide4 lookahead within open_).records,
       min x₁.state.finalizedCheckpoint.epoch.toNat x₂.state.finalizedCheckpoint.epoch.toNat ≤
@@ -232,7 +251,8 @@ open scoped Classical in
 A fork-choice store holds such a pair: its finalized and its justified checkpoint each come from
 a state that its chain reached, possibly on different branches.
 
-If the epoch of `F` is at most that of `J` and their blocks conflict, the conclusion of
+If the epoch of `F` is at most that of `J` and they conflict as epoch-boundary pairs, which is
+what a store's failed descent check gives, the conclusion of
 `accountable_safety_histories` holds. -/
 theorem accountable_safety_histories_justified {g a b : ForkedBeaconState preset}
     (genesis : Genesis config checks g)
@@ -246,9 +266,10 @@ theorem accountable_safety_histories_justified {g a b : ForkedBeaconState preset
     (hle : xF.state.finalizedCheckpoint.epoch.toNat ≤
       xJ.state.currentJustifiedCheckpoint.epoch.toNat)
     (conflicting : Conflicting
-      (LinkedRoot.ofRoot (links := historyLinks config checks g a b)
-        xF.state.finalizedCheckpoint.root)
-      (LinkedRoot.ofRoot xJ.state.currentJustifiedCheckpoint.root))
+      (EpochBlock.ofCheckpoint (links := historyLinks config checks g a b)
+        (slotsPerEpoch := preset.SLOTS_PER_EPOCH.toNat)
+        xF.state.finalizedCheckpoint)
+      (EpochBlock.ofCheckpoint xJ.state.currentJustifiedCheckpoint))
     (ω₀ : Weighing ValidatorIndex) {D : ℕ}
     (hD : ∀ r ∈ (historyRefinement genesis wide4 lookahead within open_).records,
       xF.state.finalizedCheckpoint.epoch.toNat ≤ r.target.epoch.toNat →
