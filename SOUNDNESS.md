@@ -1337,6 +1337,12 @@ The block is finalized at an epoch above every justified epoch so far.
 The new votes come from justified sources, and no honest validator becomes slashable.
 
 A vote names the validator that signed it, so both theorems assume that no one forges a vote.
+
+`Dynamic.lean` gives each supermajority link its own weighing: the total set, the voters, the stakes and a floor, as the beacon chain weighs.
+Its `Dynamic.accountable_safety` measures the slashable stake in a reference weighing.
+It loses twice a bound on the drift from that reference, over the weighings between the two finalized epochs.
+With one static weighing it gives `accountable_safety`.
+
 No theorem links the model to the beacon chain, so neither theorem is yet about what a client runs.
 
 ### Engine API
