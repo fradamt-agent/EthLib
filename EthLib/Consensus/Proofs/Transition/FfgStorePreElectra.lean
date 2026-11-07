@@ -28,6 +28,11 @@ With `J` the justified epoch, `K` a bound on the churn cap and `L` a bound on lo
   It grows with the registry.
 
 The store stays on one fork before Electra, so every state that its chains reach is of that fork.
+
+`store_accountable_safety_preElectra_from` measures instead at a state `X` that the chains reach,
+such as their last shared state, so that the windows count epochs since `X`.
+
+It asks that every weighing call between the two epochs runs on a state that `X` reaches.
 -/
 
 @[expose] public section
@@ -225,6 +230,170 @@ theorem store_accountable_safety_preElectra {anchorState : BeaconState preset fo
   refine drift.trans ?_
   change 2 * leavingStake anchorState state + 2 * lostStake anchorState state +
       3 * deficit (preset := preset) anchorState + 3 * joiningStakePrev anchorState state +
+      3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤ _
+  omega
+
+open scoped Classical in
+/-- Accountable safety for a fork-choice store before Electra, measured in a state `X` that the
+chains reached from genesis, such as the last state that the store's two chains share.
+
+`placed` asks that every weighing call between the two epochs, on either chain, runs on a state
+that `X` reaches.
+
+For the last shared state of two runs, `CommonState.reaches_of_slot_lt` gives this for the calls
+on those runs. The calls behind a justification are found on one run by the provenance proofs, so
+`placed` is what a run-indexed form of those proofs discharges.
+
+With `E` the epoch of `X`, the bound is that of `store_accountable_safety_preElectra` with `J + 1`
+and `J + 2` replaced by `J + 1 - E` and `J + 1 - E + 1`: the time since `X`, not since genesis.
+
+The hypotheses on the store are those of `store_accountable_safety`, and the store's fork is before
+Electra.
+
+`K` bounds the churn cap, and `L` the lost stake, from genesis to every state the chains reach.
+
+Then the validators active at genesis hold at most three times the genesis stake of those that
+signed two slashable attestation data, both checked in blocks of the chains, plus twice
+
+```text
+  2 * (J + 1) * K * MAX + 2 * L + 3 * deficit(genesis) + 3 * (J + 2) * K * MAX + 3 * INC
+```
+
+where `J` is the justified epoch.
+
+Otherwise there is hash evidence. -/
+theorem store_accountable_safety_preElectra_from {anchorState : BeaconState preset fork}
+    {anchorBlock : BeaconBlock preset fork} {store : Store preset fork}
+    (caps : EffectiveBalanceCaps preset) (before : fork < .pectra)
+    (two : 2 ≤ preset.SLOTS_PER_EPOCH.toNat)
+    (genesis : Genesis config checks ⟨fork, anchorState⟩)
+    (genesisHeaderSlot : anchorState.latestBlockHeader.slot = GENESIS_SLOT)
+    (wide4 : 4 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (reachable : Store.ReachableWith config checks anchorState anchorBlock store)
+    (notDue : ∀ state : BeaconState preset fork, upgradeDue config ⟨fork, state⟩ = false)
+    (anchorSlot : anchorBlock.slot ≤ anchorState.slot)
+    (anchorParent : anchorBlock.parentRoot = Vector.replicate 32 0)
+    {head : ForkChoiceNode} (headOk : store.getHead config = .ok head)
+    (notGenesis : store.finalizedCheckpoint.epoch ≠ GENESIS_EPOCH)
+    (hle : store.finalizedCheckpoint.epoch.toNat ≤ store.justifiedCheckpoint.epoch.toNat)
+    (notDescends : store.getCheckpointBlock store.justifiedCheckpoint.root
+      store.finalizedCheckpoint.epoch ≠ .ok store.finalizedCheckpoint.root)
+    (X : BeaconState preset fork)
+    (fromGenesis : Reaches config checks ⟨fork, anchorState⟩ ⟨fork, X⟩)
+    {K L : ℕ}
+    (capBound : ∀ state : BeaconState preset fork,
+      Reaches config checks ⟨fork, X⟩ ⟨fork, state⟩ →
+      max 1 (churnCap config state.validators.data.size) ≤ K)
+    (lost : ∀ state : BeaconState preset fork,
+      Reaches config checks ⟨fork, X⟩ ⟨fork, state⟩ → lostStake X state ≤ L) :
+    let ω₀ := Weighing.ofState X (getActiveValidatorIndices X (getCurrentEpoch X)).toFinset
+    ∃ a b : ForkedBeaconState preset,
+      OnEither config checks ⟨fork, anchorState⟩ a b a ∧
+      OnEither config checks ⟨fork, anchorState⟩ a b b ∧
+      ∃ within,
+        (∀ x, OnEither config checks ⟨fork, anchorState⟩ a b x →
+          ∀ (fork' : Base.Fork) (state cached weighed : BeaconState preset fork')
+            (voters : List ValidatorIndex) (c : Checkpoint),
+            CallRecord config checks ⟨fork, anchorState⟩ x fork' state cached weighed voters c →
+            store.finalizedCheckpoint.epoch.toNat ≤ c.epoch.toNat →
+            c.epoch.toNat ≤ store.justifiedCheckpoint.epoch.toNat →
+            Reaches config checks ⟨fork, X⟩ ⟨fork', state⟩) →
+        (stake ω₀.stake ω₀.active ≤
+          3 * stake ω₀.stake {i ∈ ω₀.active | ∃ data1 data2,
+            (i, data1) ∈
+              (historyRefinement (a := a) (b := b) genesis wide4 lookahead within).signed ∧
+            (i, data2) ∈
+              (historyRefinement (a := a) (b := b) genesis wide4 lookahead within).signed ∧
+            isSlashableAttestationData data1 data2 = true} +
+          2 * (2 * ((store.justifiedCheckpoint.epoch.toNat + 1 - (getCurrentEpoch X).toNat) * K *
+              preset.MAX_EFFECTIVE_BALANCE.toNat) + 2 * L +
+            3 * deficit (preset := preset) X +
+            3 * ((store.justifiedCheckpoint.epoch.toNat + 1 - (getCurrentEpoch X).toNat + 1) * K *
+              preset.MAX_EFFECTIVE_BALANCE.toNat) +
+            3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat) ∨
+        historyEvidence config checks ⟨fork, anchorState⟩ a b ∨
+        StoreEvidence store (historyLinks config checks ⟨fork, anchorState⟩ a b)) := by
+  intro ω₀
+  generalize hJ : store.justifiedCheckpoint.epoch.toNat = J
+  -- Every state that the chains reach is of the store's fork, so its registry is within its limit.
+  have within : ∀ (fork' : Base.Fork) (state : BeaconState preset fork'),
+      Reaches config checks ⟨fork, anchorState⟩ ⟨fork', state⟩ → state.RegistryWithinLimit := by
+    intro fork' state chain
+    have same : fork' = fork := chain.fork_eq_of_notDue notDue
+    subst same
+    exact BeaconState.registryWithinLimit_of_lt (Nat.lt_of_lt_of_le before (by decide)) state
+  obtain ⟨a, b, onA, onB, safety⟩ := store_accountable_safety genesis genesisHeaderSlot wide4
+    lookahead within reachable notDue anchorSlot anchorParent headOk notGenesis hle notDescends
+  refine ⟨a, b, onA, onB, within, fun placed => safety ω₀ ?_⟩
+  -- Each weighing call between the two epochs drifts from `X` by at most the closed form.
+  rintro r ⟨x, onX, fork', state, cached, weighed, voters, c, call, rfl⟩ hlo hhi
+  have chain := placed x onX fork' state cached weighed voters c call hlo (hJ ▸ hhi)
+  have same : fork' = fork := call.head.fork_eq_of_notDue notDue
+  subst same
+  have genesisReachable : Reachable config checks ⟨fork', X⟩ := ⟨_, genesis, fromGenesis⟩
+  obtain ⟨stateRoots, blockRoots, header, availability, rfl⟩ := call.reads.eq
+  have withinX := BeaconState.registryWithinLimit_of_lt
+    (Nat.lt_of_lt_of_le before (by decide)) X
+  have withinS := BeaconState.registryWithinLimit_of_lt
+    (Nat.lt_of_lt_of_le before (by decide)) state
+  have capped :=
+    Reachable.effectiveBalancesCapped caps (ReachableFrom.reaches genesisReachable chain)
+  -- The voters were active in the target epoch, which is the previous or the current one.
+  have activeVoters : ∀ i ∈ voters, i ∈ getActiveValidatorIndices state c.epoch := by
+    by_cases altair : .altair ≤ fork'
+    · have := TargetVoters.active altair call.counted
+      exact this
+    · intro i mem
+      obtain ⟨_, _, activeAt, _⟩ :=
+        call.pending_voters_signed_of_genesis lookahead genesis (Nat.lt_of_not_le altair) i mem
+      exact activeAt
+  have voting : ∀ i ∈ voters.toFinset, activeAt state (getPreviousEpoch state) i.toNat = true ∨
+      activeAt state (getCurrentEpoch state) i.toNat = true := by
+    intro i mem
+    have active := (mem_active_iff withinS).mp (activeVoters i (List.mem_toFinset.mp mem))
+    rcases call.recent with h | h
+    · exact .inl (h ▸ active)
+    · exact .inr (h ▸ active)
+  have drift := drift_ofState_le withinX withinS
+    (getActiveValidatorIndices X (getCurrentEpoch X)).toFinset voters.toFinset
+    capped before voting
+  have finite := currentEpoch_lt_farFuture (state := state) two
+  have leaving := chain.leavingStake_le caps genesisReachable before finite
+  have joining := chain.joiningStakePrev_le_add caps genesisReachable before finite
+  simp only at leaving joining
+  have cap := capBound state chain
+  have lostHere := lost state chain
+  -- The epoch of the call's state is at most one after the target, which is at most `J`.
+  have stateEpoch : (getCurrentEpoch state).toNat ≤ J + 1 := by
+    have target : c.epoch.toNat ≤ J := hJ ▸ hhi
+    rcases call.recent with h | h
+    · have := getPreviousEpoch_toNat state
+      change c.epoch = getPreviousEpoch state at h
+      rw [h] at target
+      omega
+    · change c.epoch = getCurrentEpoch state at h
+      rw [h] at target
+      omega
+  have leaveWindow : ((getCurrentEpoch state).toNat - (getCurrentEpoch X).toNat) *
+      max 1 (churnCap config state.validators.data.size) * preset.MAX_EFFECTIVE_BALANCE.toNat ≤
+        (J + 1 - (getCurrentEpoch X).toNat) * K * preset.MAX_EFFECTIVE_BALANCE.toNat :=
+    Nat.mul_le_mul_right _ (Nat.mul_le_mul (by omega) cap)
+  have joinWindow : (((getCurrentEpoch state).toNat - (getCurrentEpoch X).toNat) *
+      churnCap config state.validators.data.size +
+        max 1 (churnCap config state.validators.data.size)) * preset.MAX_EFFECTIVE_BALANCE.toNat ≤
+        (J + 1 - (getCurrentEpoch X).toNat + 1) * K * preset.MAX_EFFECTIVE_BALANCE.toNat := by
+    refine Nat.mul_le_mul_right _ ?_
+    have := Nat.mul_le_mul (show (getCurrentEpoch state).toNat - (getCurrentEpoch X).toNat
+      ≤ J + 1 - (getCurrentEpoch X).toNat by omega) ((le_max_right _ _).trans cap)
+    calc ((getCurrentEpoch state).toNat - (getCurrentEpoch X).toNat) *
+          churnCap config state.validators.data.size +
+        max 1 (churnCap config state.validators.data.size)
+        ≤ (J + 1 - (getCurrentEpoch X).toNat) * K + K := Nat.add_le_add this cap
+      _ = ((J + 1 - (getCurrentEpoch X).toNat) + 1) * K := by rw [Nat.add_mul, Nat.one_mul]
+  refine drift.trans ?_
+  change 2 * leavingStake X state + 2 * lostStake X state +
+      3 * deficit (preset := preset) X + 3 * joiningStakePrev X state +
       3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤ _
   omega
 
