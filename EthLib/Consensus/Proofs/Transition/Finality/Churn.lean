@@ -1045,6 +1045,281 @@ theorem finality_reachable_exitCohort {cfg : Config} {checks : SignatureChecks}
       (finality_churnLimit_le (u.validators.bound (by decide)) envelope)
       (Nat.le_max_right _ _)⟩
 
+/-- A validator active in the previous epoch but not now exits in the current epoch. -/
+theorem finality_previousGap_exitEpoch {s : FinalityState p} {v : Validator}
+    (previous : isActiveValidator v (getPreviousEpoch s) = true)
+    (absent : isActiveValidator v (getCurrentEpoch s) = false) :
+    v.exitEpoch = getCurrentEpoch s := by
+  have previousNat := getPreviousEpoch_toNat s
+  simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq] at previous
+  have activation := UInt64.le_iff_toNat_le.mp previous.1
+  have exit := UInt64.lt_iff_toNat_lt.mp previous.2
+  have notActive : ¬(v.activationEpoch ≤ getCurrentEpoch s ∧
+      getCurrentEpoch s < v.exitEpoch) := by
+    intro both
+    have yes : isActiveValidator v (getCurrentEpoch s) = true := by
+      simp [isActiveValidator, both.1, both.2]
+    rw [absent] at yes
+    contradiction
+  have before : v.activationEpoch ≤ getCurrentEpoch s := by
+    apply UInt64.le_iff_toNat_le.mpr
+    omega
+  have after : v.exitEpoch ≤ getCurrentEpoch s := by
+    apply UInt64.le_iff_toNat_le.mpr
+    by_contra h
+    have later : getCurrentEpoch s < v.exitEpoch := UInt64.lt_iff_toNat_lt.mpr (by omega)
+    exact notActive ⟨before, later⟩
+  apply UInt64.toNat_inj.mp
+  have afterNat := UInt64.le_iff_toNat_le.mp after
+  omega
+
+/-- Previous-only weight is bounded by the size of the current exit cohort times the cap. -/
+theorem finality_previousGap_weight {s : FinalityState p}
+    (inv : Invariant s) :
+    (s.validators.data.toList.map fun v =>
+      if isActiveValidator v (getPreviousEpoch s) && !isActiveValidator v (getCurrentEpoch s)
+      then v.effectiveBalance.toNat else 0).sum ≤
+    (s.validators.data.toList.filter (·.exitEpoch == getCurrentEpoch s)).length *
+      p.MAX_EFFECTIVE_BALANCE.toNat := by
+  have sumBound : ∀ vs : List Validator,
+      (∀ v ∈ vs, v.effectiveBalance ≤ p.MAX_EFFECTIVE_BALANCE) →
+      (vs.map fun v =>
+        if isActiveValidator v (getPreviousEpoch s) && !isActiveValidator v (getCurrentEpoch s)
+        then v.effectiveBalance.toNat else 0).sum ≤
+      (vs.filter (·.exitEpoch == getCurrentEpoch s)).length * p.MAX_EFFECTIVE_BALANCE.toNat := by
+    intro vs
+    induction vs with
+    | nil => simp
+    | cons v vs ih =>
+      intro bound
+      have tail := ih (fun w member => bound w (List.mem_cons_of_mem _ member))
+      have weight := UInt64.le_iff_toNat_le.mp (bound v List.mem_cons_self)
+      simp only [List.map_cons, List.sum_cons, List.filter_cons]
+      by_cases active : (isActiveValidator v (getPreviousEpoch s) &&
+          !isActiveValidator v (getCurrentEpoch s)) = true
+      · have flags : isActiveValidator v (getPreviousEpoch s) = true ∧
+            isActiveValidator v (getCurrentEpoch s) = false := by
+          simpa using active
+        have exits := finality_previousGap_exitEpoch flags.1 flags.2
+        rw [ite_eq_left active]
+        simp only [exits, beq_self_eq_true, ↓reduceIte, List.length_cons, Nat.add_mul,
+          Nat.one_mul]
+        omega
+      · rw [ite_eq_right active]
+        split
+        · simp only [List.length_cons, Nat.add_mul, Nat.one_mul]
+          omega
+        · omega
+  exact sumBound _ (fun v member => inv.effectiveBalancesBounded v (by simpa using member))
+
+/-- The previous-only weight of a reachable state is bounded by one exit cohort.
+
+The current epoch is explicitly finite because far-future exits are not scheduled cohorts. -/
+theorem finality_reachable_previousGap {cfg : Config} {checks : SignatureChecks}
+    {eng : ExecutionEngine p .phase0} {g t : FinalityState p}
+    {bs : List (FinalityBlock p)} {population : Nat}
+    (initialized : finalityInitialized cfg checks g)
+    (ran : finalityRuns cfg checks eng g bs t)
+    (size : t.validators.data.size ≤ population)
+    (finite : getCurrentEpoch t ≠ FAR_FUTURE_EPOCH) :
+    (t.validators.data.toList.map fun v =>
+      if isActiveValidator v (getPreviousEpoch t) && !isActiveValidator v (getCurrentEpoch t)
+      then v.effectiveBalance.toNat else 0).sum ≤
+      max 1 (max cfg.MIN_PER_EPOCH_CHURN_LIMIT.toNat
+        (population / cfg.CHURN_LIMIT_QUOTIENT.toNat)) * p.MAX_EFFECTIVE_BALANCE.toNat := by
+  obtain ⟨_, _, _, genesis⟩ := initialized.1
+  have inv := finality_runs_invariant (initializeBeaconStateFromEth1_invariant genesis).2 ran
+  exact Nat.le_trans (finality_previousGap_weight inv)
+    (Nat.mul_le_mul_right _ (finality_reachable_exitCohort initialized ran size _ finite))
+
+/-- Every collected observation preserves a finite exit-cohort cap.
+
+Successful prefix witnesses suffice even if a later continuation fails. -/
+theorem finality_observations_cohort {cfg : Config} {checks : SignatureChecks}
+    {eng : ExecutionEngine p .phase0} {c t : FinalityState p} {bs : List (FinalityBlock p)}
+    {population cap : Nat} (inv : Invariant c)
+    (bounded : ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
+      (c.validators.data.toList.filter (·.exitEpoch == epoch)).length ≤ cap)
+    (size : t.validators.data.size ≤ population)
+    (limit : ∀ u : FinalityState p, u.validators.data.size ≤ population →
+      max 1 (getValidatorChurnLimit cfg u).toNat ≤ cap)
+    (member : t ∈ finalityObservations cfg checks eng c bs) :
+    Invariant t ∧ ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
+      (t.validators.data.toList.filter (·.exitEpoch == epoch)).length ≤ cap := by
+  simp only [finalityObservations, List.mem_cons, List.mem_flatMap] at member
+  rcases member with rfl | ⟨⟨b, i⟩, _, member⟩
+  · exact ⟨inv, bounded⟩
+  cases prefixOk : (bs.take i).foldlM (fun s b => stateTransition cfg checks eng s b true) c with
+  | error e => simp [prefixOk] at member
+  | ok before =>
+    simp only [prefixOk, List.mem_append, List.mem_cons, List.mem_flatMap] at member
+    have holds := finality_runs_invariant inv prefixOk
+    rcases member with output | rfl | ⟨n, _, member⟩
+    · cases block : stateTransition cfg checks eng before b true with
+      | error e => simp [block, Except.toOption] at output
+      | ok after =>
+        simp only [block, Except.toOption, Option.toList, List.mem_singleton] at output
+        subst t
+        have beforeSize := Nat.le_trans (finality_stateTransition_registry holds block).1 size
+        exact ⟨(stateTransition_invariant (by decide) holds block).1,
+          finality_stateTransition_cohort holds
+            (finality_runs_cohort inv bounded beforeSize limit prefixOk) size limit block⟩
+    · exact ⟨holds, finality_runs_cohort inv bounded size limit prefixOk⟩
+    · cases slots : advanceSlots cfg n before with
+      | error e => simp [slots] at member
+      | ok atStep =>
+        simp only [slots, List.mem_cons] at member
+        have stepInv := (advanceSlots_invariant (by decide) holds slots).1
+        have sizes := finality_advanceSlots_size slots
+        rcases member with rfl | member
+        · have beforeSize : before.validators.data.size ≤ population := by rwa [sizes] at size
+          exact ⟨stepInv, finality_advanceSlots_cohort holds
+            (finality_runs_cohort inv bounded beforeSize limit prefixOk)
+            (fun u same => limit u (same ▸ beforeSize)) slots⟩
+        · cases cache : processSlot atStep with
+          | error e => simp [cache, Except.toOption] at member
+          | ok cached =>
+            simp only [cache, Except.toOption, Option.toList, List.mem_singleton] at member
+            subst t
+            obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cache
+            have beforeSize : before.validators.data.size ≤ population := by
+              change atStep.validators.data.size ≤ population at size
+              rwa [sizes] at size
+            refine ⟨(frame_processSlot cache).invariant stepInv, ?_⟩
+            change ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
+              (atStep.validators.data.toList.filter (·.exitEpoch == epoch)).length ≤ cap
+            exact finality_advanceSlots_cohort holds
+              (finality_runs_cohort inv bounded beforeSize limit prefixOk)
+              (fun u same => limit u (same ▸ beforeSize)) slots
+
+/-- A collected registry has at most one deposit allowance per listed block.
+
+Every successful prefix has no more blocks than the supplied list. -/
+theorem finality_observations_size {cfg : Config} {checks : SignatureChecks}
+    {eng : ExecutionEngine p .phase0} {c t : FinalityState p} {bs : List (FinalityBlock p)}
+    (member : t ∈ finalityObservations cfg checks eng c bs) :
+    t.validators.data.size ≤ c.validators.data.size + bs.length * p.MAX_DEPOSITS.toNat := by
+  simp only [finalityObservations, List.mem_cons, List.mem_flatMap] at member
+  rcases member with rfl | ⟨⟨b, i⟩, listed, member⟩
+  · omega
+  have index := List.mk_mem_zipIdx_iff_getElem?.mp listed
+  have inside := (List.getElem?_eq_some_iff.mp index).1
+  cases prefixOk : (bs.take i).foldlM (fun s b => stateTransition cfg checks eng s b true) c with
+  | error e => simp [prefixOk] at member
+  | ok before =>
+    simp only [prefixOk, List.mem_append, List.mem_cons, List.mem_flatMap] at member
+    have prefixSize := finality_runs_size prefixOk
+    have prefixLength : (bs.take i).length = i := List.length_take_of_le (by omega)
+    rw [prefixLength] at prefixSize
+    have allowances := Nat.mul_le_mul_right p.MAX_DEPOSITS.toNat
+      (show i + 1 ≤ bs.length by omega)
+    rw [Nat.add_mul, Nat.one_mul] at allowances
+    rcases member with output | rfl | ⟨n, _, member⟩
+    · cases block : stateTransition cfg checks eng before b true with
+      | error e => simp [block, Except.toOption] at output
+      | ok after =>
+        simp only [block, Except.toOption, Option.toList, List.mem_singleton] at output
+        subst t
+        have added := finality_stateTransition_size block
+        omega
+    · omega
+    · cases slots : advanceSlots cfg n before with
+      | error e => simp [slots] at member
+      | ok atStep =>
+        simp only [slots, List.mem_cons] at member
+        have sizes := finality_advanceSlots_size slots
+        rcases member with rfl | member
+        · omega
+        · cases cache : processSlot atStep with
+          | error e => simp [cache, Except.toOption] at member
+          | ok cached =>
+            simp only [cache, Except.toOption, Option.toList, List.mem_singleton] at member
+            subst t
+            obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cache
+            change atStep.validators.data.size ≤ _
+            omega
+
+/-- The positive-slots horizon envelope covers every collected observation. -/
+theorem finality_observations_size_horizon {cfg : Config} {checks : SignatureChecks}
+    {eng : ExecutionEngine p .phase0} {c t after : FinalityState p}
+    {bs : List (FinalityBlock p)} {n : Nat}
+    (positive : 0 < p.SLOTS_PER_EPOCH.toNat)
+    (ran : finalityRuns cfg checks eng c bs after)
+    (horizon : (getCurrentEpoch after).toNat - (getCurrentEpoch c).toNat ≤ n)
+    (member : t ∈ finalityObservations cfg checks eng c bs) :
+    t.validators.data.size ≤ c.validators.data.size +
+      (n + 1) * p.SLOTS_PER_EPOCH.toNat * p.MAX_DEPOSITS.toNat := by
+  have size := finality_observations_size member
+  have count := finality_runs_length ran
+  have elapsed := finality_slot_horizon positive horizon
+  have blocks : bs.length ≤ (n + 1) * p.SLOTS_PER_EPOCH.toNat := by omega
+  have scaled := Nat.mul_le_mul_right p.MAX_DEPOSITS.toNat blocks
+  omega
+
+/-- Every observed finite exit cohort fits the horizon cap derived from C. -/
+theorem finality_observations_exitCohort {cfg : Config} {checks : SignatureChecks}
+    {eng : ExecutionEngine p .phase0} {g c t after : FinalityState p}
+    {common bs : List (FinalityBlock p)} {n : Nat}
+    (initialized : finalityInitialized cfg checks g)
+    (shared : finalityRuns cfg checks eng g common c)
+    (ran : finalityRuns cfg checks eng c bs after)
+    (positive : 0 < p.SLOTS_PER_EPOCH.toNat)
+    (horizon : (getCurrentEpoch after).toNat - (getCurrentEpoch c).toNat ≤ n)
+    (member : t ∈ finalityObservations cfg checks eng c bs) :
+    Invariant t ∧ ∀ epoch, epoch ≠ FAR_FUTURE_EPOCH →
+      (t.validators.data.toList.filter (·.exitEpoch == epoch)).length ≤
+        finalityChurnCap cfg c n := by
+  let population := c.validators.data.size +
+    (n + 1) * p.SLOTS_PER_EPOCH.toNat * p.MAX_DEPOSITS.toNat
+  have referenceSize : c.validators.data.size ≤ population := Nat.le_add_right _ _
+  obtain ⟨_, _, _, genesis⟩ := initialized.1
+  have inv := finality_runs_invariant (initializeBeaconStateFromEth1_invariant genesis).2 shared
+  exact finality_observations_cohort inv
+    (finality_reachable_exitCohort initialized shared referenceSize)
+    (finality_observations_size_horizon positive ran horizon member)
+    (fun u size => Nat.max_le.mpr ⟨Nat.le_max_left _ _,
+      Nat.le_trans (finality_churnLimit_le (u.validators.bound (by decide)) size)
+        (Nat.le_max_right _ _)⟩) member
+
+/-- A bound on every observation bounds its maximum, including an empty history. -/
+theorem finalityMaxOn_le {ss : List (FinalityState p)} {f : FinalityState p → Nat}
+    {cap : Nat} (bounded : ∀ s ∈ ss, f s ≤ cap) : finalityMaxOn ss f ≤ cap := by
+  unfold finalityMaxOn
+  have fold : ∀ (xs : List Nat) (start : Nat), start ≤ cap →
+      (∀ x ∈ xs, x ≤ cap) → xs.foldl max start ≤ cap := by
+    intro xs
+    induction xs with
+    | nil => intro start initial _; exact initial
+    | cons x xs ih =>
+      intro start initial within
+      exact ih (max start x) (Nat.max_le.mpr ⟨initial, within x List.mem_cons_self⟩)
+        (fun y member => within y (List.mem_cons_of_mem _ member))
+  apply fold _ _ (Nat.zero_le _)
+  intro value member
+  obtain ⟨s, inside, rfl⟩ := List.mem_map.mp member
+  exact bounded s inside
+
+/-- The observed previous-only weight fits one horizon cohort when current epochs are finite.
+
+Finiteness remains an explicit helper premise, not a premise of realized churn. -/
+theorem finality_previousGap_le_of_finite {cfg : Config} {checks : SignatureChecks}
+    {eng : ExecutionEngine p .phase0} {g c after : FinalityState p}
+    {common bs : List (FinalityBlock p)} {n : Nat}
+    (initialized : finalityInitialized cfg checks g)
+    (shared : finalityRuns cfg checks eng g common c)
+    (ran : finalityRuns cfg checks eng c bs after)
+    (positive : 0 < p.SLOTS_PER_EPOCH.toNat)
+    (horizon : (getCurrentEpoch after).toNat - (getCurrentEpoch c).toNat ≤ n)
+    (finite : ∀ t ∈ finalityObservations cfg checks eng c bs,
+      getCurrentEpoch t ≠ FAR_FUTURE_EPOCH) :
+    finalityPreviousGap (finalityObservations cfg checks eng c bs) ≤
+      finalityChurnCap cfg c n * p.MAX_EFFECTIVE_BALANCE.toNat := by
+  apply finalityMaxOn_le
+  intro t member
+  have observed := finality_observations_exitCohort initialized shared ran positive horizon member
+  exact Nat.le_trans (finality_previousGap_weight observed.1)
+    (Nat.mul_le_mul_right _ (observed.2 _ (finite t member)))
+
 /-- A zero slot divisor makes both the current and previous epoch zero. -/
 theorem finality_epochs_zero {s : FinalityState p} (zero : p.SLOTS_PER_EPOCH = 0) :
     getCurrentEpoch s = 0 ∧ getPreviousEpoch s = 0 := by
