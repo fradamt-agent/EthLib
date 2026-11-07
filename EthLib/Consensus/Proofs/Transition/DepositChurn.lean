@@ -581,4 +581,132 @@ theorem Run.depositsCharged_le_epochs {cap : Nat} {start after : ForkedBeaconSta
   rw [epochs, Nat.add_sub_cancel_left]
   exact charged
 
+/-! ## The stake that joins the active set -/
+
+/-- The effective stake of the validators of a state that are not active in its current epoch.
+
+Only those that have not left before that epoch count.
+
+They are the validators that wait to be active, eligible or not, and those that leave at it. -/
+def pendingActivationStake (state : BeaconState preset fork) : Nat :=
+  ∑ position ∈ (Finset.range state.validators.data.size).filter (fun position =>
+      (state.validators.data[position]?).any fun validator =>
+        !isActiveValidator validator (getCurrentEpoch state) &&
+          decide (getCurrentEpoch state ≤ validator.exitEpoch)),
+    effectiveBalanceAtPosition state position
+
+/-- The stake that joins the active set over a run from Electra on.
+
+Take the validators active at the previous or current epoch of the last state.
+
+Keep those not active at the current epoch of the first state.
+
+Their effective balance in the last state is split three ways.
+
+- The stake waiting to be active in the first state, read from it.
+- The growth of the effective balance of the other validators of the first state that join.
+- The effective balance of the validators that the run adds.
+
+Deposits and rewards pay for the last two.
+
+In Electra a validator eligible for activation is activated without a limit on their count.
+
+So the stake waiting in the first state may all join in one epoch.
+
+The last state's epoch must be at least the first's.
+
+This holds while the registry has fewer than `2^64` validators. -/
+theorem Run.joiningStakePrev_le {start after : ForkedBeaconState preset}
+    (electra : .pectra ≤ start.fork) (run : Run config checks start after)
+    (small : after.state.validators.data.size < 2 ^ 64)
+    (epochs : getCurrentEpoch start.state ≤ getCurrentEpoch after.state) :
+    let joins := fun position =>
+      ((after.state.validators.data[position]?).any
+          (isActiveValidator · (getPreviousEpoch after.state)) ||
+        (after.state.validators.data[position]?).any
+          (isActiveValidator · (getCurrentEpoch after.state))) &&
+        !(start.state.validators.data[position]?).any
+          (isActiveValidator · (getCurrentEpoch start.state))
+    (((List.range after.state.validators.data.size).filter joins).map
+        fun position => effectiveBalanceAtPosition after.state position).sum ≤
+      pendingActivationStake start.state +
+        ∑ position ∈ ((Finset.range after.state.validators.data.size).filter fun position =>
+            joins position = true ∧ position < start.state.validators.data.size),
+          (effectiveBalanceAtPosition after.state position -
+            effectiveBalanceAtPosition start.state position) +
+        ∑ position ∈ ((Finset.range after.state.validators.data.size).filter fun position =>
+            joins position = true ∧ ¬ position < start.state.validators.data.size),
+          effectiveBalanceAtPosition after.state position := by
+  intro joins
+  have kept := Run.exitsKept electra run small
+  rw [sum_map_filter_range]
+  -- Split the joining validators into those of the first state and those that the run adds.
+  rw [← Finset.sum_filter_add_sum_filter_not _ (· < start.state.validators.data.size),
+    Finset.filter_filter, Finset.filter_filter]
+  have old : ∑ position ∈ ((Finset.range after.state.validators.data.size).filter fun position =>
+        joins position = true ∧ position < start.state.validators.data.size),
+        effectiveBalanceAtPosition after.state position ≤
+      pendingActivationStake start.state +
+        ∑ position ∈ ((Finset.range after.state.validators.data.size).filter fun position =>
+            joins position = true ∧ position < start.state.validators.data.size),
+          (effectiveBalanceAtPosition after.state position -
+            effectiveBalanceAtPosition start.state position) := by
+    -- Each one was waiting in the first state.
+    have waiting : ((Finset.range after.state.validators.data.size).filter fun position =>
+          joins position = true ∧ position < start.state.validators.data.size) ⊆
+        (Finset.range start.state.validators.data.size).filter (fun position =>
+          (start.state.validators.data[position]?).any fun validator =>
+            !isActiveValidator validator (getCurrentEpoch start.state) &&
+              decide (getCurrentEpoch start.state ≤ validator.exitEpoch)) := by
+      intro position member
+      obtain ⟨_, joined, inside⟩ := Finset.mem_filter.mp member
+      obtain ⟨validator, found⟩ : ∃ validator,
+          start.state.validators.data[position]? = some validator :=
+        ⟨_, Array.getElem?_eq_getElem inside⟩
+      obtain ⟨later, laterFound, exits⟩ := kept.exits small position validator found
+      refine Finset.mem_filter.mpr ⟨Finset.mem_range.mpr inside, ?_⟩
+      simp only [joins, found, laterFound, Option.any_some, Bool.and_eq_true, Bool.or_eq_true,
+        Bool.not_eq_true'] at joined
+      obtain ⟨active, inactive⟩ := joined
+      simp only [found, Option.any_some, inactive, Bool.not_false, Bool.true_and,
+        decide_eq_true_eq]
+      -- Active at an epoch from one before the first state's, so it had not left before it.
+      rcases exits with same | far
+      · have before : ∃ epoch : Epoch, (getCurrentEpoch start.state).toNat ≤ epoch.toNat + 1 ∧
+            isActiveValidator later epoch = true := by
+          rcases active with previous | current
+          · refine ⟨getPreviousEpoch after.state, ?_, previous⟩
+            simp only [getPreviousEpoch, toNat_saturatingSub]
+            have := UInt64.le_iff_toNat_le.mp epochs
+            have : (1 : UInt64).toNat = 1 := rfl
+            omega
+          · exact ⟨getCurrentEpoch after.state,
+              by have := UInt64.le_iff_toNat_le.mp epochs; omega, current⟩
+        obtain ⟨epoch, near, isActive⟩ := before
+        simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq] at isActive
+        have := UInt64.lt_iff_toNat_lt.mp isActive.2
+        rw [same] at this
+        exact UInt64.le_iff_toNat_le.mpr (by omega)
+      · rw [far]
+        have farValue : FAR_FUTURE_EPOCH.toNat = 2 ^ 64 - 1 := rfl
+        have := (getCurrentEpoch start.state).toNat_lt
+        exact UInt64.le_iff_toNat_le.mpr (by omega)
+    have bound := Finset.sum_le_sum_of_subset (f := effectiveBalanceAtPosition start.state) waiting
+    have split :
+        ∑ position ∈ ((Finset.range after.state.validators.data.size).filter fun position =>
+          joins position = true ∧ position < start.state.validators.data.size),
+          effectiveBalanceAtPosition after.state position ≤
+        ∑ position ∈ ((Finset.range after.state.validators.data.size).filter fun position =>
+          joins position = true ∧ position < start.state.validators.data.size),
+          effectiveBalanceAtPosition start.state position +
+        ∑ position ∈ ((Finset.range after.state.validators.data.size).filter fun position =>
+            joins position = true ∧ position < start.state.validators.data.size),
+          (effectiveBalanceAtPosition after.state position -
+            effectiveBalanceAtPosition start.state position) := by
+      rw [← Finset.sum_add_distrib]
+      exact Finset.sum_le_sum fun _ _ => by omega
+    unfold pendingActivationStake
+    omega
+  omega
+
 end EthLib.Consensus
