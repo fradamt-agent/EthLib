@@ -33,6 +33,7 @@ public import EthLib.Consensus.Proofs.ForkChoice.OptimisticSync
 public import EthLib.Consensus.Proofs.ForkChoice.PayloadGhost
 public import EthLib.Consensus.Proofs.ForkChoice.PayloadVotes
 public import EthLib.Consensus.Proofs.ForkChoice.ProposerHead
+public import EthLib.Consensus.Proofs.ForkChoice.Runs
 public import EthLib.Consensus.Proofs.ForkChoice.Reachable
 public import EthLib.Consensus.Proofs.ForkChoice.Store
 public import EthLib.Consensus.Proofs.ForkSchedule
