@@ -193,7 +193,7 @@ theorem JustifiedOrStart.extendChain {start middle after : ForkedBeaconState pre
 The call reads a state reached from genesis, after its caching. -/
 theorem recordSource_epoch_lt {forked : ForkedBeaconState preset}
     (reachable : Reachable config checks forked) {cached : BeaconState preset forked.fork}
-    (cachedOk : processSlot forked.state = .ok cached)
+    (readsFrom : ReadsFrom forked.state cached)
     (later : GENESIS_EPOCH + 1 < getCurrentEpoch cached) {epoch : Epoch}
     (recent : epoch = getPreviousEpoch cached ∨ epoch = getCurrentEpoch cached) :
     (recordSource cached epoch).epoch.toNat < epoch.toNat := by
@@ -203,7 +203,7 @@ theorem recordSource_epoch_lt {forked : ForkedBeaconState preset}
         forked.state.previousJustifiedCheckpoint ∧
       cached.currentJustifiedCheckpoint = forked.state.currentJustifiedCheckpoint ∧
       getCurrentEpoch cached = getCurrentEpoch forked.state := by
-    obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+    obtain ⟨_, _, _, _, rfl⟩ := readsFrom.eq
     exact ⟨rfl, rfl, rfl⟩
   have cachedPrevious : getPreviousEpoch cached = getPreviousEpoch forked.state := by
     unfold getPreviousEpoch
@@ -236,27 +236,36 @@ The call's source for the checkpoint's epoch is one of the start's checkpoints, 
 chain justified it.
 
 Its epoch is below the checkpoint's. -/
-theorem WeighingCall.source {start after : ForkedBeaconState preset} {fork : Fork}
-    {state cached weighed next : BeaconState preset fork} {voters : List ValidatorIndex}
+theorem CallRecord.source {start after : ForkedBeaconState preset} {fork : Fork}
+    {state cached weighed : BeaconState preset fork} {voters : List ValidatorIndex}
     {checkpoint : Checkpoint} (reachable : Reachable config checks start)
-    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    (call : CallRecord config checks start after fork state cached weighed voters checkpoint) :
     JustifiedOrStart config checks start after (recordSource cached checkpoint.epoch) ∧
       (recordSource cached checkpoint.epoch).epoch.toNat < checkpoint.epoch.toNat := by
   have head := call.head
   have toAfter := call.toAfter
-  have cachedOk := call.cachedOk
+  have readsFrom := call.reads
   have stateReachable : Reachable config checks ⟨fork, state⟩ := reachable.reaches head
   have cachedSame : cached.previousJustifiedCheckpoint = state.previousJustifiedCheckpoint ∧
       cached.currentJustifiedCheckpoint = state.currentJustifiedCheckpoint := by
-    obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+    obtain ⟨_, _, _, _, rfl⟩ := readsFrom.eq
     exact ⟨rfl, rfl⟩
   obtain ⟨-, previousJustified, currentJustified⟩ := head.checkpoints
-  refine ⟨?_, recordSource_epoch_lt stateReachable cachedOk call.later call.recent⟩
+  refine ⟨?_, recordSource_epoch_lt stateReachable readsFrom call.later call.recent⟩
   unfold recordSource
   rw [cachedSame.1, cachedSame.2]
   split
   · exact currentJustified.extendChain toAfter
   · exact previousJustified.extendChain toAfter
+
+/-- `CallRecord.source` for a weighing call at an epoch boundary. -/
+theorem WeighingCall.source {start after : ForkedBeaconState preset} {fork : Fork}
+    {state cached weighed next : BeaconState preset fork} {voters : List ValidatorIndex}
+    {checkpoint : Checkpoint} (reachable : Reachable config checks start)
+    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    JustifiedOrStart config checks start after (recordSource cached checkpoint.epoch) ∧
+      (recordSource cached checkpoint.epoch).epoch.toNat < checkpoint.epoch.toNat :=
+  call.record.source reachable
 
 /-- The source of a weighing call is justified, and earlier than its target, for some call.
 
@@ -279,7 +288,7 @@ theorem JustifiedBy.source {start after : ForkedBeaconState preset} {checkpoint 
 In epoch 1 both justified checkpoints are those of genesis, and they stay to epoch 2. -/
 theorem recordSource_of_epochOne {start : ForkedBeaconState preset} {fork : Fork}
     {state cached : BeaconState preset fork} {checkpoint voteSource : Checkpoint}
-    (reachable : Reachable config checks start) (cachedOk : processSlot state = .ok cached)
+    (reachable : Reachable config checks start) (readsFrom : ReadsFrom state cached)
     (later : GENESIS_EPOCH + 1 < getCurrentEpoch cached)
     (recent : checkpoint.epoch = getPreviousEpoch cached ∨
       checkpoint.epoch = getCurrentEpoch cached)
@@ -296,7 +305,7 @@ theorem recordSource_of_epochOne {start : ForkedBeaconState preset} {fork : Fork
   obtain ⟨sameOne, -⟩ := settled.1 (by omega)
   have cachedSame : cached.previousJustifiedCheckpoint = state.previousJustifiedCheckpoint ∧
       getCurrentEpoch cached = getCurrentEpoch state := by
-    obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+    obtain ⟨_, _, _, _, rfl⟩ := readsFrom.eq
     exact ⟨rfl, rfl⟩
   have laterNat := UInt64.lt_iff_toNat_lt.mp later
   change 0 + 1 < _ at laterNat
@@ -323,12 +332,12 @@ theorem recordSource_of_epochOne {start : ForkedBeaconState preset} {fork : Fork
 The voter's data has the checkpoint as target and the call's source as source.
 
 Its flag may still come from the upgrade to Altair, or from the start of the chain. -/
-theorem WeighingCall.voters_signed_of_reachable {start after : ForkedBeaconState preset}
-    {fork : Fork} {state cached weighed next : BeaconState preset fork}
+theorem CallRecord.voters_signed_of_reachable {start after : ForkedBeaconState preset}
+    {fork : Fork} {state cached weighed : BeaconState preset fork}
     {voters : List ValidatorIndex} {checkpoint : Checkpoint}
     (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (reachable : Reachable config checks start)
-    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    (call : CallRecord config checks start after fork state cached weighed voters checkpoint) :
     .altair ≤ fork → ∀ index ∈ voters,
       FlagAtStart start index.toNat TIMELY_TARGET_FLAG_INDEX ∨
       FlagFromAltairUpgrade config checks start ⟨fork, state⟩ index.toNat
@@ -344,7 +353,23 @@ theorem WeighingCall.voters_signed_of_reachable {start after : ForkedBeaconState
   refine .inr (.inr ⟨data, target, signed, ?_⟩)
   rcases source with same | exception
   · exact same
-  · exact recordSource_of_epochOne reachable call.cachedOk call.later call.recent exception
+  · exact recordSource_of_epochOne reachable call.reads call.later call.recent exception
+
+/-- `CallRecord.voters_signed_of_reachable` for a weighing call at an epoch boundary. -/
+theorem WeighingCall.voters_signed_of_reachable {start after : ForkedBeaconState preset}
+    {fork : Fork} {state cached weighed next : BeaconState preset fork}
+    {voters : List ValidatorIndex} {checkpoint : Checkpoint}
+    (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (reachable : Reachable config checks start)
+    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    .altair ≤ fork → ∀ index ∈ voters,
+      FlagAtStart start index.toNat TIMELY_TARGET_FLAG_INDEX ∨
+      FlagFromAltairUpgrade config checks start ⟨fork, state⟩ index.toNat
+        TIMELY_TARGET_FLAG_INDEX checkpoint.epoch ∨
+      ∃ data, data.target = checkpoint ∧
+        SignedTarget config checks start ⟨fork, state⟩ index data ∧
+        data.source = recordSource cached checkpoint.epoch :=
+  call.record.voters_signed_of_reachable wide reachable
 
 /-- `WeighingCall.voters_signed_of_reachable` for a call that `JustifiedBy` names. -/
 theorem JustifiedBy.voters_signed_of_reachable {start after : ForkedBeaconState preset}

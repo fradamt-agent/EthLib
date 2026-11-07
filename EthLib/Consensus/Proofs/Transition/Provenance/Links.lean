@@ -67,56 +67,6 @@ theorem TargetVoters.active (altair : .altair ≤ fork) {epoch : Epoch}
   simp only [TargetVoters, altair, ↓reduceDIte] at counted
   exact fun index member => (mem_getUnslashedParticipatingIndices counted index member).1
 
-/-- A root that a weighing call reads is the root its state held before the caching.
-
-The call reads the first slot of the previous or the current epoch.
-
-The buffer of roots must span two epochs, so the caching wrote another entry. -/
-theorem processSlot_read
-    (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
-    {cached : BeaconState preset fork} (cachedOk : processSlot state = .ok cached)
-    (later : GENESIS_EPOCH + 1 < getCurrentEpoch cached) {epoch : Epoch} {root : Root}
-    (recent : epoch = getPreviousEpoch cached ∨ epoch = getCurrentEpoch cached)
-    (rootOk : getBlockRoot cached epoch = .ok root) :
-    ∃ slot : Slot, slot.toNat = epoch.toNat * preset.SLOTS_PER_EPOCH.toNat ∧
-      slot.toNat < state.slot.toNat ∧
-      state.slot.toNat ≤ slot.toNat + preset.SLOTS_PER_HISTORICAL_ROOT.toNat ∧
-      readCircular state.blockRoots.elements slot = .ok root := by
-  obtain ⟨slot, slotEq, below, near, read⟩ := getBlockRoot_ok rootOk
-  have sameSlot : cached.slot = state.slot := processSlot_slot cachedOk
-  obtain ⟨_, blockRoot, _, _, _, _, blockWrite, _⟩ := processSlot_roots cachedOk
-  have epochs : (getCurrentEpoch cached).toNat ≤ epoch.toNat + 1 := by
-    have := getPreviousEpoch_toNat cached
-    rcases recent with same | same <;> rw [same] <;> omega
-  have epochNat := getCurrentEpoch_toNat cached
-  rw [sameSlot] at epochNat near below
-  have spe : 0 < preset.SLOTS_PER_EPOCH.toNat := by
-    -- With no slot in an epoch, every epoch is the genesis epoch, which weighs nothing.
-    rcases Nat.eq_zero_or_pos preset.SLOTS_PER_EPOCH.toNat with zero | positive
-    · rw [zero, Nat.div_zero] at epochNat
-      have weighs := UInt64.lt_iff_toNat_lt.mp later
-      rw [epochNat] at weighs
-      simp [GENESIS_EPOCH] at weighs
-    · exact positive
-  -- The state is in the epoch or the one after, so at most two epochs past the slot.
-  have other : state.slot % preset.SLOTS_PER_HISTORICAL_ROOT ≠
-      slot % preset.SLOTS_PER_HISTORICAL_ROOT := by
-    refine mod_ne_of_lt below ?_
-    have inEpoch : state.slot.toNat < preset.SLOTS_PER_EPOCH.toNat *
-        (state.slot.toNat / preset.SLOTS_PER_EPOCH.toNat + 1) := Nat.lt_mul_div_succ _ spe
-    have bound : preset.SLOTS_PER_EPOCH.toNat *
-          (state.slot.toNat / preset.SLOTS_PER_EPOCH.toNat + 1) ≤
-        preset.SLOTS_PER_EPOCH.toNat * (epoch.toNat + 2) :=
-      Nat.mul_le_mul_left _ (by omega)
-    have expand : preset.SLOTS_PER_EPOCH.toNat * (epoch.toNat + 2) =
-        epoch.toNat * preset.SLOTS_PER_EPOCH.toNat + 2 * preset.SLOTS_PER_EPOCH.toNat := by
-      rw [Nat.mul_add, Nat.mul_comm]
-      omega
-    omega
-  refine ⟨slot, slotEq, below, near, ?_⟩
-  rw [← readCircular_writeCircular_of_ne blockWrite other]
-  exact read
-
 /-- The source block of a weighing call is an ancestor of its target block.
 
 Take a chain from genesis, and a call of it at `state`, whose caching gives `cached`.
@@ -133,24 +83,24 @@ The source's root is the root of the latest block at or before the first slot of
 So each block on the way is past that slot.
 
 Or a state of the chain has the zero root. -/
-theorem WeighingCall.source_pastAncestor {start after : ForkedBeaconState preset} {fork : Fork}
-    {state cached weighed next : BeaconState preset fork} {voters : List ValidatorIndex}
+theorem CallRecord.source_pastAncestor {start after : ForkedBeaconState preset} {fork : Fork}
+    {state cached weighed : BeaconState preset fork} {voters : List ValidatorIndex}
     {checkpoint : Checkpoint}
     (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (genesis : Genesis config checks start)
-    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    (call : CallRecord config checks start after fork state cached weighed voters checkpoint) :
     (recordSource cached checkpoint.epoch).root = Vector.replicate 32 0 ∨
       PastAncestor config checks start after
         ((recordSource cached checkpoint.epoch).epoch.toNat * preset.SLOTS_PER_EPOCH.toNat)
         (recordSource cached checkpoint.epoch).root checkpoint.root ∨
       ZeroRootFound config checks start after := by
   have toAfter := call.toAfter
-  obtain ⟨head, _, _, _, _, cachedOk, _, later, recent, _, _, rootOk⟩ := call
+  obtain ⟨head, _, readsFrom, _, later, recent, _, _, rootOk⟩ := call
   obtain ⟨startSlot, startPrevious, startCurrent, startFinalized⟩ := genesis_state genesis
   have cachedSame : cached.previousJustifiedCheckpoint = state.previousJustifiedCheckpoint ∧
       cached.currentJustifiedCheckpoint = state.currentJustifiedCheckpoint ∧
       getCurrentEpoch cached = getCurrentEpoch state := by
-    obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+    obtain ⟨_, _, _, _, rfl⟩ := readsFrom.eq
     exact ⟨rfl, rfl, rfl⟩
   -- The source is one of the state's justified checkpoints, so the start's or a call's.
   have sourceIs : JustifiedOrStart config checks start ⟨fork, state⟩
@@ -170,9 +120,9 @@ theorem WeighingCall.source_pastAncestor {start after : ForkedBeaconState preset
   right
   obtain ⟨slot', slotEq', below', near', read'⟩ :=
     processSlot_read wide cachedOk' later' recent' rootOk'
-  obtain ⟨slot, slotEq, below, near, read⟩ := processSlot_read wide cachedOk later recent rootOk
+  obtain ⟨slot, slotEq, below, near, read⟩ := readsFrom.read wide later recent rootOk
   have sourceBefore := recordSource_epoch_lt (forked := ⟨fork, state⟩)
-    (reachable := ⟨start, genesis, head⟩) cachedOk later recent
+    (reachable := ⟨start, genesis, head⟩) readsFrom later recent
   -- The source's slot is before the target's, and from genesis on.
   have ordered : slot'.toNat ≤ slot.toNat := by
     rw [slotEq', slotEq]
@@ -184,6 +134,20 @@ theorem WeighingCall.source_pastAncestor {start after : ForkedBeaconState preset
   · rw [slotEq'] at ancestor
     exact .inl (ancestor.extendChain toAfter)
   · exact .inr (zero.extendChain toAfter)
+
+/-- `CallRecord.source_pastAncestor` for a weighing call at an epoch boundary. -/
+theorem WeighingCall.source_pastAncestor {start after : ForkedBeaconState preset} {fork : Fork}
+    {state cached weighed next : BeaconState preset fork} {voters : List ValidatorIndex}
+    {checkpoint : Checkpoint}
+    (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (genesis : Genesis config checks start)
+    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    (recordSource cached checkpoint.epoch).root = Vector.replicate 32 0 ∨
+      PastAncestor config checks start after
+        ((recordSource cached checkpoint.epoch).epoch.toNat * preset.SLOTS_PER_EPOCH.toNat)
+        (recordSource cached checkpoint.epoch).root checkpoint.root ∨
+      ZeroRootFound config checks start after :=
+  call.record.source_pastAncestor wide genesis
 
 /-- `WeighingCall.source_pastAncestor`, as ancestry along any blocks of the chain. -/
 theorem WeighingCall.source_ancestor {start after : ForkedBeaconState preset} {fork : Fork}
@@ -319,16 +283,16 @@ That slot is from the start of the chain on, for example from genesis, whose slo
 A slot step of the chain cached that slot, and the root is the root of the header it cached.
 
 The buffer of roots must span two epochs. -/
-theorem JustifiedBy.target_nonzero {start after : ForkedBeaconState preset}
+theorem CallRecord.target_nonzero {start after : ForkedBeaconState preset} {fork : Fork}
+    {state cached weighed : BeaconState preset fork} {voters : List ValidatorIndex}
     {checkpoint : Checkpoint}
     (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
-    (justified : JustifiedBy config checks start after checkpoint)
+    (call : CallRecord config checks start after fork state cached weighed voters checkpoint)
     (fromStart : start.state.slot.toNat ≤
       checkpoint.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat) :
     checkpoint.root ≠ Vector.replicate 32 0 ∨ ZeroHeaderFound config checks start after := by
-  obtain ⟨fork, state, cached, _, next, _, head, notDue, nextOk, tail, _, cachedOk, _, later,
-    recent, _, _, rootOk⟩ := justified
-  obtain ⟨slot, slotEq, below, near, read⟩ := processSlot_read wide cachedOk later recent rootOk
+  obtain ⟨head, toAfter, readsFrom, _, later, recent, _, _, rootOk⟩ := call
+  obtain ⟨slot, slotEq, below, near, read⟩ := readsFrom.read wide later recent rootOk
   -- A slot step before the call cached that slot, and wrote the root of its header.
   obtain ⟨fork', state', cached', ⟨atSlot, cachedOk', next', nextOk', notDue', head', tail'⟩,
     ⟨root, rootOk', written⟩, -⟩ :=
@@ -336,13 +300,22 @@ theorem JustifiedBy.target_nonzero {start after : ForkedBeaconState preset}
   rw [read] at written
   cases written
   by_cases zero : checkpoint.root = Vector.replicate 32 0
-  · have toAfter : Reaches config checks ⟨fork', next'⟩ after :=
-      tail'.trans (((Reaches.refl _).step (.slot notDue nextOk)).trans tail)
-    exact .inr ⟨slot, fork', state', cached', ⟨atSlot, cachedOk', next', nextOk', notDue', head',
-      toAfter⟩, zero ▸ rootOk'⟩
+  · exact .inr ⟨slot, fork', state', cached', ⟨atSlot, cachedOk', next', nextOk', notDue', head',
+      tail'.trans toAfter⟩, zero ▸ rootOk'⟩
   · exact .inl zero
 
-/-- `JustifiedBy.target_nonzero` for one named call. -/
+/-- `CallRecord.target_nonzero` for a call that `JustifiedBy` names. -/
+theorem JustifiedBy.target_nonzero {start after : ForkedBeaconState preset}
+    {checkpoint : Checkpoint}
+    (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (justified : JustifiedBy config checks start after checkpoint)
+    (fromStart : start.state.slot.toNat ≤
+      checkpoint.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat) :
+    checkpoint.root ≠ Vector.replicate 32 0 ∨ ZeroHeaderFound config checks start after :=
+  have ⟨_, _, _, _, _, _, call⟩ := justified
+  call.record.target_nonzero wide fromStart
+
+/-- `CallRecord.target_nonzero` for a weighing call at an epoch boundary. -/
 theorem WeighingCall.target_nonzero {start after : ForkedBeaconState preset} {fork : Fork}
     {state cached weighed next : BeaconState preset fork} {voters : List ValidatorIndex}
     {checkpoint : Checkpoint}
@@ -351,6 +324,6 @@ theorem WeighingCall.target_nonzero {start after : ForkedBeaconState preset} {fo
     (fromStart : start.state.slot.toNat ≤
       checkpoint.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat) :
     checkpoint.root ≠ Vector.replicate 32 0 ∨ ZeroHeaderFound config checks start after :=
-  call.justifiedBy.target_nonzero wide fromStart
+  call.record.target_nonzero wide fromStart
 
 end EthLib.Consensus

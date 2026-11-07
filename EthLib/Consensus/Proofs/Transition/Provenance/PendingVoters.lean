@@ -287,6 +287,12 @@ theorem Reaches.fork_eq_of_before {start after : ForkedBeaconState preset}
         exact absurd before (by dsimp only; decide)
     | block _ _ _ _ _ => exact more before
 
+/-- The state a call reads keeps the inputs of the shuffle of the state it reads from. -/
+theorem ReadsFrom.shuffleKept {cached : BeaconState preset fork} {epoch : Epoch}
+    (readsFrom : ReadsFrom state cached) : ShuffleKept epoch state cached := by
+  obtain ⟨_, _, _, _, rfl⟩ := readsFrom.eq
+  exact .of_eq rfl rfl
+
 /-! ## The counted voters signed the call's link -/
 
 /-- Before Altair, a signer that a later state finds for a recorded pending attestation signed it.
@@ -386,11 +392,11 @@ The voter is a member of the attestation's committee, so it is active in the che
 That data has the checkpoint as target, since the call compares the target root.
 
 Its source is the call's source, except for a target in epoch 1, as from Altair. -/
-theorem WeighingCall.pending_voters_signed {start after : ForkedBeaconState preset}
-    {fork : Fork} {state cached weighed next : BeaconState preset fork}
+theorem CallRecord.pending_voters_signed {start after : ForkedBeaconState preset}
+    {fork : Fork} {state cached weighed : BeaconState preset fork}
     {voters : List ValidatorIndex} {checkpoint : Checkpoint}
     (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
-    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    (call : CallRecord config checks start after fork state cached weighed voters checkpoint) :
     fork < .altair → ∀ index ∈ voters,
       (∃ pending, PendingAtStart start pending) ∨
       ∃ data, data.target = checkpoint ∧
@@ -402,7 +408,7 @@ theorem WeighingCall.pending_voters_signed {start after : ForkedBeaconState pres
             Reaches config checks ⟨fork', epochOne⟩ ⟨fork, state⟩ ∧
             (getCurrentEpoch epochOne).toNat = 1 ∧
             data.source = epochOne.currentJustifiedCheckpoint)) := by
-  obtain ⟨head, _, nextOk, _, _, cachedOk, _, later, recent, counted, _, rootOk⟩ := call
+  obtain ⟨head, _, readsFrom, _, later, recent, counted, _, rootOk⟩ := call
   intro before index member
   simp only [TargetVoters, not_le_of_before before (Nat.le_refl _), ↓reduceDIte] at counted
   obtain ⟨attestations, matching, unslashed⟩ := counted
@@ -414,7 +420,7 @@ theorem WeighingCall.pending_voters_signed {start after : ForkedBeaconState pres
   -- The caching keeps the pending attestations and the epoch.
   have cachedSame : cached.slot = state.slot ∧
       epochPending cached before = epochPending state before := by
-    obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+    obtain ⟨_, _, _, _, rfl⟩ := readsFrom.eq
     exact ⟨rfl, rfl⟩
   have cachedEpoch : getCurrentEpoch cached = getCurrentEpoch state := by
     simp only [getCurrentEpoch, cachedSame.1]
@@ -437,29 +443,34 @@ theorem WeighingCall.pending_voters_signed {start after : ForkedBeaconState pres
   have stateNear : (getCurrentEpoch state).toNat ≤ checkpoint.epoch.toNat + 1 := by
     have := getPreviousEpoch_toNat state
     rcases recent with same | same <;> rw [same] <;> omega
-  -- The epoch is before the far future, since the slot after the call's state exists.
+  -- The epoch is before the far future, since the call reads a slot of it before its own.
   have finite : checkpoint.epoch ≠ FAR_FUTURE_EPOCH := by
     intro far
     have farNat : FAR_FUTURE_EPOCH.toNat = 2 ^ 64 - 1 := rfl
-    have nextSlot := advanceSlot_slot nextOk
-    have nextLt := next.slot.toNat_lt
-    have epochNat := getCurrentEpoch_toNat state
-    have divLe := Nat.div_le_self state.slot.toNat preset.SLOTS_PER_EPOCH.toNat
-    have previousNat := getPreviousEpoch_toNat state
-    have epochLe : checkpoint.epoch.toNat ≤ (getCurrentEpoch state).toNat := by
-      rcases recent with same | same <;> rw [same] <;> omega
-    rw [far, farNat] at epochLe
+    obtain ⟨slot, slotEq, below, -, -⟩ := getBlockRoot_ok rootOk
+    have := cached.slot.toNat_lt
+    have laterNat := UInt64.lt_iff_toNat_lt.mp later
+    change 0 + 1 < _ at laterNat
+    have epochNat := getCurrentEpoch_toNat cached
+    -- With no slot in an epoch, every epoch is the genesis epoch, which weighs nothing.
+    have spe : 1 ≤ preset.SLOTS_PER_EPOCH.toNat := by
+      rcases Nat.eq_zero_or_pos preset.SLOTS_PER_EPOCH.toNat with zero | positive
+      · rw [zero, Nat.div_zero] at epochNat
+        omega
+      · exact positive
+    have := Nat.le_mul_of_pos_right checkpoint.epoch.toNat spe
+    rw [far, farNat] at slotEq this
     omega
   -- The caching keeps the inputs of the shuffle, so the call computes the state's committee.
   have toCached : ShuffleKept (computeEpochAtSlot preset pending.data.slot) state cached :=
-    ShuffleKept.processSlot cachedOk
+    readsFrom.shuffleKept
   simp only [getPendingAttestingIndices, bind_ok_iff] at signersOk
   obtain ⟨committee, committeeOk, attestersOk⟩ := signersOk
   rw [toCached.getBeaconCommittee] at committeeOk
   obtain ⟨epochEq, active, vote⟩ :=
     recordedBy.signed lookahead before stateNear finite committeeOk attestersOk inSigners
   have activeCached : index ∈ getActiveValidatorIndices cached checkpoint.epoch := by
-    rw [(ShuffleKept.processSlot (epoch := checkpoint.epoch) cachedOk).getActiveValidatorIndices]
+    rw [(readsFrom.shuffleKept (epoch := checkpoint.epoch)).getActiveValidatorIndices]
     exact active
   have target : pending.data.target = checkpoint := by
     cases checkpoint
@@ -469,7 +480,26 @@ theorem WeighingCall.pending_voters_signed {start after : ForkedBeaconState pres
     rw [epochEq, targetRoot]
   rw [← cachedEpoch, ← cachedPrevious] at recent
   exact .inr ⟨pending.data, target, activeCached, vote,
-    vote.source_link (by rw [target]) cachedOk later recent⟩
+    vote.source_link (by rw [target]) readsFrom later recent⟩
+
+/-- `CallRecord.pending_voters_signed` for a weighing call at an epoch boundary. -/
+theorem WeighingCall.pending_voters_signed {start after : ForkedBeaconState preset}
+    {fork : Fork} {state cached weighed next : BeaconState preset fork}
+    {voters : List ValidatorIndex} {checkpoint : Checkpoint}
+    (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    fork < .altair → ∀ index ∈ voters,
+      (∃ pending, PendingAtStart start pending) ∨
+      ∃ data, data.target = checkpoint ∧
+        index ∈ getActiveValidatorIndices cached checkpoint.epoch ∧
+        SignedVote config checks start ⟨fork, state⟩ index data ∧
+        (data.source = recordSource cached checkpoint.epoch ∨
+          (checkpoint.epoch.toNat = 1 ∧ ∃ (fork' : Fork) (epochOne : BeaconState preset fork'),
+            Reaches config checks start ⟨fork', epochOne⟩ ∧
+            Reaches config checks ⟨fork', epochOne⟩ ⟨fork, state⟩ ∧
+            (getCurrentEpoch epochOne).toNat = 1 ∧
+            data.source = epochOne.currentJustifiedCheckpoint)) :=
+  call.record.pending_voters_signed lookahead
 
 /-- `WeighingCall.pending_voters_signed` for a call that `JustifiedBy` names. -/
 theorem JustifiedBy.pending_voters_signed {start after : ForkedBeaconState preset}
@@ -545,12 +575,12 @@ theorem genesis_epochPending {forked : ForkedBeaconState preset}
 
 The voter's data has the checkpoint as target and the call's source as source, with no exception.
 -/
-theorem WeighingCall.pending_voters_signed_of_genesis {start after : ForkedBeaconState preset}
-    {fork : Fork} {state cached weighed next : BeaconState preset fork}
+theorem CallRecord.pending_voters_signed_of_genesis {start after : ForkedBeaconState preset}
+    {fork : Fork} {state cached weighed : BeaconState preset fork}
     {voters : List ValidatorIndex} {checkpoint : Checkpoint}
     (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (genesis : Genesis config checks start)
-    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    (call : CallRecord config checks start after fork state cached weighed voters checkpoint) :
     fork < .altair → ∀ index ∈ voters,
       ∃ data, data.target = checkpoint ∧
         index ∈ getActiveValidatorIndices cached checkpoint.epoch ∧
@@ -564,8 +594,22 @@ theorem WeighingCall.pending_voters_signed_of_genesis {start after : ForkedBeaco
   refine ⟨data, target, active, signed, ?_⟩
   rcases source with same | exception
   · exact same
-  · exact recordSource_of_epochOne ⟨start, genesis, .refl _⟩ call.cachedOk call.later call.recent
+  · exact recordSource_of_epochOne ⟨start, genesis, .refl _⟩ call.reads call.later call.recent
       exception
+
+/-- `CallRecord.pending_voters_signed_of_genesis` for a weighing call at an epoch boundary. -/
+theorem WeighingCall.pending_voters_signed_of_genesis {start after : ForkedBeaconState preset}
+    {fork : Fork} {state cached weighed next : BeaconState preset fork}
+    {voters : List ValidatorIndex} {checkpoint : Checkpoint}
+    (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (genesis : Genesis config checks start)
+    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    fork < .altair → ∀ index ∈ voters,
+      ∃ data, data.target = checkpoint ∧
+        index ∈ getActiveValidatorIndices cached checkpoint.epoch ∧
+        SignedVote config checks start ⟨fork, state⟩ index data ∧
+        data.source = recordSource cached checkpoint.epoch :=
+  call.record.pending_voters_signed_of_genesis lookahead genesis
 
 /-- `WeighingCall.pending_voters_signed_of_genesis` for a call that `JustifiedBy` names. -/
 theorem JustifiedBy.pending_voters_signed_of_genesis {start after : ForkedBeaconState preset}
