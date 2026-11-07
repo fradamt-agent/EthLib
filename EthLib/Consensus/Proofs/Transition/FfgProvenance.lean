@@ -1,6 +1,7 @@
 module
 
 public import EthLib.Consensus.Proofs.Transition.FfgPreElectra
+public import EthLib.Consensus.Proofs.Transition.Provenance.Links
 
 /-!
 # Proofs: L5 provenance in the shape of the FFG refinement
@@ -8,8 +9,6 @@ public import EthLib.Consensus.Proofs.Transition.FfgPreElectra
 `FfgRefinement` needs an order on blocks and a two-thirds test on weighed sets of indices.
 
 The provenance proofs give parent-root ancestry and raw sums over lists of indices.
-
-This file uses only their shapes, so it does not import them.
 
 Their `ChainAncestor` is a reflexive-transitive closure of parent links, and their raw balance is
 `markedStake`.
@@ -123,6 +122,32 @@ theorem source_le_target_model {chain links : Root → Root → Prop}
     · exact .inr e
   · exact .inr (zeroEvidence found)
 
+/-- From genesis, the source of every weighing call comes before its target in the model.
+
+Otherwise a state of the history has the zero root, or a cached header has the zero root.
+
+The links of the model must contain the parent links of the history.
+
+This is the field `source_le_target` of `FfgRefinement`, for one record of one history. -/
+theorem JustifiedBy.source_le_target_linked {start after : ForkedBeaconState preset}
+    {checkpoint : Checkpoint} {links : Root → Root → Prop}
+    (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (genesis : Genesis config checks start)
+    (justified : JustifiedBy config checks start after checkpoint)
+    (subset : ∀ p r, ChainBlock config checks start after p r → links p r) :
+    ∃ (fork : Base.Fork) (state cached : BeaconState preset fork),
+      Reaches config checks start ⟨fork, state⟩ ∧ processSlot state = .ok cached ∧
+      (LinkedRoot.ofRoot (links := links) (recordSource cached checkpoint.epoch).root ≤
+          LinkedRoot.ofRoot checkpoint.root ∨
+        ZeroRootFound config checks start after ∨ ZeroHeaderFound config checks start after) := by
+  obtain ⟨fork, state, cached, head, -, cachedOk, -, ancestor⟩ :=
+    justified.source_ancestor wide genesis
+  have nonzero := justified.target_nonzero wide (by
+    rw [(genesis_state genesis).1]
+    exact Nat.zero_le _)
+  exact ⟨fork, state, cached, head, cachedOk,
+    source_le_target_model subset ancestor .inl (nonzero.imp_right .inr)⟩
+
 /-! ## Threshold -/
 
 /-- The fold of `sumMarked` over two lists, as a sum over positions. -/
@@ -201,5 +226,27 @@ theorem supermajority_of_threshold {state : BeaconState preset fork}
   simp only [Weighing.ofState]
   rw [← markedStake_eq_stake activeInRange, ← markedStake_eq_stake inRange]
   exact passes
+
+/-- From Altair, the weighing call behind a justified checkpoint is a supermajority of the
+weighing of its state, and its voters were active in the target epoch.
+
+This is the field `threshold` of `FfgRefinement`, with the record's weighing
+`Weighing.ofState cached voters`, for one record of one history.
+
+The registry must be within its limit, which its type gives before Gloas. -/
+theorem JustifiedBy.supermajority {start after : ForkedBeaconState preset}
+    {checkpoint : Checkpoint} (justified : JustifiedBy config checks start after checkpoint) :
+    ∃ (fork : Base.Fork) (state cached : BeaconState preset fork) (voters : List ValidatorIndex),
+      Reaches config checks start ⟨fork, state⟩ ∧ processSlot state = .ok cached ∧
+      (checkpoint.epoch = getPreviousEpoch cached ∨ checkpoint.epoch = getCurrentEpoch cached) ∧
+      (.altair ≤ fork → cached.RegistryWithinLimit →
+        (∀ i ∈ voters, i ∈ getActiveValidatorIndices cached checkpoint.epoch) ∧
+        (Weighing.ofState cached voters.toFinset).Supermajority voters.toFinset) := by
+  obtain ⟨fork, state, cached, -, -, voters, head, -, -, -, -, cachedOk, -, -, epoch, counted,
+    passes, -⟩ := justified
+  refine ⟨fork, state, cached, voters, head, cachedOk, epoch, fun altair within => ?_⟩
+  have active := TargetVoters.active altair counted
+  exact ⟨active, supermajority_of_threshold passes within fun i mem =>
+    activeAt_lt ((mem_active_iff within).mp (active i mem))⟩
 
 end EthLib.Consensus
