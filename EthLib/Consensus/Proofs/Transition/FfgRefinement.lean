@@ -247,7 +247,17 @@ attestation data that the beacon chain slashes.
 
 Otherwise there is hash evidence.
 
-L3 and L4 should bound `D` from the churn limits, over the epochs between the checkpoints. -/
+`D` bounds the drift of the actual weighings, in effective stake, not the balance charged to churn.
+
+From Electra the two differ.
+
+A consolidation target can start to exit, then receive the balance of its source.
+
+It then leaves with more effective stake than its exit charged.
+
+In the drift, that growth counts as gained stake, and the exit counts the reference stake.
+
+So L2, L3 and L4 must bound `D` by the effective stake that actually enters, leaves and changes. -/
 theorem accountable_safety {c₁ c₂ : Checkpoint} (h₁ : c₁ ∈ R.finalized) (h₂ : c₂ ∈ R.finalized)
     (hc : Conflicting (R.block c₁.root) (R.block c₂.root)) (ω₀ : Weighing ValidatorIndex)
     {D : ℕ}
