@@ -3,6 +3,7 @@ module
 public import EthLib.Consensus.Proofs.Transition.FfgStore
 public import EthLib.Consensus.Proofs.Transition.FfgStorePreElectra
 public import EthLib.Consensus.Proofs.Transition.Provenance.RunIndexed
+public import EthLib.Consensus.Proofs.Transition.RegistryGrowth
 
 /-!
 # Proofs: the FFG refinement of two runs, and the drift from a state they share
@@ -406,8 +407,10 @@ theorem accountable_safety_runs_preElectra {g a b : ForkedBeaconState preset}
     (before : X.common.state.slot.toNat < f.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat)
     {K L : ℕ}
     (capBound : ∀ y, Reaches config checks X.common y →
-      max 1 (churnCap config y.state.validators.data.size) ≤ K)
-    (lost : ∀ y, Reaches config checks X.common y → lostStake X.common.state y.state ≤ L) :
+      (getCurrentEpoch y.state).toNat ≤ j.epoch.toNat + 1 →
+        max 1 (churnCap config y.state.validators.data.size) ≤ K)
+    (lost : ∀ y, Reaches config checks X.common y →
+      (getCurrentEpoch y.state).toNat ≤ j.epoch.toNat + 1 → lostStake X.common.state y.state ≤ L) :
     let ω₀ := Weighing.ofState X.common.state
       (getActiveValidatorIndices X.common.state (getCurrentEpoch X.common.state)).toFinset
     let R := runRefinement X.leftRun X.rightRun genesis wide4 lookahead
@@ -453,6 +456,50 @@ theorem accountable_safety_runs_preElectra {g a b : ForkedBeaconState preset}
     omega
   have fromX := (X.reaches_of_slot_lt (state := ⟨fork, state⟩) mem later).2
   exact call.drift_le_preElectra caps two genesis lookahead reachableX earlyX fromX early
-    (by have := stateEpoch.2; omega) (capBound _ fromX) (lost _ fromX)
+    (by have := stateEpoch.2; omega) (capBound _ fromX (by dsimp only; omega))
+    (lost _ fromX (by dsimp only; omega))
+
+open scoped Classical in
+/-- `accountable_safety_runs_preElectra` with the churn cap bounded by the registry growth from
+`X`: `K = max 1 (churnCapWithin X (J + 1 - E))`. -/
+theorem accountable_safety_runs_preElectra_registry {g a b : ForkedBeaconState preset}
+    (X : CommonState config checks g a b) (caps : EffectiveBalanceCaps preset)
+    (two : 2 ≤ preset.SLOTS_PER_EPOCH.toNat) (genesis : Genesis config checks g)
+    (wide4 : 4 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (earlyA : a.fork < .pectra) (earlyB : b.fork < .pectra) {f j : Checkpoint}
+    (hf : f ∈ (runRefinement X.leftRun X.rightRun genesis wide4 lookahead
+      (runs_within (Nat.lt_of_lt_of_le earlyA (by decide))
+        (Nat.lt_of_lt_of_le earlyB (by decide)))).finalized)
+    (hj : j ∈ (runRefinement X.leftRun X.rightRun genesis wide4 lookahead
+      (runs_within (Nat.lt_of_lt_of_le earlyA (by decide))
+        (Nat.lt_of_lt_of_le earlyB (by decide)))).justified)
+    (hle : f.epoch.toNat ≤ j.epoch.toNat)
+    (conflicting : Conflicting
+      (EpochBlock.ofCheckpoint (links := runLinks config checks (g := g) (a := a) (b := b))
+        (slotsPerEpoch := preset.SLOTS_PER_EPOCH.toNat) f)
+      (EpochBlock.ofCheckpoint j))
+    (before : X.common.state.slot.toNat < f.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat) {L : ℕ}
+    (lost : ∀ y, Reaches config checks X.common y →
+      (getCurrentEpoch y.state).toNat ≤ j.epoch.toNat + 1 → lostStake X.common.state y.state ≤ L) :
+    let ω₀ := Weighing.ofState X.common.state
+      (getActiveValidatorIndices X.common.state (getCurrentEpoch X.common.state)).toFinset
+    let R := runRefinement X.leftRun X.rightRun genesis wide4 lookahead
+      (runs_within (Nat.lt_of_lt_of_le earlyA (by decide)) (Nat.lt_of_lt_of_le earlyB (by decide)))
+    let n := j.epoch.toNat + 1 - (getCurrentEpoch X.common.state).toNat
+    let K := max 1 (churnCapWithin config X.common n)
+    stake ω₀.stake ω₀.active ≤
+        3 * stake ω₀.stake {i ∈ ω₀.active | ∃ data1 data2, (i, data1) ∈ R.signed ∧
+          (i, data2) ∈ R.signed ∧ isSlashableAttestationData data1 data2 = true} +
+        2 * (2 * (n * K * preset.MAX_EFFECTIVE_BALANCE.toNat) + 2 * L +
+          3 * deficit (preset := preset) X.common.state +
+          3 * ((n + 1) * K * preset.MAX_EFFECTIVE_BALANCE.toNat) +
+          3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat) ∨
+      runEvidence config checks (g := g) (a := a) (b := b) := by
+  refine accountable_safety_runs_preElectra X caps two genesis wide4 lookahead earlyA earlyB hf hj
+    hle conflicting before ?_ lost
+  intro y chain epochs
+  refine (Reaches.churnCap_le (by omega) chain).trans (max_le_max_left 1 ?_)
+  exact churnCapWithin_mono config X.common (by omega)
 
 end EthLib.Consensus

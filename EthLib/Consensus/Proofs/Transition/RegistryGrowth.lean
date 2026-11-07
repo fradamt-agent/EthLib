@@ -623,7 +623,7 @@ theorem grows_processEpoch (computed : processEpoch config checks state = .ok af
 /-! ## Slots and upgrades -/
 
 /-- The caching of a slot keeps the registry and the slot of the latest header. -/
-theorem processSlot_keeps (computed : processSlot state = .ok after) :
+theorem processSlot_keeps_header (computed : processSlot state = .ok after) :
     after.validators = state.validators ∧
       after.latestBlockHeader.slot = state.latestBlockHeader.slot := by
   unfold processSlot at computed
@@ -651,7 +651,7 @@ theorem advanceSlot_growth (computed : advanceSlot config checks state = .ok aft
   simp only [advanceSlot, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
     Except.ok.injEq] at computed
   obtain ⟨next, _, cached, cachedOk, epoched, epochedOk, rfl⟩ := computed
-  obtain ⟨cachedValidators, cachedHeader⟩ := processSlot_keeps cachedOk
+  obtain ⟨cachedValidators, cachedHeader⟩ := processSlot_keeps_header cachedOk
   have cachedGrows : Grows 0 state cached := .of_data (by rw [cachedValidators])
   refine ⟨slot, ?_, ?_⟩
   · unfold epochIfLast at epochedOk

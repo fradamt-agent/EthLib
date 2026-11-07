@@ -1482,6 +1482,10 @@ The store's failed descent check gives their conflict as epoch-boundary pairs, o
 `store_accountable_safety_preElectra` (`Transition/FfgStorePreElectra.lean`) instantiates the drift bound before Electra, measured at genesis.
 With `J` the justified epoch it is `2 (J+1) K MAX + 2 L + 3 deficit(genesis) + 3 (J+2) K MAX + 3 INC`, where the churn windows and the cap are proved.
 Two terms stay named hypotheses: `K` bounds the churn cap over the reached states, and `L` the effective balance that genesis validators lose, which `lostStake_le_fallen` bounds by each validator's debits along a run.
+`runRefinement` (`Transition/FfgRuns.lean`) takes the calls on prefixes of two runs from genesis instead, so each call is placed on one of the runs.
+`accountable_safety_runs_preElectra` measures the drift at a state `X` that both runs pass through, at a slot before the first slot of the finalized epoch.
+With `E` the epoch of `X` and `n = J + 1 - E`, the bound is `2 n K MAX + 2 L + 3 deficit(X) + 3 (n+1) K MAX + 3 INC`, so it depends on the epochs after `X`, not on `J`.
+`accountable_safety_runs_preElectra_registry` proves `K = max 1 (churnCapWithin X n)` from the registry growth after `X`; `L`, a bound on `lostStake X y` over the states `y` that `X` reaches up to epoch `J + 1`, stays a named hypothesis.
 
 ### Engine API
 
