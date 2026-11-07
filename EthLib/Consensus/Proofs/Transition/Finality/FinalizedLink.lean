@@ -438,6 +438,61 @@ theorem finality_finalized_checkpoint_query
     justifiedOk, assigned, ⟨attestations, matching, indicesOk, threshold⟩,
     matching, indicesOk, rootOk⟩
 
+/-- The successor of a non-genesis finalized checkpoint has an observed concrete query. -/
+theorem finality_finalized_successor_query
+    {cfg : Config} {checks : SignatureChecks} {eng : ExecutionEngine p .phase0}
+    {g after : FinalityState p} {bs : List (FinalityBlock p)}
+    (initialized : finalityInitialized cfg checks g)
+    (run : finalityRuns cfg checks eng g bs after)
+    (nonGenesis : after.finalizedCheckpoint.epoch ≠ GENESIS_EPOCH) :
+    ∃ cached justified e attestations indices root,
+      cached ∈ finalityObservations cfg checks eng g bs ∧
+      (∃ earlier atBlock offset atStep,
+        earlier <+: bs ∧ finalityRuns cfg checks eng g earlier atBlock ∧
+        advanceSlots cfg offset atBlock = .ok atStep ∧ processSlot atStep = .ok cached) ∧
+      processJustificationAndFinalization cached = .ok justified ∧
+      e.toNat = after.finalizedCheckpoint.epoch.toNat + 1 ∧
+      FinalityThreshold cached e indices ∧
+      getMatchingTargetAttestations cached (by decide) e = .ok attestations ∧
+      getUnslashedAttestingIndices cached attestations = .ok indices ∧
+      (e = getCurrentEpoch cached ∨ e = getPreviousEpoch cached) ∧
+      getBlockRoot cached e = .ok root := by
+  obtain ⟨cached, justified, total, previous, current, origin, observed, site, justifiedOk,
+    weighed, age, threshold⟩ := finality_finalized_successor_weigh initialized run nonGenesis
+  have nonzero : 0 < after.finalizedCheckpoint.epoch.toNat := by
+    have ne : after.finalizedCheckpoint.epoch ≠ 0 := nonGenesis
+    have neNat : after.finalizedCheckpoint.epoch.toNat ≠ 0 := by
+      intro zero
+      exact ne (UInt64.toNat_inj.mp zero)
+    omega
+  have eligible : ¬getCurrentEpoch cached ≤ GENESIS_EPOCH + 1 := by
+    intro early
+    have bound := UInt64.le_iff_toNat_le.mp early
+    change (getCurrentEpoch cached).toNat ≤ 1 at bound
+    omega
+  rcases threshold with ⟨zero, enough⟩ | ⟨one, enough, notInherited⟩
+  · have bit := (weighJustificationAndFinalization_bits weighed).1.mpr enough
+    obtain ⟨_, attestations, total, _, target, _, matching, totalOk, _, targetOk,
+      _, enough⟩ := processJustificationAndFinalization_current_bit (by decide)
+        justifiedOk eligible bit
+    obtain ⟨indices, indicesOk, balanceOk⟩ := bind_ok_iff.mp targetOk
+    obtain ⟨_, rootOk⟩ := weighJustificationAndFinalization_current_checkpoint weighed bit
+    exact ⟨cached, justified, getCurrentEpoch cached, attestations, indices,
+      justified.currentJustifiedCheckpoint.root, observed, site, justifiedOk, by omega,
+      ⟨attestations, matching, indicesOk, getTotalBalance_threshold_raw totalOk balanceOk enough⟩,
+      matching, indicesOk, .inl rfl, rootOk⟩
+  · have bit := (weighJustificationAndFinalization_bits weighed).2.mpr (.inl enough)
+    obtain ⟨attestations, _, total, target, _, matching, _, totalOk, targetOk, _,
+      queryWeighed, enough⟩ := processJustificationAndFinalization_previous_bit (by decide)
+        justifiedOk eligible bit notInherited
+    obtain ⟨indices, indicesOk, balanceOk⟩ := bind_ok_iff.mp targetOk
+    obtain ⟨root, rootOk⟩ := finality_previous_threshold_root queryWeighed enough
+    have previousEpoch := getPreviousEpoch_toNat cached
+    exact ⟨cached, justified, getPreviousEpoch cached, attestations, indices, root,
+      observed, site, justifiedOk, by omega,
+      ⟨attestations, matching, indicesOk, getTotalBalance_threshold_raw totalOk balanceOk enough⟩,
+      matching, indicesOk, .inr rfl, rootOk⟩
+
 /-- A zero header state root is filled even after an earlier cache left it zero.
 
 The slot and parent root stay fixed, so this operation supplies no actual block ancestry edge. -/
@@ -450,5 +505,308 @@ theorem finality_cache_refills_zero_header
   obtain ⟨actual, actualOk, header⟩ := processSlot_latestBlockHeader (by decide) cacheOk
   have same : actual = root := Except.ok.inj (actualOk.symm.trans stateRoot)
   simpa only [empty, ↓reduceIte, same] using header
+
+/-- After a nonzero state hash fills a header, every later empty-slot cache keeps that header. -/
+theorem finality_cached_header_stable
+    {cfg : Config} {s cached atStep laterCached : FinalityState p} {count : Nat}
+    {stateRoot : Root}
+    (first : processSlot s = .ok cached)
+    (hashed : hashTreeRoot s = .ok stateRoot)
+    (nonzero : stateRoot ≠ Vector.replicate 32 0)
+    (advanced : advanceSlots cfg count cached = .ok atStep)
+    (last : processSlot atStep = .ok laterCached) :
+    laterCached.latestBlockHeader = cached.latestBlockHeader := by
+  have filled : cached.latestBlockHeader.stateRoot ≠ Vector.replicate 32 0 := by
+    obtain ⟨actual, actualOk, header⟩ := processSlot_latestBlockHeader (by decide) first
+    have same : actual = stateRoot := Except.ok.inj (actualOk.symm.trans hashed)
+    rw [header]
+    split
+    · simpa only [same] using nonzero
+    · exact ‹s.latestBlockHeader.stateRoot ≠ Vector.replicate 32 0›
+  have same := advanceSlots_latestBlockHeader_of_nonzero (by decide) count filled advanced
+  exact (processSlot_latestBlockHeader_of_nonzero (by decide) last
+    (by simpa only [same] using filled)).trans same
+
+/-- A validated block's nonzero post-state root fixes every cache before the next block. -/
+theorem finality_block_cached_header
+    {cfg : Config} {checks : SignatureChecks} {eng : ExecutionEngine p .phase0}
+    {s after atStep cached : FinalityState p} {b : FinalityBlock p} {count : Nat}
+    (ran : stateTransition cfg checks eng s b true = .ok after)
+    (nonzero : b.message.stateRoot ≠ Vector.replicate 32 0)
+    (advanced : advanceSlots cfg count after = .ok atStep)
+    (cachedOk : processSlot atStep = .ok cached) :
+    ∃ bodyRoot, hashTreeRoot b.message.body = .ok bodyRoot ∧
+      cached.latestBlockHeader =
+        ⟨b.message.slot, b.message.proposerIndex, b.message.parentRoot,
+          b.message.stateRoot, bodyRoot⟩ := by
+  obtain ⟨atSlot, _, _, _, blockOk, hashed⟩ := stateTransition_ok ran
+  obtain ⟨_, bodyRoot, bodyOk, header⟩ := processBlock_block_history (by decide) blockOk
+  have rootOk := hashed rfl
+  have firstHeader {firstCached : FinalityState p}
+      (first : processSlot after = .ok firstCached) :
+      firstCached.latestBlockHeader =
+        ⟨b.message.slot, b.message.proposerIndex, b.message.parentRoot,
+          b.message.stateRoot, bodyRoot⟩ := by
+    have filled := finality_cache_refills_zero_header first (by rw [header]) rootOk
+    simpa only [header] using filled
+  cases count with
+  | zero =>
+    cases advanced
+    exact ⟨bodyRoot, bodyOk, firstHeader cachedOk⟩
+  | succ count =>
+    obtain ⟨middle, first, rest⟩ := bind_ok_iff.mp advanced
+    obtain ⟨firstCached, firstCache, middleHeader, _⟩ :=
+      advanceSlot_block_history (by decide) first
+    have fixed := firstHeader firstCache
+    have middleFilled : middle.latestBlockHeader.stateRoot ≠ Vector.replicate 32 0 := by
+      simpa only [middleHeader, fixed] using nonzero
+    have laterHeader := advanceSlots_latestBlockHeader_of_nonzero (by decide)
+      count middleFilled rest
+    have finalHeader := processSlot_latestBlockHeader_of_nonzero (by decide) cachedOk
+      (by simpa only [laterHeader] using middleFilled)
+    exact ⟨bodyRoot, bodyOk, finalHeader.trans (laterHeader.trans (middleHeader.trans fixed))⟩
+
+/-- A cache whose target epoch is after C lies in the suffix, not the common history. -/
+theorem finality_cached_site_after_common
+    {cfg : Config} {checks : SignatureChecks} {eng : ExecutionEngine p .phase0}
+    {g c atBlock atStep cached : FinalityState p}
+    {common bs earlier later : List (FinalityBlock p)} {b : FinalityBlock p}
+    {offset : Nat} {e : Epoch}
+    (commonRun : finalityRuns cfg checks eng g common c)
+    (split : common ++ bs = earlier ++ b :: later)
+    (prefixRun : finalityRuns cfg checks eng g earlier atBlock)
+    (inside : offset < b.message.slot.toNat - atBlock.slot.toNat)
+    (advanced : advanceSlots cfg offset atBlock = .ok atStep)
+    (cachedOk : processSlot atStep = .ok cached)
+    (recent : e = getCurrentEpoch cached ∨ e = getPreviousEpoch cached)
+    (targetAfter : (getCurrentEpoch c).toNat < e.toNat) :
+    ∃ earlierFork,
+      bs = earlierFork ++ b :: later ∧ finalityRuns cfg checks eng c earlierFork atBlock ∧
+      cached ∈ finalityObservations cfg checks eng c bs := by
+  have earlierPrefix : earlier <+: common ++ bs := ⟨b :: later, split.symm⟩
+  have commonPrefix : common <+: common ++ bs := List.prefix_append _ _
+  by_cases cut : common.length ≤ earlier.length
+  · obtain ⟨earlierFork, equal⟩ :=
+      List.prefix_of_prefix_length_le commonPrefix earlierPrefix cut
+    have forkSplit : bs = earlierFork ++ b :: later := by
+      rw [← equal, List.append_assoc] at split
+      exact List.append_cancel_left split
+    have forkPrefix : finalityRuns cfg checks eng c earlierFork atBlock := by
+      change earlier.foldlM (fun s b => stateTransition cfg checks eng s b true) g =
+        .ok atBlock at prefixRun
+      rw [← equal, List.foldlM_append, commonRun] at prefixRun
+      exact prefixRun
+    exact ⟨earlierFork, forkSplit, forkPrefix,
+      finality_observations_cached_of_split forkSplit forkPrefix inside advanced cachedOk⟩
+  · have throughPrefix : earlier ++ [b] <+: common := by
+      apply List.prefix_of_prefix_length_le
+        (show earlier ++ [b] <+: common ++ bs from
+          ⟨later, by simpa only [List.append_assoc, List.singleton_append] using split.symm⟩)
+        commonPrefix
+      simp only [List.length_append, List.length_singleton]
+      omega
+    obtain ⟨rest, equal⟩ := throughPrefix
+    change common.foldlM (fun s b => stateTransition cfg checks eng s b true) g =
+      .ok c at commonRun
+    rw [← equal, List.append_assoc, List.singleton_append, List.foldlM_append, prefixRun]
+      at commonRun
+    obtain ⟨_, same, remaining⟩ := bind_ok_iff.mp commonRun
+    cases same
+    obtain ⟨middle, blockOk, tailOk⟩ := bind_ok_iff.mp remaining
+    obtain ⟨atSlot, slotsOk, atSlotSlot, _, processed, _⟩ := stateTransition_ok blockOk
+    have middleSlot := (frame_processBlock (by decide) processed).slot.trans atSlotSlot
+    have upper := stateTransition_chain_slot_le (by decide) tailOk
+    have cacheSlot := processSlot_slot cachedOk
+    have moved := advanceSlots_slot offset advanced
+    have cacheLe : cached.slot.toNat ≤ c.slot.toNat := by
+      rw [middleSlot] at upper
+      rw [cacheSlot]
+      omega
+    have epochLe : (getCurrentEpoch cached).toNat ≤ (getCurrentEpoch c).toNat := by
+      simp only [getCurrentEpoch, computeEpochAtSlot, UInt64.toNat_div]
+      exact Nat.div_le_div_right cacheLe
+    rcases recent with rfl | rfl
+    · omega
+    · have previous := getPreviousEpoch_toNat cached
+      omega
+
+/-- A block's later cached header hashes to its block root, or its observed state hashes to zero. -/
+theorem finality_block_cached_root_or_zero
+    {cfg : Config} {checks : SignatureChecks} {eng : ExecutionEngine p .phase0}
+    {ss : List (FinalityState p)} {pool : List (FinalityBlock p)}
+    {s after atStep cached : FinalityState p} {b : FinalityBlock p} {count : Nat}
+    (ran : stateTransition cfg checks eng s b true = .ok after)
+    (observed : after ∈ ss)
+    (advanced : advanceSlots cfg count after = .ok atStep)
+    (cachedOk : processSlot atStep = .ok cached) :
+    (∀ root, hashTreeRoot cached.latestBlockHeader = .ok root →
+      hashTreeRoot b.message = .ok root) ∨ FinalityZeroRootFound ss pool := by
+  by_cases zero : b.message.stateRoot = Vector.replicate 32 0
+  · have hashed := (stateTransition_ok ran).choose_spec.2.2.2.2 rfl
+    exact .inr (finality_zero_root_found observed (zero ▸ hashed))
+  · obtain ⟨bodyRoot, bodyOk, header⟩ := finality_block_cached_header ran zero advanced cachedOk
+    refine .inl ?_
+    intro root rooted
+    rw [header] at rooted
+    rw [← BeaconBlock.hashTreeRoot_header b.message bodyOk]
+    exact rooted
+
+/-- Empty-slot advancement after a validated nonzero block keeps that block's completed header. -/
+theorem finality_block_advanced_header
+    {cfg : Config} {checks : SignatureChecks} {eng : ExecutionEngine p .phase0}
+    {s after atStep : FinalityState p} {b : FinalityBlock p} {count : Nat}
+    (ran : stateTransition cfg checks eng s b true = .ok after)
+    (nonzero : b.message.stateRoot ≠ Vector.replicate 32 0)
+    (positive : 0 < count)
+    (advanced : advanceSlots cfg count after = .ok atStep) :
+    ∃ bodyRoot, hashTreeRoot b.message.body = .ok bodyRoot ∧
+      atStep.latestBlockHeader =
+        ⟨b.message.slot, b.message.proposerIndex, b.message.parentRoot,
+          b.message.stateRoot, bodyRoot⟩ := by
+  cases count with
+  | zero => omega
+  | succ count =>
+    obtain ⟨middle, first, rest⟩ := bind_ok_iff.mp advanced
+    obtain ⟨cached, cacheOk, middleHeader, _⟩ := advanceSlot_block_history (by decide) first
+    obtain ⟨bodyRoot, bodyOk, fixed⟩ := finality_block_cached_header ran nonzero
+      (show advanceSlots cfg 0 after = .ok after from rfl) cacheOk
+    have middleFilled : middle.latestBlockHeader.stateRoot ≠ Vector.replicate 32 0 := by
+      simpa only [middleHeader, fixed] using nonzero
+    exact ⟨bodyRoot, bodyOk,
+      (advanceSlots_latestBlockHeader_of_nonzero (by decide) count middleFilled rest).trans
+        (middleHeader.trans fixed)⟩
+
+/-- Consecutive validated blocks form a parent-root edge or the first state hashes zero. -/
+theorem finality_consecutive_blocks_parent_or_zero
+    {cfg : Config} {checks : SignatureChecks} {eng : ExecutionEngine p .phase0}
+    {ss : List (FinalityState p)} {pool : List (FinalityBlock p)}
+    {s middle after : FinalityState p} {left right : FinalityBlock p}
+    (first : stateTransition cfg checks eng s left true = .ok middle)
+    (second : stateTransition cfg checks eng middle right true = .ok after)
+    (observed : middle ∈ ss) :
+    hashTreeRoot left.message = .ok right.message.parentRoot ∨ FinalityZeroRootFound ss pool := by
+  by_cases zero : left.message.stateRoot = Vector.replicate 32 0
+  · obtain ⟨_, _, _, _, _, rooted⟩ := stateTransition_ok first
+    exact .inr (finality_zero_root_found observed (zero ▸ rooted rfl))
+  · obtain ⟨atSlot, slotsOk, _, _, blockOk, _⟩ := stateTransition_ok second
+    have moved := UInt64.lt_iff_toNat_lt.mp (processSlots_slot slotsOk).1
+    simp only [processSlots, bind_ok_iff, ensure_ok_iff] at slotsOk
+    obtain ⟨_, _, advanced⟩ := slotsOk
+    obtain ⟨bodyRoot, bodyOk, header⟩ := finality_block_advanced_header first zero
+      (by omega) advanced
+    have notAltair : ¬Fork.altair ≤ Fork.phase0 := by decide
+    simp only [processBlock, notAltair, ↓reduceDIte, bind_ok_iff] at blockOk
+    obtain ⟨headerState, headerOk, _⟩ := blockOk
+    have parent := (processBlockHeader_checks headerOk).2.2.2.1
+    rw [header] at parent
+    exact .inl ((BeaconBlock.hashTreeRoot_header left.message bodyOk).symm.trans parent)
+
+/-- Parent roots of a validated chain connect to every later block root.
+
+Every intermediate post-state is retained so a zero state root gives concrete evidence. -/
+theorem finality_chain_parent_ancestor_or_zero
+    {cfg : Config} {checks : SignatureChecks} {eng : ExecutionEngine p .phase0}
+    {ss : List (FinalityState p)} {pool : List (FinalityBlock p)}
+    {s after : FinalityState p} {bs : List (FinalityBlock p)}
+    (run : finalityRuns cfg checks eng s bs after)
+    (blocksIn : ∀ b ∈ bs, b ∈ pool)
+    (outputsIn : ∀ earlier state, earlier <+: bs →
+      finalityRuns cfg checks eng s earlier state → state ∈ ss) :
+    ∀ first rest, bs = first :: rest →
+      ∀ b ∈ bs, ∀ root, hashTreeRoot b.message = .ok root →
+        FinalityAncestor pool first.message.parentRoot root ∨ FinalityZeroRootFound ss pool := by
+  induction bs generalizing s with
+  | nil => intro first rest split; cases split
+  | cons first rest ih =>
+    intro named tail split b member root rooted
+    cases split
+    obtain ⟨middle, firstOk, restOk⟩ := bind_ok_iff.mp run
+    rcases List.mem_cons.mp member with equal | inRest
+    · subst b
+      exact .inl (finalityAncestor_parent (blocksIn first List.mem_cons_self) rooted)
+    · cases rest with
+      | nil => simp at inRest
+      | cons next more =>
+        obtain ⟨nextState, nextOk, _⟩ := bind_ok_iff.mp restOk
+        rcases finality_consecutive_blocks_parent_or_zero firstOk nextOk
+            (outputsIn [first] middle ⟨next :: more, rfl⟩ (by
+              change (first :: []).foldlM
+                (fun s b => stateTransition cfg checks eng s b true) s = .ok middle
+              exact bind_ok_iff.mpr ⟨middle, firstOk, rfl⟩)) with parent | zero
+        · rcases ih restOk (fun b member => blocksIn b (List.mem_cons_of_mem first member))
+            (fun earlier state pref ok => outputsIn (first :: earlier) state
+              (by obtain ⟨remaining, eq⟩ := pref; exact ⟨remaining, by simp [eq]⟩)
+              (by exact bind_ok_iff.mpr ⟨middle, firstOk, ok⟩))
+            next more rfl b inRest root rooted with ancestor | zero
+          · exact .inl ((finalityAncestor_parent (blocksIn first List.mem_cons_self) parent).trans
+              ancestor)
+          · exact .inr zero
+        · exact .inr zero
+
+/-- Actual parent-root reachability along a history needs no assumption on state-root outputs. -/
+theorem finality_chain_parent_ancestor
+    {cfg : Config} {checks : SignatureChecks} {eng : ExecutionEngine p .phase0}
+    {s after : FinalityState p} {first : FinalityBlock p} {rest : List (FinalityBlock p)}
+    (run : finalityRuns cfg checks eng s (first :: rest) after)
+    {b : FinalityBlock p} {root : Root} (member : b ∈ first :: rest)
+    (rooted : hashTreeRoot b.message = .ok root) :
+    FinalityAncestor (first :: rest) first.message.parentRoot root ∨
+      FinalityZeroRootFound (finalityObservations cfg checks eng s (first :: rest))
+        (first :: rest) := by
+  apply finality_chain_parent_ancestor_or_zero run (fun _ h => h) ?_ first rest rfl
+    b member root rooted
+  intro earlier state pref ran
+  obtain ⟨remaining, equal⟩ := pref
+  rw [← equal]
+  exact finality_observations_prefix remaining (finality_observations_endpoint ran)
+
+/-- A slot cache connects to the parent of the next validated block, or exhibits a zero root. -/
+theorem finality_cache_next_parent_or_zero
+    {cfg : Config} {checks : SignatureChecks} {eng : ExecutionEngine p .phase0}
+    {ss : List (FinalityState p)} {pool : List (FinalityBlock p)}
+    {before after atStep cached : FinalityState p} {b : FinalityBlock p} {offset : Nat}
+    {root : Root}
+    (ran : stateTransition cfg checks eng before b true = .ok after)
+    (inside : offset < b.message.slot.toNat - before.slot.toNat)
+    (advanced : advanceSlots cfg offset before = .ok atStep)
+    (cachedOk : processSlot atStep = .ok cached)
+    (rooted : hashTreeRoot cached.latestBlockHeader = .ok root)
+    (observed : atStep ∈ ss) :
+    root = b.message.parentRoot ∨ FinalityZeroRootFound ss pool := by
+  obtain ⟨stateRoot, stateRootOk, cacheHeader⟩ :=
+    processSlot_latestBlockHeader (by decide) cachedOk
+  by_cases zero : stateRoot = Vector.replicate 32 0
+  · exact .inr (finality_zero_root_found observed (zero ▸ stateRootOk))
+  · have filled : cached.latestBlockHeader.stateRoot ≠ Vector.replicate 32 0 := by
+      rw [cacheHeader]
+      split
+      · exact zero
+      · exact ‹atStep.latestBlockHeader.stateRoot ≠ Vector.replicate 32 0›
+    obtain ⟨atSlot, slotsOk, _, _, blockOk, _⟩ := stateTransition_ok ran
+    simp only [processSlots, bind_ok_iff, ensure_ok_iff] at slotsOk
+    obtain ⟨_, _, slotsAdvanced⟩ := slotsOk
+    have countEq : b.message.slot.toNat - before.slot.toNat =
+        offset + (b.message.slot.toNat - before.slot.toNat - offset) := by omega
+    rw [countEq] at slotsAdvanced
+    obtain ⟨sameStep, prefixOk, suffixOk⟩ := advanceSlots_add slotsAdvanced
+    have equal : sameStep = atStep := Except.ok.inj (prefixOk.symm.trans advanced)
+    subst sameStep
+    obtain ⟨remaining, remainingEq⟩ := Nat.exists_eq_succ_of_ne_zero
+      (by omega : b.message.slot.toNat - before.slot.toNat - offset ≠ 0)
+    rw [remainingEq] at suffixOk
+    obtain ⟨next, stepOk, restOk⟩ := bind_ok_iff.mp suffixOk
+    obtain ⟨stepCached, stepCache, nextHeader, _⟩ := advanceSlot_block_history (by decide) stepOk
+    have cacheEq : stepCached = cached := Except.ok.inj (stepCache.symm.trans cachedOk)
+    rw [cacheEq] at nextHeader
+    have nextFilled : next.latestBlockHeader.stateRoot ≠ Vector.replicate 32 0 := by
+      simpa only [nextHeader] using filled
+    have header := (advanceSlots_latestBlockHeader_of_nonzero (by decide)
+      remaining nextFilled restOk).trans nextHeader
+    have notAltair : ¬Fork.altair ≤ Fork.phase0 := by decide
+    simp only [processBlock, notAltair, ↓reduceDIte, bind_ok_iff] at blockOk
+    obtain ⟨headerState, headerOk, _⟩ := blockOk
+    have parent := (processBlockHeader_checks headerOk).2.2.2.1
+    rw [header] at parent
+    exact .inl (Except.ok.inj (rooted.symm.trans parent))
 
 end EthLib.Consensus
