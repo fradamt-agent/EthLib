@@ -1,5 +1,6 @@
 module
 
+public import EthLib.Consensus.Proofs.Containers.Block
 public import EthLib.Consensus.Proofs.Transition.Invariants
 public import EthLib.Consensus.Transition.Genesis
 public import EthLib.Consensus.Proofs.LightClient.Authenticate
@@ -1623,6 +1624,31 @@ theorem effectiveBalance_growth_le_deficit_of_initialized_chain
       preset.MAX_EFFECTIVE_BALANCE.toNat - reference.toNat :=
   effectiveBalance_growth_le_initial_deficit
     (effectiveBalancesBounded_of_initialized_chain initialized computed) member
+
+/-- Caching the post-state of a block stores that block's root.
+
+The header must be the one installed by block processing.
+
+The block must carry the post-state root checked by the state transition. -/
+theorem processSlot_blockRoot_of_block (before : fork < .glamsterdam)
+    (nonzero : preset.SLOTS_PER_HISTORICAL_ROOT ≠ 0)
+    (computed : processSlot state = .ok after) {block : BeaconBlock preset fork}
+    {bodyRoot : Root} (body : SszType.hashTreeRoot block.body = .ok bodyRoot)
+    (header : state.latestBlockHeader =
+      ⟨block.slot, block.proposerIndex, block.parentRoot, Vector.replicate 32 0, bodyRoot⟩)
+    (stateRoot : SszType.hashTreeRoot state = .ok block.stateRoot) :
+    ∃ root, SszType.hashTreeRoot block = .ok root ∧
+      readCircular after.blockRoots state.slot = .ok root := by
+  obtain ⟨root, rooted, saved⟩ := processSlot_blockRoot before nonzero computed
+  obtain ⟨actualStateRoot, actualRooted, headerOk⟩ :=
+    processSlot_latestBlockHeader before computed
+  have same : actualStateRoot = block.stateRoot :=
+    Except.ok.inj (actualRooted.symm.trans stateRoot)
+  rw [header, same] at headerOk
+  simp only [↓reduceIte] at headerOk
+  refine ⟨root, ?_, saved⟩
+  rw [headerOk, BeaconBlock.hashTreeRoot_header block body] at rooted
+  exact rooted
 
 /-- A candidate state launches the chain exactly when it is late enough.
 

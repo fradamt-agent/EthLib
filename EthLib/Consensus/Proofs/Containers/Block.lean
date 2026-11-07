@@ -196,4 +196,36 @@ instance : LawfulSszType (BeaconBlock preset fork) :=
 instance : LawfulSszType (SignedBeaconBlock preset fork) :=
   .container ⟨rfl, by simp, by decide⟩ (fun _ => rfl) (fun _ => rfl)
 
+omit [NeZero preset.BYTES_PER_LOGS_BLOOM.toNat] [NeZero preset.SYNC_COMMITTEE_SIZE.toNat]
+  [NeZero preset.MAX_COMMITTEES_PER_SLOT.toNat] [NeZero preset.PTC_SIZE.toNat]
+  [NeZero preset.INCLUSION_LIST_COMMITTEE_SIZE.toNat] in
+/-- Replacing the body by its root gives a header with the same root as the block.
+
+This equality follows from SSZ summarization, without a hash injectivity assumption. -/
+theorem BeaconBlock.hashTreeRoot_header (block : BeaconBlock preset fork) {bodyRoot : Root}
+    (rooted : SszType.hashTreeRoot block.body = .ok bodyRoot) :
+    SszType.hashTreeRoot (⟨block.slot, block.proposerIndex, block.parentRoot, block.stateRoot,
+      bodyRoot⟩ : BeaconBlockHeader) = SszType.hashTreeRoot block := by
+  have summary := hashTreeRoot_summary
+    (names := ["slot", "proposer_index", "parent_root", "state_root", "body"])
+    (fields := [SszType.desc Slot, SszType.desc ValidatorIndex, SszType.desc Root,
+      SszType.desc Root, SszType.desc (BeaconBlockBody preset fork)])
+    (values := [SszType.toValue block.slot, SszType.toValue block.proposerIndex,
+      SszType.toValue block.parentRoot, SszType.toValue block.stateRoot,
+      SszType.toValue block.body])
+    (position := 4) (by rfl) (by rfl) (by rfl)
+    (SszType.hashTreeRoot_ok_iff.mp rooted)
+  have roots : hashTreeRoot (SszType.desc BeaconBlockHeader)
+      (SszType.toValue (⟨block.slot, block.proposerIndex, block.parentRoot, block.stateRoot,
+        bodyRoot⟩ : BeaconBlockHeader)) =
+      hashTreeRoot (SszType.desc (BeaconBlock preset fork)) (SszType.toValue block) := by
+    change hashTreeRoot (.container _ _) (.seq _) = hashTreeRoot (.container _ _) (.seq _)
+    simp only [SszFields.descs, SszFields.toValues]
+    rw [← summary]
+    rw [hashTreeRoot_container_names
+      ["slot", "proposer_index", "parent_root", "state_root", "body"]
+      ["slot", "proposer_index", "parent_root", "state_root", "body_root"]]
+    rfl
+  simp only [SszType.hashTreeRoot, roots]
+
 end EthLib.Consensus

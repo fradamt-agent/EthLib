@@ -1431,6 +1431,27 @@ theorem weighJustificationAndFinalization_finalized_rules {total previous curren
         exact .inr ⟨bits.1, bits.2, gap⟩
     · exact (changed (by simp_all)).elim
 
+/-- A changed finalization identifies the source field and the last target bit of its rule.
+
+The final bit is current or previous, with the source one or two epochs before its target. -/
+theorem weighJustificationAndFinalization_finalized_endpoint {total previous current : Gwei}
+    (computed : weighJustificationAndFinalization state total previous current = .ok after)
+    (changed : after.finalizedCheckpoint ≠ state.finalizedCheckpoint) :
+    (after.finalizedCheckpoint = state.currentJustifiedCheckpoint ∧
+      after.justificationBits.bits[0] = true ∧
+      (after.finalizedCheckpoint.epoch.toNat + 1 = (getCurrentEpoch state).toNat ∨
+        after.finalizedCheckpoint.epoch.toNat + 2 = (getCurrentEpoch state).toNat)) ∨
+    (after.finalizedCheckpoint = state.previousJustifiedCheckpoint ∧
+      after.justificationBits.bits[1] = true ∧
+      (after.finalizedCheckpoint.epoch.toNat + 2 = (getCurrentEpoch state).toNat ∨
+        after.finalizedCheckpoint.epoch.toNat + 3 = (getCurrentEpoch state).toNat)) := by
+  rcases weighJustificationAndFinalization_finalized_rules computed changed with
+      ⟨assigned, two | one⟩ | ⟨assigned, three | two⟩
+  · exact .inl ⟨assigned, two.1, .inr (assigned ▸ two.2.2.2)⟩
+  · exact .inl ⟨assigned, one.1, .inl (assigned ▸ one.2.2)⟩
+  · exact .inr ⟨assigned, three.1, .inr (assigned ▸ three.2.2.2)⟩
+  · exact .inr ⟨assigned, two.1, .inl (assigned ▸ two.2.2)⟩
+
 /-- Every changed finalization has a true bit for the epoch immediately after its checkpoint.
 
 The longer finalization rules require this intermediate justified epoch too.

@@ -72,6 +72,127 @@ theorem processSlot_slot (computed : processSlot state = .ok after) : after.slot
   obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok computed
   rfl
 
+/-- Slot caching fills an empty header state root with the root of the input state.
+
+It keeps a nonempty header unchanged, including across empty slots. -/
+theorem processSlot_latestBlockHeader (before : fork < .glamsterdam)
+    (computed : processSlot state = .ok after) :
+    ∃ stateRoot, hashTreeRoot state = .ok stateRoot ∧
+      after.latestBlockHeader =
+        if state.latestBlockHeader.stateRoot = Vector.replicate 32 0 then
+          { state.latestBlockHeader with stateRoot } else state.latestBlockHeader := by
+  unfold processSlot at computed
+  simp only [bind_ok_iff, liftSsz_ok] at computed
+  obtain ⟨stateRoot, stateRootOk, _, _, computed⟩ := computed
+  have notGloas : ¬Fork.glamsterdam ≤ fork := Nat.not_le_of_lt before
+  simp only [notGloas, ↓reduceDIte, pure, Except.pure, Except.ok.injEq] at computed
+  subst after
+  exact ⟨stateRoot, stateRootOk, rfl⟩
+
+/-- Once its state root is filled, slot caching preserves the latest header. -/
+theorem processSlot_latestBlockHeader_of_nonzero (before : fork < .glamsterdam)
+    (computed : processSlot state = .ok after)
+    (filled : state.latestBlockHeader.stateRoot ≠ Vector.replicate 32 0) :
+    after.latestBlockHeader = state.latestBlockHeader := by
+  obtain ⟨_, _, header⟩ := processSlot_latestBlockHeader before computed
+  simpa only [filled, ↓reduceIte] using header
+
+/-- Slot caching stores the root of its resulting latest header in the block-root buffer.
+
+The zero state root is filled before that header is hashed. -/
+theorem processSlot_blockRoot (before : fork < .glamsterdam)
+    (nonzero : preset.SLOTS_PER_HISTORICAL_ROOT ≠ 0)
+    (computed : processSlot state = .ok after) :
+    ∃ root, hashTreeRoot after.latestBlockHeader = .ok root ∧
+      readCircular after.blockRoots state.slot = .ok root := by
+  unfold processSlot at computed
+  simp only [bind_ok_iff, liftSsz_ok] at computed
+  obtain ⟨stateRoot, stateRootOk, blockRoot, blockRootOk, computed⟩ := computed
+  have notGloas : ¬Fork.glamsterdam ≤ fork := Nat.not_le_of_lt before
+  simp only [notGloas, ↓reduceDIte, pure, Except.pure, Except.ok.injEq] at computed
+  subst after
+  refine ⟨blockRoot, blockRootOk, ?_⟩
+  simp only [readCircular, nonzero, ↓reduceDIte, Vector.getElem_set!_self]
+
+/-- Caching a different circular-buffer position preserves an earlier block-root read.
+
+The explicit position inequality records the overwrite boundary. -/
+theorem processSlot_readBlockRoot_of_ne (before : fork < .glamsterdam)
+    (computed : processSlot state = .ok after) (slot : Slot)
+    (different : (state.slot % preset.SLOTS_PER_HISTORICAL_ROOT).toNat ≠
+      (slot % preset.SLOTS_PER_HISTORICAL_ROOT).toNat) :
+    readCircular after.blockRoots slot = readCircular state.blockRoots slot := by
+  unfold processSlot at computed
+  simp only [bind_ok_iff, liftSsz_ok] at computed
+  obtain ⟨_, _, _, _, computed⟩ := computed
+  have notGloas : ¬Fork.glamsterdam ≤ fork := Nat.not_le_of_lt before
+  simp only [notGloas, ↓reduceDIte, pure, Except.pure, Except.ok.injEq] at computed
+  subst after
+  unfold readCircular
+  split
+  · rfl
+  · simp only [Vector.getElem_set!, different, ↓reduceIte]
+
+/-- A recent earlier slot cannot share the position being cached before its overwrite boundary. -/
+theorem processSlot_readBlockRoot_recent (before : fork < .glamsterdam)
+    (computed : processSlot state = .ok after) (slot : Slot)
+    (earlier : slot.toNat < state.slot.toNat)
+    (recent : state.slot.toNat < slot.toNat + preset.SLOTS_PER_HISTORICAL_ROOT.toNat) :
+    readCircular after.blockRoots slot = readCircular state.blockRoots slot := by
+  apply processSlot_readBlockRoot_of_ne before computed slot
+  intro same
+  simp only [UInt64.toNat_mod] at same
+  have oldDecomposition := Nat.mod_add_div slot.toNat preset.SLOTS_PER_HISTORICAL_ROOT.toNat
+  have newDecomposition := Nat.mod_add_div state.slot.toNat preset.SLOTS_PER_HISTORICAL_ROOT.toNat
+  have dividesLater : slot.toNat / preset.SLOTS_PER_HISTORICAL_ROOT.toNat + 1 ≤
+      state.slot.toNat / preset.SLOTS_PER_HISTORICAL_ROOT.toNat := by
+    by_cases le : state.slot.toNat / preset.SLOTS_PER_HISTORICAL_ROOT.toNat ≤
+        slot.toNat / preset.SLOTS_PER_HISTORICAL_ROOT.toNat
+    · have products := Nat.mul_le_mul_left preset.SLOTS_PER_HISTORICAL_ROOT.toNat le
+      omega
+    · omega
+  have products := Nat.mul_le_mul_left preset.SLOTS_PER_HISTORICAL_ROOT.toNat dividesLater
+  rw [Nat.mul_add, Nat.mul_one] at products
+  omega
+
+/-- Each successful block-root read after caching is old or names the newly cached header.
+
+This includes overwrites of the circular buffer and needs no hash assumption. -/
+theorem processSlot_readBlockRoot_origin (before : fork < .glamsterdam)
+    (computed : processSlot state = .ok after) {slot : Slot} {root : Root}
+    (read : readCircular after.blockRoots slot = .ok root) :
+    readCircular state.blockRoots slot = .ok root ∨
+      hashTreeRoot after.latestBlockHeader = .ok root := by
+  by_cases same : (state.slot % preset.SLOTS_PER_HISTORICAL_ROOT).toNat =
+      (slot % preset.SLOTS_PER_HISTORICAL_ROOT).toNat
+  · have nonzero : preset.SLOTS_PER_HISTORICAL_ROOT ≠ 0 := by
+      intro zero
+      simp [readCircular, zero] at read
+    obtain ⟨actual, rooted, saved⟩ := processSlot_blockRoot before nonzero computed
+    have sameRead : readCircular after.blockRoots state.slot =
+        readCircular after.blockRoots slot := by
+      simp only [readCircular, nonzero, ↓reduceDIte, same]
+    have equal : actual = root := Except.ok.inj (saved.symm.trans (sameRead.trans read))
+    exact .inr (equal ▸ rooted)
+  · exact .inl ((processSlot_readBlockRoot_of_ne before computed slot same).symm.trans read)
+
+/-- A cached root shared with another header gives the same header or an explicit collision.
+
+The two collision inputs come from the cached and competing header computations. -/
+theorem processSlot_blockRoot_binding (before : fork < .glamsterdam)
+    (nonzero : preset.SLOTS_PER_HISTORICAL_ROOT ≠ 0)
+    (computed : processSlot state = .ok after) {other : BeaconBlockHeader} {root : Root}
+    (cached : readCircular after.blockRoots state.slot = .ok root)
+    (otherRoot : hashTreeRoot other = .ok root) :
+    after.latestBlockHeader = other ∨ ∃ leftTree rightTree,
+      valueTree (desc BeaconBlockHeader) (toValue after.latestBlockHeader) = .ok leftTree ∧
+      valueTree (desc BeaconBlockHeader) (toValue other) = .ok rightTree ∧
+      ∃ x y, findMessageCollision leftTree.messages rightTree.messages = some (x, y) ∧
+        x ∈ leftTree.messages ∧ y ∈ rightTree.messages ∧ MessageCollision x y := by
+  obtain ⟨actual, rooted, saved⟩ := processSlot_blockRoot before nonzero computed
+  have same : actual = root := Except.ok.inj (saved.symm.trans cached)
+  exact beaconBlockHeader_root_binding (same ▸ rooted) otherRoot
+
 /-- From Gloas, after the caching of a slot, the payload of the next slot is not available.
 
 Its bit is the one at the next slot modulo the length of the circular buffer. -/
