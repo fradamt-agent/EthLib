@@ -836,4 +836,67 @@ theorem getConsolidationChurnLimit_le_total {config : Config} {state : BeaconSta
     have := getBalanceChurnLimit_le totalOk wholeOk
     omega
 
+/-- A churn of exits reads the total active balance, so that balance exists. -/
+theorem exitChurnLimit_total {config : Config} {state : BeaconState preset fork} {churn : Gwei}
+    (computed : exitChurnLimit config state = .ok churn) :
+    ∃ total, getTotalActiveBalance state = .ok total := by
+  cases totalOk : getTotalActiveBalance state with
+  | ok total => exact ⟨total, rfl⟩
+  | error e =>
+    unfold exitChurnLimit at computed
+    split at computed <;>
+      simp [getExitChurnLimit, getActivationExitChurnLimit, getBalanceChurnLimit, totalOk,
+        bind, Except.bind] at computed
+
+/-- A churn of consolidations reads the total active balance, so that balance exists. -/
+theorem getConsolidationChurnLimit_total {config : Config} {state : BeaconState preset fork}
+    {churn : Gwei} (computed : getConsolidationChurnLimit config state = .ok churn) :
+    ∃ total, getTotalActiveBalance state = .ok total := by
+  cases totalOk : getTotalActiveBalance state with
+  | ok total => exact ⟨total, rfl⟩
+  | error e =>
+    unfold getConsolidationChurnLimit at computed
+    split at computed <;>
+      simp [getBalanceChurnLimit, totalOk, bind, Except.bind] at computed
+
+/-- The churn of pending deposits has a fixed maximum at every fork.
+
+The maximum is `MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT` before Gloas.
+
+From Gloas it is `MAX_PER_EPOCH_ACTIVATION_CHURN_LIMIT_GLOAS`, as [EIP-8061] specifies.
+
+[EIP-8061]: https://eips.ethereum.org/EIPS/eip-8061 -/
+theorem depositChurnLimit_le {config : Config} {state : BeaconState preset fork} {churn : Gwei}
+    (computed : depositChurnLimit config state = .ok churn) :
+    churn.toNat ≤ (if .glamsterdam ≤ fork then config.MAX_PER_EPOCH_ACTIVATION_CHURN_LIMIT_GLOAS
+      else config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT).toNat := by
+  unfold depositChurnLimit at computed
+  split at computed
+  · rename_i gloas
+    simp only [gloas, ↓reduceIte]
+    simp only [getActivationChurnLimit, bind_ok_iff, pure, Except.pure,
+      Except.ok.injEq] at computed
+    obtain ⟨exit, _, rfl⟩ := computed
+    rw [UInt64.min_def]
+    split
+    · exact Nat.le_refl _
+    · rename_i above
+      have := UInt64.lt_iff_toNat_lt.mp (UInt64.not_le.mp above)
+      omega
+  · rename_i notGloas
+    simp only [notGloas, ↓reduceIte]
+    exact UInt64.le_iff_toNat_le.mp (getActivationExitChurnLimit_le computed)
+
+/-- Known answer: the churn of exits from Gloas, on mainnet, at a total active balance of 2^25 ETH.
+
+The churn is 1024 ETH, four times `MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT` of 256 ETH.
+
+So the fixed maximum of the churn of exits in Electra does not hold from Gloas.
+
+From Gloas a bound on the churn of exits needs a bound on the total active balance. -/
+theorem gloasExitChurn_mainnet :
+    roundToIncrement Preset.mainnet (max Config.mainnet.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA
+      (2 ^ 25 * 10 ^ 9 / Config.mainnet.CHURN_LIMIT_QUOTIENT_GLOAS)) = 2 ^ 10 * 10 ^ 9 := by
+  decide
+
 end EthLib.Consensus
