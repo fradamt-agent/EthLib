@@ -1,6 +1,7 @@
 module
 
 public import EthLib.Consensus.Proofs.Transition.FfgRuns
+public import EthLib.Consensus.Proofs.Transition.StepDebits
 
 /-!
 # Proofs: accountable safety for a store, measured at a state that its two runs share
@@ -47,6 +48,97 @@ theorem CommonState.atStart_runs {start left right : ForkedBeaconState preset}
     (CommonState.atStart runA runB).leftRun = runA ∧
       (CommonState.atStart runA runB).rightRun = runB :=
   ⟨Run.nil_append runA, Run.nil_append runB⟩
+
+/-- A state of a run ends a prefix of it, which debits each balance at most what the run does.
+
+The state also reaches the end of the run. -/
+theorem Run.fallen_prefix {x : ForkedBeaconState preset} :
+    ∀ {after : ForkedBeaconState preset} (run : Run config checks x after)
+      {y : ForkedBeaconState preset}, y ∈ run.states →
+      ∃ pre : Run config checks x y, (∀ j, pre.fallen j ≤ run.fallen j) ∧
+        Reaches config checks y after
+  | _, .nil, _, member => by
+    obtain rfl := List.mem_singleton.mp member
+    exact ⟨.nil, fun _ => Nat.le_refl _, ⟨.nil⟩⟩
+  | _, .snoc run step, _, member => by
+    rcases List.mem_append.mp member with inRun | atEnd
+    · obtain ⟨pre, le, ⟨rest⟩⟩ := Run.fallen_prefix run inRun
+      exact ⟨pre, fun j => Nat.le_trans (le j) (Nat.le_add_right _ _), ⟨rest.snoc step⟩⟩
+    · obtain rfl := List.mem_singleton.mp atEnd
+      exact ⟨.snoc run step, fun _ => Nat.le_refl _, ⟨.nil⟩⟩
+
+/-- The loss bound of the validators active at `x`, given a list of step budgets for each.
+
+Each validator gives its slack at `x`, the sum of its budgets over the flows, and the rounding. -/
+def lossBudget (x : BeaconState preset fork) (budgets : Nat → List (BalanceFlow → Nat)) : ℕ :=
+  ∑ j ∈ (Finset.range x.validators.data.size).filter
+      (activeAt x (getCurrentEpoch x) · = true),
+    ((effectiveAt x j - balanceAt x j) +
+      (BalanceFlow.all.map fun flow => ((budgets j).map (· flow)).sum).sum +
+      (preset.EFFECTIVE_BALANCE_INCREMENT.toNat - 1))
+
+/-- Along a run from a reachable state, before Gloas, the stake lost up to each state of it.
+
+The validators active at the start lose at most `lossBudget` of step budgets of the whole run.
+
+Each budget is of `StepBudget`, which names its amounts and where they come from.
+
+The registry limit must leave room for the pending deposits of an epoch in 64 bits. -/
+theorem Run.lostStake_le_budgets (caps : EffectiveBalanceCaps preset)
+    (increment : 0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
+    (room : preset.VALIDATOR_REGISTRY_LIMIT.toNat + preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat <
+      2 ^ 64)
+    {x after : ForkedBeaconState preset} (reachable : Reachable config checks x)
+    (run : Run config checks x after) (early : after.fork < .glamsterdam) :
+    ∃ budgets : Nat → List (BalanceFlow → Nat), (∀ j, run.Budgets j (budgets j)) ∧
+      ∀ y ∈ run.states, lostStake x.state y.state ≤ lossBudget x.state budgets := by
+  have within : ∀ y ∈ run.states, y.state.RegistryWithinLimit := by
+    intro y member
+    obtain ⟨-, -, toEnd⟩ := run.fallen_prefix member
+    exact BeaconState.registryWithinLimit_of_lt (Nat.lt_of_le_of_lt toEnd.fork_le early) y.state
+  have ready : ∀ y ∈ run.states, LedgerReady y := by
+    intro y member
+    obtain ⟨-, -, toEnd⟩ := run.fallen_prefix member
+    have limit := within y member
+    unfold BeaconState.RegistryWithinLimit at limit
+    exact LedgerReady.of_reachable (ReachableFrom.reaches reachable (run.reaches_of_mem_states y
+      member)) (Nat.lt_of_le_of_lt toEnd.fork_le early) (by omega)
+  have each := fun j => run.fallen_le_stepBudgets j ready
+  choose budgets budgetsOk bound using each
+  refine ⟨budgets, budgetsOk, fun y member => ?_⟩
+  obtain ⟨pre, le, -⟩ := run.fallen_prefix member
+  have limit := within y member
+  unfold BeaconState.RegistryWithinLimit at limit
+  refine (lostStake_le_fallen caps increment reachable pre (by omega)).trans ?_
+  refine Finset.sum_le_sum fun j _ => ?_
+  have := le j
+  have := bound j
+  omega
+
+/-- On either tail after a shared state, before Gloas, the stake lost from the shared state.
+
+It is at most the larger `lossBudget` of the step budgets of the two tails. -/
+theorem CommonState.lostStake_le_budgets {g a b : ForkedBeaconState preset}
+    (X : CommonState config checks g a b) (genesis : Genesis config checks g)
+    (caps : EffectiveBalanceCaps preset)
+    (increment : 0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
+    (room : preset.VALIDATOR_REGISTRY_LIMIT.toNat + preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat <
+      2 ^ 64)
+    (earlyA : a.fork < .glamsterdam) (earlyB : b.fork < .glamsterdam) :
+    ∃ budgetsA budgetsB : Nat → List (BalanceFlow → Nat),
+      (∀ j, X.leftTail.Budgets j (budgetsA j)) ∧ (∀ j, X.rightTail.Budgets j (budgetsB j)) ∧
+      ∀ y, (y ∈ X.leftTail.states ∨ y ∈ X.rightTail.states) →
+        lostStake X.common.state y.state ≤
+          max (lossBudget X.common.state budgetsA) (lossBudget X.common.state budgetsB) := by
+  have reachableX : Reachable config checks X.common := ⟨g, genesis, ⟨X.shared⟩⟩
+  obtain ⟨budgetsA, okA, boundA⟩ :=
+    X.leftTail.lostStake_le_budgets caps increment room reachableX earlyA
+  obtain ⟨budgetsB, okB, boundB⟩ :=
+    X.rightTail.lostStake_le_budgets caps increment room reachableX earlyB
+  refine ⟨budgetsA, budgetsB, okA, okB, ?_⟩
+  rintro y (member | member)
+  · exact (boundA y member).trans (le_max_left _ _)
+  · exact (boundB y member).trans (le_max_right _ _)
 
 /-- `justified_of_checkpointFromRuns` along a run.
 
@@ -123,7 +215,9 @@ Split the two runs at a shared state `X` before the first slot of the epoch of `
 
 Let `E` be the epoch of `X`, `n = J + 1 - E` and `K = max 1 (churnCapWithin X n)`.
 
-Let `L` bound the stake that the active validators of `X` lose up to epoch `J + 1`.
+Each tail after `X` has step budgets for each validator, of `StepBudget`.
+
+Let `L` be the larger `lossBudget` of the two tails: slack at `X`, budgets and rounding.
 
 Then the stake active at `X` is at most the following:
 
@@ -146,6 +240,9 @@ theorem store_accountable_safety_runs_preElectra {anchorState : BeaconState pres
     {anchorBlock : BeaconBlock preset fork} {store : Store preset fork}
     (genesis : Genesis config checks ⟨fork, anchorState⟩) (caps : EffectiveBalanceCaps preset)
     (two : 2 ≤ preset.SLOTS_PER_EPOCH.toNat)
+    (increment : 0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
+    (room : preset.VALIDATOR_REGISTRY_LIMIT.toNat + preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat <
+      2 ^ 64)
     (wide4 : 4 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (early : fork < .pectra)
@@ -171,9 +268,8 @@ theorem store_accountable_safety_runs_preElectra {anchorState : BeaconState pres
         X.leftRun = runA → X.rightRun = runB →
         X.common.state.slot.toNat <
           store.finalizedCheckpoint.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat →
-        ∀ {L : ℕ}, (∀ y, Reaches config checks X.common y →
-          (getCurrentEpoch y.state).toNat ≤ store.justifiedCheckpoint.epoch.toNat + 1 →
-            lostStake X.common.state y.state ≤ L) →
+        ∃ budgetsA budgetsB : Nat → List (BalanceFlow → Nat),
+        (∀ j, X.leftTail.Budgets j (budgetsA j)) ∧ (∀ j, X.rightTail.Budgets j (budgetsB j)) ∧
         let ω₀ := Weighing.ofState X.common.state
           (getActiveValidatorIndices X.common.state (getCurrentEpoch X.common.state)).toFinset
         let R := runRefinement runA runB genesis wide4 lookahead
@@ -182,6 +278,7 @@ theorem store_accountable_safety_runs_preElectra {anchorState : BeaconState pres
         let n := store.justifiedCheckpoint.epoch.toNat + 1 -
           (getCurrentEpoch X.common.state).toNat
         let K := max 1 (churnCapWithin config X.common n)
+        let L := max (lossBudget X.common.state budgetsA) (lossBudget X.common.state budgetsB)
         stake ω₀.stake ω₀.active ≤
             3 * stake ω₀.stake {i ∈ ω₀.active | ∃ data1 data2, (i, data1) ∈ R.signed ∧
               (i, data2) ∈ R.signed ∧ isSlashableAttestationData data1 data2 = true} +
@@ -220,8 +317,11 @@ theorem store_accountable_safety_runs_preElectra {anchorState : BeaconState pres
   have hf : store.finalizedCheckpoint ∈ (runRefinement runA runB genesis wide4 lookahead
       (runs_within (Nat.lt_of_lt_of_le early (by decide))
         (Nat.lt_of_lt_of_le early (by decide)))).finalized := .inr (.inr finalized)
-  refine ⟨sJ, sF, runA, runB, hj, hf, fun X onA onB before L lost => ?_⟩
-  intro ω₀ R n K
+  refine ⟨sJ, sF, runA, runB, hj, hf, fun X onA onB before => ?_⟩
+  obtain ⟨budgetsA, budgetsB, okA, okB, lostBound⟩ := X.lostStake_le_budgets genesis caps
+    increment room (Nat.lt_of_lt_of_le early (by decide)) (Nat.lt_of_lt_of_le early (by decide))
+  refine ⟨budgetsA, budgetsB, okA, okB, ?_⟩
+  intro ω₀ R n K L
   -- The root facts that the store bridge needs, from the chains of the runs.
   have finalizedJustified :
       JustifiedOrStart config checks ⟨fork, anchorState⟩ ⟨fork, sF⟩ store.finalizedCheckpoint ∨
@@ -263,7 +363,7 @@ theorem store_accountable_safety_runs_preElectra {anchorState : BeaconState pres
     conflicting | zeroLink | collision | zeroBlock
   · subst onA onB
     exact (accountable_safety_runs_preElectra_registry X caps two genesis wide4 lookahead early
-      early hf hj hle conflicting before lost).imp_right .inl
+      early hf hj hle conflicting before (fun y onTail _ => lostBound y onTail)).imp_right .inl
   · exact .inr (.inr (.inr (.inr zeroLink)))
   · exact .inr (.inr (.inl collision))
   · exact .inr (.inr (.inr (.inl zeroBlock)))

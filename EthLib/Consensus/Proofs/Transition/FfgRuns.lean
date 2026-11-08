@@ -395,7 +395,7 @@ They conflict as epoch-boundary pairs.
 
 So every weighing call between the two epochs runs after `X` on its run, and `X` reaches it.
 
-With `E` the epoch of `X`, `K` a bound on the churn cap and `L` on the lost stake after `X`:
+With `E` the epoch of `X`, `K` bounds the churn cap, and `L` the lost stake on the tails:
 
 ```text
   total(X) ≤ 3 * slashable(X) + 2 * (2 * (J + 1 - E) * K * MAX + 2 * L + 3 * deficit(X)
@@ -425,7 +425,7 @@ theorem accountable_safety_runs_preElectra {g a b : ForkedBeaconState preset}
     (capBound : ∀ y, Reaches config checks X.common y →
       (getCurrentEpoch y.state).toNat ≤ j.epoch.toNat + 1 →
         max 1 (churnCap config y.state.validators.data.size) ≤ K)
-    (lost : ∀ y, Reaches config checks X.common y →
+    (lost : ∀ y, (y ∈ X.leftTail.states ∨ y ∈ X.rightTail.states) →
       (getCurrentEpoch y.state).toNat ≤ j.epoch.toNat + 1 → lostStake X.common.state y.state ≤ L) :
     let ω₀ := Weighing.ofState X.common.state
       (getActiveValidatorIndices X.common.state (getCurrentEpoch X.common.state)).toFinset
@@ -470,10 +470,10 @@ theorem accountable_safety_runs_preElectra {g a b : ForkedBeaconState preset}
         (getCurrentEpoch state).toNat * preset.SLOTS_PER_EPOCH.toNat :=
       Nat.mul_le_mul_right _ (by have := stateEpoch.1; omega)
     omega
-  have fromX := (X.reaches_of_slot_lt (state := ⟨fork, state⟩) mem later).2
+  obtain ⟨onTail, fromX⟩ := X.reaches_of_slot_lt (state := ⟨fork, state⟩) mem later
   exact call.drift_le_preElectra caps two genesis lookahead reachableX earlyX fromX early
     (by have := stateEpoch.2; omega) (capBound _ fromX (by dsimp only; omega))
-    (lost _ fromX (by dsimp only; omega))
+    (lost _ onTail (by dsimp only; omega))
 
 open scoped Classical in
 /-- `accountable_safety_runs_preElectra` with the churn cap bounded by the registry growth from `X`.
@@ -497,7 +497,7 @@ theorem accountable_safety_runs_preElectra_registry {g a b : ForkedBeaconState p
         (slotsPerEpoch := preset.SLOTS_PER_EPOCH.toNat) f)
       (EpochBlock.ofCheckpoint j))
     (before : X.common.state.slot.toNat < f.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat) {L : ℕ}
-    (lost : ∀ y, Reaches config checks X.common y →
+    (lost : ∀ y, (y ∈ X.leftTail.states ∨ y ∈ X.rightTail.states) →
       (getCurrentEpoch y.state).toNat ≤ j.epoch.toNat + 1 → lostStake X.common.state y.state ≤ L) :
     let ω₀ := Weighing.ofState X.common.state
       (getActiveValidatorIndices X.common.state (getCurrentEpoch X.common.state)).toFinset

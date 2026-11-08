@@ -1489,6 +1489,7 @@ With `E` the epoch of `X` and `n = J + 1 - E`, the bound is `2 n K MAX + 2 L + 3
 `store_accountable_safety_runs_preElectra` (`Transition/FfgStoreRuns.lean`) gives the same bound for the checkpoints of a fork-choice store that starts at genesis, before Electra.
 It takes the two runs from the store's states, and holds for every split of them at a shared state `X` before the first slot of the finalized epoch; `CommonState.atStart` gives the split at genesis.
 Its alternatives are the hash evidence of `store_accountable_safety`, on the two runs.
+Its lost-stake term is proved too: `CommonState.lostStake_le_budgets` bounds it by `lossBudget`, the slack at `X`, the step budgets of each tail (`StepBudget`, flow by flow) and the rounding, so only the per-flow budgets remain as named amounts.
 
 ### Engine API
 
