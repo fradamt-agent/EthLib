@@ -891,4 +891,314 @@ theorem JustifiedByOn.callRecordOn {start after : ForkedBeaconState preset}
   have ⟨fork, state, cached, weighed, _, voters, pre, call, onRun⟩ := justified
   ⟨fork, state, cached, weighed, voters, pre, call.record, onRun⟩
 
+/-! ## A direct call on the last state of a run -/
+
+/-- A call of the weighing of either kind on a prefix of a run justified a checkpoint. -/
+def JustifiedByCallOn {start after : ForkedBeaconState preset}
+    (run : Run config checks start after) (checkpoint : Checkpoint) : Prop :=
+  ∃ (fork : Fork) (state cached weighed : BeaconState preset fork)
+    (voters : List ValidatorIndex), CallRecordOn run fork state cached weighed voters checkpoint
+
+theorem JustifiedByCallOn.justifiedByCall {start after : ForkedBeaconState preset}
+    {run : Run config checks start after} {checkpoint : Checkpoint}
+    (justified : JustifiedByCallOn run checkpoint) :
+    JustifiedByCall config checks start after checkpoint :=
+  have ⟨fork, state, cached, weighed, voters, call⟩ := justified
+  ⟨fork, state, cached, weighed, voters, call.record⟩
+
+/-- `KFinalizedByCall` along a given run.
+
+The justified checkpoints are the start's, or justified by calls on prefixes of the run.
+
+The link is a call of either kind on a prefix of the run.
+
+A direct call on the last state of the run is on the run itself, which is a prefix of it. -/
+def KFinalizedByCallOn {start after : ForkedBeaconState preset}
+    (run : Run config checks start after) (c : Checkpoint) : Prop :=
+  ∃ k, 1 ≤ k ∧ k ≤ 2 ∧ ∃ cs : ℕ → Checkpoint, cs 0 = c ∧
+    (∀ i ≤ k, (cs i).epoch.toNat = c.epoch.toNat + i) ∧
+    (∀ i < k, JustifiedOrStartOn run (cs i) ∨ JustifiedByCallOn run (cs i)) ∧
+    (∀ i < k, PastAncestor config checks start after
+        ((cs i).epoch.toNat * preset.SLOTS_PER_EPOCH.toNat) (cs i).root (cs (i + 1)).root ∨
+      ZeroRootFound config checks start after) ∧
+    (∀ i ≤ k, 1 ≤ i → (cs i).root ≠ Vector.replicate 32 0 ∨
+      ZeroHeaderFound config checks start after) ∧
+    ∃ (fork : Fork) (state cached weighed : BeaconState preset fork)
+      (voters : List ValidatorIndex),
+      CallRecordOn run fork state cached weighed voters (cs k) ∧
+      recordSource cached (cs k).epoch = c
+
+/-- Along a run, `k`-finalization by calls of either kind gives it along the chain. -/
+theorem KFinalizedByCallOn.kFinalizedByCall {start after : ForkedBeaconState preset}
+    {run : Run config checks start after} {c : Checkpoint}
+    (finalized : KFinalizedByCallOn run c) : KFinalizedByCall config checks start after c :=
+  have ⟨k, one, two, cs, first, epochs, justified, ancestry, nonzero, fork, state, cached, weighed,
+    voters, call, source⟩ := finalized
+  ⟨k, one, two, cs, first, epochs,
+    fun i below => (justified i below).imp (·.justifiedOrStart) (·.justifiedByCall),
+    ancestry, nonzero, fork, state, cached, weighed, voters, call.record, source⟩
+
+/-- `kFinalizedByCall_one` along a run. -/
+theorem kFinalizedByCallOn_one {start after : ForkedBeaconState preset} {c : Checkpoint}
+    {run : Run config checks start after}
+    (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (genesis : Genesis config checks start)
+    (cJustified : JustifiedByCall config checks start after c)
+    (cOn : JustifiedOrStartOn run c ∨ JustifiedByCallOn run c)
+    {fork : Fork} {state cached weighed : BeaconState preset fork}
+    {voters : List ValidatorIndex} {d : Checkpoint}
+    (link : CallRecordOn run fork state cached weighed voters d)
+    (source : recordSource cached d.epoch = c) (epoch : d.epoch.toNat = c.epoch.toNat + 1)
+    (recentEnd : after.state.slot.toNat ≤
+      c.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat + preset.SLOTS_PER_HISTORICAL_ROOT.toNat) :
+    KFinalizedByCallOn run c := by
+  have fromStart : start.state.slot.toNat ≤ d.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat := by
+    rw [(genesis_state genesis).1]
+    exact Nat.zero_le _
+  refine ⟨1, Nat.le_refl _, by decide, fun i => if i = 0 then c else d, rfl, ?_, ?_, ?_, ?_,
+    fork, state, cached, weighed, voters, link, source⟩
+  · intro i below
+    rcases i with _ | _ | i
+    · simp
+    · simp [epoch]
+    · omega
+  · intro i below
+    rcases i with _ | i
+    · exact cOn
+    · omega
+  · intro i below
+    rcases i with _ | i
+    · exact JustifiedByCall.pastAncestor wide genesis cJustified link.record.justifiedByCall
+        (by simp [epoch]) recentEnd
+    · omega
+  · intro i below one
+    rcases i with _ | _ | i
+    · omega
+    · exact link.record.target_nonzero wide fromStart
+    · omega
+
+/-- `kFinalizedByCall_two` along a run. -/
+theorem kFinalizedByCallOn_two {start after : ForkedBeaconState preset} {c d : Checkpoint}
+    {run : Run config checks start after}
+    (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (genesis : Genesis config checks start)
+    (cJustified : JustifiedByCall config checks start after c)
+    (cOn : JustifiedOrStartOn run c ∨ JustifiedByCallOn run c)
+    (dJustified : JustifiedByCall config checks start after d)
+    (dOn : JustifiedOrStartOn run d ∨ JustifiedByCallOn run d)
+    (dEpoch : d.epoch.toNat = c.epoch.toNat + 1)
+    {fork : Fork} {state cached weighed : BeaconState preset fork}
+    {voters : List ValidatorIndex} {e : Checkpoint}
+    (link : CallRecordOn run fork state cached weighed voters e)
+    (source : recordSource cached e.epoch = c) (eEpoch : e.epoch.toNat = c.epoch.toNat + 2)
+    (recentEnd : after.state.slot.toNat ≤
+      c.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat + preset.SLOTS_PER_HISTORICAL_ROOT.toNat) :
+    KFinalizedByCallOn run c := by
+  have fromStart : ∀ epoch : Epoch,
+      start.state.slot.toNat ≤ epoch.toNat * preset.SLOTS_PER_EPOCH.toNat := fun _ => by
+    rw [(genesis_state genesis).1]
+    exact Nat.zero_le _
+  have dNonzero : d.root ≠ Vector.replicate 32 0 ∨ ZeroHeaderFound config checks start after := by
+    obtain ⟨_, _, _, _, _, call⟩ := dJustified
+    exact call.target_nonzero wide (fromStart _)
+  refine ⟨2, by decide, Nat.le_refl _, fun i => if i = 0 then c else if i = 1 then d else e, rfl,
+    ?_, ?_, ?_, ?_, fork, state, cached, weighed, voters, link, source⟩
+  · intro i below
+    rcases i with _ | _ | _ | i
+    · simp
+    · simp [dEpoch]
+    · simp [eEpoch]
+    · omega
+  · intro i below
+    rcases i with _ | _ | i
+    · exact cOn
+    · exact dOn
+    · omega
+  · intro i below
+    rcases i with _ | _ | i
+    · exact JustifiedByCall.pastAncestor wide genesis cJustified dJustified (by simp [dEpoch])
+        recentEnd
+    · refine JustifiedByCall.pastAncestor wide genesis dJustified link.record.justifiedByCall
+        (by simp [dEpoch, eEpoch]) ?_
+      show _ ≤ d.epoch.toNat * _ + _
+      rw [dEpoch, Nat.add_mul, Nat.one_mul]
+      omega
+    · omega
+  · intro i below one
+    rcases i with _ | _ | _ | i
+    · omega
+    · exact dNonzero
+    · exact link.record.target_nonzero wide (fromStart _)
+    · omega
+
+/-- `processJustificationAndFinalization_current` along a run that ends at the call's state.
+
+The new current justified checkpoint is justified on the run, or this call justified it. -/
+theorem Run.processJustificationAndFinalization_currentOn {start : ForkedBeaconState preset}
+    {fork : Fork} {state weighed : BeaconState preset fork}
+    (run : Run config checks start ⟨fork, state⟩)
+    (weighedOk : processJustificationAndFinalization state = .ok weighed) :
+    JustifiedOrStartOn run weighed.currentJustifiedCheckpoint ∨
+      ∃ voters : List ValidatorIndex,
+        CallRecordOn run fork state state weighed voters weighed.currentJustifiedCheckpoint := by
+  rcases processJustificationAndFinalization_current ⟨run⟩ weighedOk with same | ⟨voters, call⟩
+  · rw [same]
+    exact .inl run.checkpointsOn.2.2
+  · exact .inr ⟨voters, run, call, Run.Prefix.refl run⟩
+
+/-- `processJustificationAndFinalization_finalized_rule` along a run to the call's state.
+
+The finalized checkpoint that the call writes is the state's, or genesis, or `k`-finalized.
+
+It is `k`-finalized along the run.
+
+Each call that the rule names ran on a prefix of the run, or is this call.
+
+The buffer of roots must span four epochs: `4 * SLOTS_PER_EPOCH ≤ N`. -/
+theorem Run.processJustificationAndFinalization_finalized_ruleOn
+    {start : ForkedBeaconState preset} {fork : Fork} {state weighed : BeaconState preset fork}
+    (wide : 4 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (genesis : Genesis config checks start) (run : Run config checks start ⟨fork, state⟩)
+    (weighedOk : processJustificationAndFinalization state = .ok weighed) :
+    weighed.finalizedCheckpoint = state.finalizedCheckpoint ∨
+      weighed.finalizedCheckpoint = ⟨GENESIS_EPOCH, Vector.replicate 32 0⟩ ∨
+      KFinalizedByCallOn run weighed.finalizedCheckpoint := by
+  have head : Reaches config checks start ⟨fork, state⟩ := ⟨run⟩
+  have wide2 : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat := by
+    omega
+  obtain ⟨-, startPrevious, startCurrent, startFinalized⟩ := genesis_state genesis
+  have noStartBit : ¬∃ (other : Nat) (inside : other < JUSTIFICATION_BITS_LENGTH.toNat),
+      start.state.justificationBits.bits[other] = true := by
+    rintro ⟨other, inside, set⟩
+    rw [genesis_bits genesis other inside] at set
+    cases set
+  rcases processJustificationAndFinalization_weighs weighedOk with ⟨_, rfl⟩ |
+    ⟨later, _, _, _, _, _, _, _, _, _, _, weighs⟩
+  · exact .inl rfl
+  obtain ⟨_, _, _, _, _, _, _, _, _, finalizedRule, -⟩ :=
+    weighJustificationAndFinalization_eq weighs
+  have laterNat := UInt64.lt_iff_toNat_lt.mp later
+  change 0 + 1 < _ at laterNat
+  have previousNat := getPreviousEpoch_toNat state
+  -- The state is in its current epoch, so before the first slot of the next one.
+  have slotBound : state.slot.toNat <
+      ((getCurrentEpoch state).toNat + 1) * preset.SLOTS_PER_EPOCH.toNat := by
+    have epochNat := getCurrentEpoch_toNat state
+    have spe : 0 < preset.SLOTS_PER_EPOCH.toNat := by
+      rcases Nat.eq_zero_or_pos preset.SLOTS_PER_EPOCH.toNat with zero | positive
+      · rw [zero, Nat.div_zero] at epochNat
+        omega
+      · exact positive
+    rw [epochNat, Nat.mul_comm]
+    exact Nat.lt_mul_div_succ _ spe
+  have recent : ∀ (checkpoint : Checkpoint) (back : Nat), back ≤ 3 →
+      checkpoint.epoch.toNat + back = (getCurrentEpoch state).toNat →
+      (⟨fork, state⟩ : ForkedBeaconState preset).state.slot.toNat ≤
+        checkpoint.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat +
+          preset.SLOTS_PER_HISTORICAL_ROOT.toNat := by
+    intro checkpoint back few epochs
+    show state.slot.toNat ≤ _
+    rw [← epochs, Nat.add_mul, Nat.add_mul, Nat.one_mul] at slotBound
+    have := Nat.mul_le_mul_right preset.SLOTS_PER_EPOCH.toNat few
+    omega
+  -- An old justified checkpoint is genesis, or a call on a prefix of the run justified it.
+  have old : ∀ checkpoint, JustifiedOrStartOn run checkpoint →
+      checkpoint = ⟨GENESIS_EPOCH, Vector.replicate 32 0⟩ ∨
+        JustifiedByCall config checks start ⟨fork, state⟩ checkpoint := by
+    intro checkpoint justified
+    rcases justified with same | same | same | justified
+    · exact .inl (same.trans startFinalized)
+    · exact .inl (same.trans startPrevious)
+    · exact .inl (same.trans startCurrent)
+    · exact .inr justified.justifiedBy.call
+  obtain ⟨-, previousOld, currentOld⟩ := run.checkpointsOn
+  -- What the new bits stand for.
+  rcases processJustificationAndFinalization_bits weighedOk with ⟨early, -⟩ |
+    ⟨-, bit0, bit1, bit2, bit3⟩
+  · exact absurd later (UInt64.not_lt.mpr early)
+  have link0 : weighed.justificationBits.bits[0] = true →
+      ∃ (voters : List ValidatorIndex) (root : Root),
+        CallRecordOn run fork state state weighed voters ⟨getCurrentEpoch state, root⟩ := by
+    intro set
+    obtain ⟨voters, root, counted, passes, rootOk⟩ := bit0 set
+    exact ⟨voters, root, run, ⟨head, .refl _, .inr rfl, weighedOk, later, .inr rfl, counted,
+      passes, rootOk⟩, Run.Prefix.refl run⟩
+  have link1 : weighed.justificationBits.bits[1] = true →
+      ∃ (fork' : Fork) (state' cached' weighed' : BeaconState preset fork')
+        (voters : List ValidatorIndex) (d : Checkpoint),
+        CallRecordOn run fork' state' cached' weighed' voters d ∧
+        d.epoch.toNat + 1 = (getCurrentEpoch state).toNat ∧
+        recordSource cached' d.epoch = state.previousJustifiedCheckpoint := by
+    intro set
+    rcases bit1 set with ⟨voters, root, counted, passes, rootOk⟩ | older
+    · -- This call justified the previous epoch, from the state's previous justified checkpoint.
+      have notCurrent : getPreviousEpoch state ≠ getCurrentEpoch state := fun same => by
+        rw [same] at previousNat
+        omega
+      refine ⟨fork, state, state, weighed, voters, ⟨getPreviousEpoch state, root⟩,
+        ⟨run, ⟨head, .refl _, .inr rfl, weighedOk, later, .inl rfl, counted, passes, rootOk⟩,
+          Run.Prefix.refl run⟩, by simp only; omega, ?_⟩
+      unfold recordSource
+      exact ite_eq_right_of_eq_false _ _ (eq_false notCurrent)
+    · -- The last call on the run justified it as its current epoch.
+      rcases run.newestBitOn older with atStart | ⟨fork', state', cached', weighed', next', voters,
+        root, pre, call, onRun, epochs, previous⟩
+      · exact absurd atStart noStartBit
+      refine ⟨fork', state', cached', weighed', voters, ⟨getCurrentEpoch cached', root⟩,
+        ⟨pre, call.record, onRun⟩, epochs, ?_⟩
+      unfold recordSource
+      rw [ite_eq_left_of_eq_true _ _ (eq_true rfl)]
+      exact previous.symm
+  have justifiedBit : ∀ (index : Nat) (inside : index < JUSTIFICATION_BITS_LENGTH.toNat),
+      state.justificationBits.bits[index] = true →
+      ∃ d : Checkpoint, d.epoch.toNat + (index + 1) = (getCurrentEpoch state).toNat ∧
+        JustifiedByCall config checks start ⟨fork, state⟩ d ∧ JustifiedOrStartOn run d := by
+    intro index inside set
+    rcases run.justificationBitOn index inside set with atStart | ⟨d, epoch, justified⟩
+    · exact absurd atStart noStartBit
+    refine ⟨d, ?_, justified.justifiedBy.call, .inr (.inr (.inr justified))⟩
+    simp only at epoch
+    omega
+  split at finalizedRule
+  · next byCurrent =>
+    simp only [Bool.or_eq_true, Bool.and_eq_true, decide_eq_true_eq] at byCurrent
+    rw [finalizedRule]
+    rcases old _ currentOld with genesisCheckpoint | cJustified
+    · exact .inr (.inl genesisCheckpoint)
+    right; right
+    rcases byCurrent with ⟨⟨⟨b0, b1⟩, b2⟩, back⟩ | ⟨⟨b0, b1⟩, back⟩
+    · -- Old current justified, two epochs back.
+      obtain ⟨fork', state', cached', weighed', votersD, d, dCall, dEpoch, -⟩ := link1 b1
+      obtain ⟨voters, root, link⟩ := link0 b0
+      refine kFinalizedByCallOn_two wide2 genesis cJustified (.inl currentOld)
+        dCall.record.justifiedByCall (.inr ⟨_, _, _, _, _, dCall⟩) (by omega) link ?_
+        (by simp only; omega) (recent _ 2 (by decide) back)
+      unfold recordSource
+      exact ite_eq_left_of_eq_true _ _ (eq_true rfl)
+    · -- Old current justified, one epoch back.
+      obtain ⟨voters, root, link⟩ := link0 b0
+      refine kFinalizedByCallOn_one wide2 genesis cJustified (.inl currentOld) link ?_
+        (by simp only; omega) (recent _ 1 (by decide) back)
+      unfold recordSource
+      exact ite_eq_left_of_eq_true _ _ (eq_true rfl)
+  · split at finalizedRule
+    · next byPrevious =>
+      simp only [Bool.or_eq_true, Bool.and_eq_true, decide_eq_true_eq] at byPrevious
+      rw [finalizedRule]
+      rcases old _ previousOld with genesisCheckpoint | cJustified
+      · exact .inr (.inl genesisCheckpoint)
+      right; right
+      rcases byPrevious with ⟨⟨⟨b1, b2⟩, b3⟩, back⟩ | ⟨⟨b1, b2⟩, back⟩
+      · -- Old previous justified, three epochs back.
+        rw [bit2] at b2
+        obtain ⟨d, dEpoch, dJustified, dOn⟩ := justifiedBit 1 (by decide) b2
+        obtain ⟨fork', state', cached', weighed', voters, e, link, eEpoch, source⟩ := link1 b1
+        exact kFinalizedByCallOn_two wide2 genesis cJustified (.inl previousOld) dJustified
+          (.inl dOn) (by omega) link source (by omega) (recent _ 3 (by decide) back)
+      · -- Old previous justified, two epochs back.
+        obtain ⟨fork', state', cached', weighed', voters, e, link, eEpoch, source⟩ := link1 b1
+        exact kFinalizedByCallOn_one wide2 genesis cJustified (.inl previousOld) link source
+          (by omega) (recent _ 2 (by decide) back)
+    · exact .inl finalizedRule
+
 end EthLib.Consensus
