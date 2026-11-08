@@ -38,6 +38,8 @@ So the exits from Electra never take an epoch of the queue before Electra.
 
 A fourth amount is what each exit from Electra lost before its churn was charged.
 
+The stake that joins splits at the same upgrade, into what joins before it and from it on.
+
 [EIP-7251]: https://eips.ethereum.org/EIPS/eip-7251#consensus-layer-1
 -/
 
@@ -933,5 +935,108 @@ theorem Run.leavingStake_le_acrossElectra_closed (caps : EffectiveBalanceCaps pr
   have queued := queuedAtUpgrade_le caps early reachable chain upgraded postBelow finite
   exact Nat.le_trans bound (Nat.add_le_add_right (Nat.add_le_add_right
     (Nat.add_le_add_right (Nat.add_le_add before queued) _) _) _)
+
+/-! ## The stake that joins across the upgrade -/
+
+/-- The stake that joins the active set over a run from before Electra to Electra or later.
+
+The run splits at its upgrade from Deneb to Electra, which keeps the current epoch.
+
+Take the validators active at the previous or current epoch of the last state.
+
+Keep those not active at the current epoch of the first state.
+
+Their effective balance in the last state is at most three parts.
+
+- The stake that joins before the upgrade, measured at the Deneb state.
+- The growth of the effective balance of those validators, from the Deneb state to the last one.
+- The stake that joins from the upgraded state on, as `joiningStakePrev` counts it.
+
+The upgrade keeps the effective balance of every validator with an activation epoch.
+
+It sets that of every other validator to zero, and queues its balance as a deposit.
+
+So the deposits of the upgrade join only through the last part. -/
+theorem Run.joiningStakePrev_le_acrossElectra {start after : ForkedBeaconState preset}
+    (early : start.fork < .pectra) (late : .pectra ≤ after.fork)
+    (run : Run config checks start after) :
+    ∃ (pre : BeaconState preset .dencun) (post : BeaconState preset .pectra),
+      Reaches config checks start ⟨.dencun, pre⟩ ∧
+      Nonempty (Step config checks ⟨.dencun, pre⟩ ⟨.pectra, post⟩) ∧
+      Reaches config checks ⟨.pectra, post⟩ after ∧
+      upgradeToElectra config pre = .ok post ∧
+      getCurrentEpoch post = getCurrentEpoch pre ∧
+      joiningStakePrev start.state after.state ≤
+        joiningStake start.state pre +
+          ∑ position ∈ (Finset.range pre.validators.data.size).filter (fun position =>
+              (activeAt pre (getCurrentEpoch pre) position &&
+                !activeAt start.state (getCurrentEpoch start.state) position) = true),
+            (effectiveAt after.state position - effectiveAt pre position) +
+          joiningStakePrev post after.state := by
+  obtain ⟨before, next, head, step, tail, beforeEarly, nextLate, -⟩ :=
+    Run.splitAtElectra early run late
+  obtain ⟨pre, post, rfl, rfl, upgraded⟩ := step.toElectra beforeEarly nextLate
+  obtain ⟨keeps, -, -, -⟩ := upgradeToElectra_crossing upgraded
+  have epochSame : getCurrentEpoch post = getCurrentEpoch pre := by
+    simp only [getCurrentEpoch, keeps.slot]
+  refine ⟨pre, post, ⟨head⟩, ⟨step⟩, ⟨tail⟩, upgraded, epochSame, ?_⟩
+  set joins : Nat → Bool := fun position =>
+    activeAt after.state (getPreviousEpoch after.state) position ||
+      activeAt after.state (getCurrentEpoch after.state) position
+  set joinedBefore := (Finset.range pre.validators.data.size).filter (fun position =>
+    (activeAt pre (getCurrentEpoch pre) position &&
+      !activeAt start.state (getCurrentEpoch start.state) position) = true)
+  set joinedAfter := (Finset.range after.state.validators.data.size).filter (fun position =>
+    (joins position && !activeAt post (getCurrentEpoch post) position) = true)
+  set joined := (Finset.range after.state.validators.data.size).filter (fun position =>
+    (joins position && !activeAt start.state (getCurrentEpoch start.state) position) = true)
+  -- A validator active at the upgrade joined before it, and one that is not joins after it.
+  have parts := Finset.sum_filter_add_sum_filter_not joined
+    (fun position => activeAt post (getCurrentEpoch post) position = true)
+    (effectiveAt after.state)
+  have beforeSubset : joined.filter (fun position =>
+      activeAt post (getCurrentEpoch post) position = true) ⊆ joinedBefore := by
+    intro position member
+    obtain ⟨inJoined, activePost⟩ := Finset.mem_filter.mp member
+    obtain ⟨_, joinedNow⟩ := Finset.mem_filter.mp inJoined
+    simp only [Bool.and_eq_true, Bool.not_eq_true'] at joinedNow
+    have activePre : activeAt pre (getCurrentEpoch pre) position = true := by
+      rw [← epochSame, ← keeps.activeAt_eq]
+      exact activePost
+    have inside : position < pre.validators.data.size := by
+      cases read : pre.validators.data[position]? with
+      | none => simp [activeAt, read] at activePre
+      | some _ => exact (Array.getElem?_eq_some_iff.mp read).1
+    refine Finset.mem_filter.mpr ⟨Finset.mem_range.mpr inside, ?_⟩
+    simp [activePre, joinedNow.2]
+  have afterSubset : joined.filter (fun position =>
+      ¬ activeAt post (getCurrentEpoch post) position = true) ⊆ joinedAfter := by
+    intro position member
+    obtain ⟨inJoined, inactivePost⟩ := Finset.mem_filter.mp member
+    obtain ⟨inside, joinedNow⟩ := Finset.mem_filter.mp inJoined
+    simp only [Bool.and_eq_true, Bool.not_eq_true'] at joinedNow
+    refine Finset.mem_filter.mpr ⟨inside, ?_⟩
+    simp only [Bool.and_eq_true, Bool.not_eq_true']
+    exact ⟨joinedNow.1, by simpa using inactivePost⟩
+  have beforeSum := Finset.sum_le_sum_of_subset (f := effectiveAt after.state) beforeSubset
+  have afterSum := Finset.sum_le_sum_of_subset (f := effectiveAt after.state) afterSubset
+  -- Each validator that joined before the upgrade has its balance there, plus its growth.
+  have growth : ∑ position ∈ joinedBefore, effectiveAt after.state position ≤
+      ∑ position ∈ joinedBefore, effectiveAt pre position +
+        ∑ position ∈ joinedBefore,
+          (effectiveAt after.state position - effectiveAt pre position) := by
+    rw [← Finset.sum_add_distrib]
+    exact Finset.sum_le_sum fun _ _ => by omega
+  have joiningAll : joiningStakePrev start.state after.state =
+      ∑ position ∈ joined, effectiveAt after.state position :=
+    sum_map_filter_range _ _ _
+  have joiningBefore : joiningStake start.state pre =
+      ∑ position ∈ joinedBefore, effectiveAt pre position :=
+    sum_map_filter_range _ _ _
+  have joiningAfter : joiningStakePrev post after.state =
+      ∑ position ∈ joinedAfter, effectiveAt after.state position :=
+    sum_map_filter_range _ _ _
+  rw [joiningAll, joiningBefore, joiningAfter]
+  omega
 
 end EthLib.Consensus
