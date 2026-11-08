@@ -1039,4 +1039,74 @@ theorem Run.joiningStakePrev_le_acrossElectra {start after : ForkedBeaconState p
   rw [joiningAll, joiningBefore, joiningAfter]
   omega
 
+/-! ## The stake gained across the upgrade -/
+
+/-- What validators active at the start gain over a run from before Electra to Electra or later.
+
+The run splits at its upgrade from Deneb to Electra, which keeps the current epoch.
+
+Take some validators active at the current epoch of the first state.
+
+Each gains at most two amounts, from the first state to the last.
+
+- Its room below `MAX_EFFECTIVE_BALANCE` in the first state, which caps it before Electra.
+- Its gain from the upgraded state to the last one.
+
+The upgrade keeps the effective balance of each of them.
+
+So the second gain starts where the first ends.
+
+The first state is reachable. -/
+theorem Run.gained_le_acrossElectra (caps : EffectiveBalanceCaps preset)
+    {start after : ForkedBeaconState preset} (early : start.fork < .pectra)
+    (late : .pectra ≤ after.fork) (reachable : Reachable config checks start)
+    (run : Run config checks start after) (positions : Finset Nat)
+    (active : ∀ position ∈ positions,
+      activeAt start.state (getCurrentEpoch start.state) position = true) :
+    ∃ (pre : BeaconState preset .dencun) (post : BeaconState preset .pectra),
+      Reaches config checks start ⟨.dencun, pre⟩ ∧
+      Nonempty (Step config checks ⟨.dencun, pre⟩ ⟨.pectra, post⟩) ∧
+      Reaches config checks ⟨.pectra, post⟩ after ∧
+      upgradeToElectra config pre = .ok post ∧
+      getCurrentEpoch post = getCurrentEpoch pre ∧
+      (∀ position ∈ positions, effectiveAt post position = effectiveAt pre position) ∧
+      ∑ position ∈ positions,
+          (effectiveAt after.state position - effectiveAt start.state position) ≤
+        ∑ position ∈ positions,
+            (preset.MAX_EFFECTIVE_BALANCE.toNat - effectiveAt start.state position) +
+          ∑ position ∈ positions,
+            (effectiveAt after.state position - effectiveAt post position) := by
+  obtain ⟨before, next, head, step, tail, beforeEarly, nextLate, -⟩ :=
+    Run.splitAtElectra early run late
+  obtain ⟨pre, post, rfl, rfl, upgraded⟩ := step.toElectra beforeEarly nextLate
+  obtain ⟨keeps, -, -, -⟩ := upgradeToElectra_crossing upgraded
+  have epochSame : getCurrentEpoch post = getCurrentEpoch pre := by
+    simp only [getCurrentEpoch, keeps.slot]
+  have lifecycle := (show Reaches config checks start ⟨.dencun, pre⟩ from ⟨head⟩).registryLifecycle
+  have preSmall : pre.validators.data.size < 2 ^ 64 :=
+    Nat.lt_of_le_of_lt (pre.validators.bound (by decide)) (UInt64.toNat_lt _)
+  have capped := Reachable.effectiveBalancesCapped caps (ReachableFrom.reaches reachable
+    (show Reaches config checks start ⟨.dencun, pre⟩ from ⟨head⟩))
+  -- An active validator keeps its activation epoch, so the upgrade keeps its balance.
+  have same : ∀ position ∈ positions, effectiveAt post position = effectiveAt pre position := by
+    intro position member
+    have isActive := active position member
+    obtain ⟨validator, found⟩ : ∃ validator,
+        start.state.validators.data[position]? = some validator := by
+      cases read : start.state.validators.data[position]? with
+      | none => simp [activeAt, read] at isActive
+      | some validator => exact ⟨validator, rfl⟩
+    obtain ⟨middle, middleFound, step⟩ := lifecycle.validators preSmall position validator found
+    have set := Run.activationEpoch_ne_of_activeAt isActive found
+    obtain ⟨later, laterFound, -, -, effective⟩ := keeps.validator position middle middleFound
+    simp [effectiveAt, middleFound, laterFound, effective (step.activationEpoch set ▸ set)]
+  refine ⟨pre, post, ⟨head⟩, ⟨step⟩, ⟨tail⟩, upgraded, epochSame, same, ?_⟩
+  rw [← Finset.sum_add_distrib]
+  refine Finset.sum_le_sum fun position member => ?_
+  -- Before Electra every effective balance is at most the maximum.
+  have below : effectiveAt pre position ≤ preset.MAX_EFFECTIVE_BALANCE.toNat :=
+    effectiveAt_le_max capped (show Fork.dencun < Fork.pectra by decide) position
+  rw [same position member]
+  omega
+
 end EthLib.Consensus
