@@ -164,4 +164,175 @@ theorem Run.exitingStake_le_budgets (caps : EffectiveBalanceCaps preset)
   dsimp only
   omega
 
+/-- The validators of a run that leave the active set and start to exit during it.
+
+They are active at the current epoch of the first state, and not at that of the last.
+
+They had no exit epoch in the first state, and have one up to the last epoch. -/
+def leavingExits {fork' : Base.Fork} {fork : Base.Fork} (state : BeaconState preset fork)
+    (after : BeaconState preset fork') : Finset Nat :=
+  (exitsBetween state after 0 (getCurrentEpoch after).toNat).filter fun position =>
+    activeAt state (getCurrentEpoch state) position = true ∧
+      activeAt after (getCurrentEpoch after) position = false
+
+/-- The stake that leaves the active set over a run from a reachable state from Electra.
+
+It is measured at the effective balances of the first state.
+
+It is at most three parts.
+
+- The stake already queued to exit by the last epoch, read from the first state.
+- The churn of the epochs from the first one a new exit may take, up to the last epoch.
+- For each validator of `leavingExits`, its slack at the start, its step budgets, and the rounding.
+
+Exits that do not leave the active set count in the churn only.
+
+Take caps on the churns of every state of the run, and on the churn left at its start.
+
+A validator active in the first state must keep its activation epoch, as the lifecycle gives.
+
+The last epoch must be at least the first and below the far future epoch.
+
+Each state of the run must be ready for a ledger. -/
+theorem Run.leavingStake_le_budgets (caps : EffectiveBalanceCaps preset)
+    (increment : 0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
+    {capExit capConsolidation largest : Nat} {start after : ForkedBeaconState preset}
+    (electra : .pectra ≤ start.fork) (reachable : Reachable config checks start)
+    (run : Run config checks start after) (ready : ∀ forked ∈ run.states, LedgerReady forked)
+    (churns : ∀ forked ∈ run.states, ChurnsBounded config capExit capConsolidation largest forked)
+    (lefts : LeftBounded capExit capConsolidation start)
+    (epochs : getCurrentEpoch start.state ≤ getCurrentEpoch after.state)
+    (finite : getCurrentEpoch after.state < FAR_FUTURE_EPOCH)
+    (activations : ∀ (position : Nat) (validator later : Validator),
+      start.state.validators.data[position]? = some validator →
+        after.state.validators.data[position]? = some later →
+        isActiveValidator validator (getCurrentEpoch start.state) = true →
+          later.activationEpoch = validator.activationEpoch) :
+    ∃ budgets : Nat → List (BalanceFlow → Nat),
+      (∀ position, run.Budgets position (budgets position)) ∧
+      leavingStake start.state after.state ≤
+        (((List.range start.state.validators.data.size).filter fun position =>
+            (start.state.validators.data[position]?).any fun validator =>
+              isActiveValidator validator (getCurrentEpoch start.state) &&
+                decide (validator.exitEpoch ≤ getCurrentEpoch after.state)).map
+            (effectiveAt start.state)).sum +
+          ((getCurrentEpoch after.state).toNat + 1 - firstExitEpoch preset start.state) *
+            (capExit + capConsolidation) +
+          ∑ position ∈ leavingExits start.state after.state,
+            ((effectiveAt start.state position - balanceAt start.state position) +
+              (BalanceFlow.all.map fun flow => ((budgets position).map (· flow)).sum).sum +
+              (preset.EFFECTIVE_BALANCE_INCREMENT.toNat - 1)) := by
+  have small : ∀ forked ∈ run.states, forked.state.validators.data.size < 2 ^ 64 :=
+    fun forked member => (ready forked member).small
+  have afterSmall := small after (Run.end_mem_states run)
+  have chosen := fun position => run.fallen_le_stepBudgets position ready
+  refine ⟨fun position => (chosen position).choose,
+    fun position => (chosen position).choose_spec.1, ?_⟩
+  set upTo := (getCurrentEpoch after.state).toNat
+  set exits := exitsBetween start.state after.state 0 upTo
+  set leaves : Nat → Prop := fun position =>
+    activeAt start.state (getCurrentEpoch start.state) position = true ∧
+      activeAt after.state (getCurrentEpoch after.state) position = false
+  have kept := Run.exitsKept electra run afterSmall
+  -- Each leaving validator is queued at the start, or is one of the leaving exits.
+  have split : (Finset.range start.state.validators.data.size).filter (fun position =>
+        (activeAt start.state (getCurrentEpoch start.state) position &&
+          !activeAt after.state (getCurrentEpoch after.state) position) = true) ⊆
+      (Finset.range start.state.validators.data.size).filter (fun position =>
+        ((start.state.validators.data[position]?).any fun validator =>
+          isActiveValidator validator (getCurrentEpoch start.state) &&
+            decide (validator.exitEpoch ≤ getCurrentEpoch after.state)) = true) ∪
+        leavingExits start.state after.state := by
+    intro position member
+    obtain ⟨inside, leavesNow⟩ := Finset.mem_filter.mp member
+    have inside := Finset.mem_range.mp inside
+    obtain ⟨validator, found⟩ : ∃ validator,
+        start.state.validators.data[position]? = some validator :=
+      ⟨_, Array.getElem?_eq_getElem inside⟩
+    obtain ⟨later, laterFound, exits⟩ := kept.exits afterSmall position validator found
+    have leavesBool := leavesNow
+    simp only [activeAt, found, laterFound, Option.any_some, Bool.and_eq_true,
+      Bool.not_eq_true'] at leavesNow
+    obtain ⟨active, inactive⟩ := leavesNow
+    have same := activations position validator later found laterFound active
+    -- The validator is active then not, with the same activation epoch, so it left by then.
+    have left : later.exitEpoch ≤ getCurrentEpoch after.state := by
+      simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq, Bool.and_eq_false_iff,
+        decide_eq_false_iff_not] at active inactive
+      rcases inactive with notActivated | notBefore
+      · exact absurd (same ▸ UInt64.le_trans active.1 epochs) notActivated
+      · exact UInt64.not_lt.mp notBefore
+    rcases exits with sameExit | far
+    · refine Finset.mem_union_left _ (Finset.mem_filter.mpr ⟨Finset.mem_range.mpr inside, ?_⟩)
+      simp [found, active, sameExit ▸ left]
+    · refine Finset.mem_union_right _ (Finset.mem_filter.mpr ⟨mem_exitsBetween.mpr ⟨inside, ?_⟩,
+        ?_⟩)
+      · have set : later.exitEpoch ≠ FAR_FUTURE_EPOCH := fun same =>
+          absurd (same ▸ left) (UInt64.not_le.mpr finite)
+        simp [found, laterFound, startsExit, far, set, UInt64.le_iff_toNat_le.mp left]
+      · simp only [Bool.and_eq_true, Bool.not_eq_true'] at leavesBool
+        exact leavesBool
+  -- The exits that do not leave the active set count in the churn only.
+  have exiting := Run.exitingStake_le electra run afterSmall churns lefts upTo
+  simp only [effectiveBalanceAtPosition_eq_effectiveAt] at exiting
+  replace exiting : ∑ position ∈ exits, effectiveAt start.state position ≤
+      (upTo + 1 - firstExitEpoch preset start.state) * (capExit + capConsolidation) +
+        ∑ position ∈ exits, (effectiveAt start.state position - run.chargedBalance position) :=
+    exiting
+  have parts : ∑ position ∈ leavingExits start.state after.state, effectiveAt start.state position +
+      ∑ position ∈ exits.filter (fun position => ¬ leaves position),
+        effectiveAt start.state position =
+      ∑ position ∈ exits, effectiveAt start.state position := by
+    convert Finset.sum_filter_add_sum_filter_not exits leaves (effectiveAt start.state) using 3
+    rfl
+  have lossParts : ∑ position ∈ leavingExits start.state after.state,
+        (effectiveAt start.state position - run.chargedBalance position) +
+      ∑ position ∈ exits.filter (fun position => ¬ leaves position),
+        (effectiveAt start.state position - run.chargedBalance position) =
+      ∑ position ∈ exits, (effectiveAt start.state position - run.chargedBalance position) := by
+    convert Finset.sum_filter_add_sum_filter_not exits leaves
+      (fun position => effectiveAt start.state position - run.chargedBalance position) using 3
+    rfl
+  have others : ∑ position ∈ exits.filter (fun position => ¬ leaves position),
+        (effectiveAt start.state position - run.chargedBalance position) ≤
+      ∑ position ∈ exits.filter (fun position => ¬ leaves position),
+        effectiveAt start.state position :=
+    Finset.sum_le_sum fun _ _ => Nat.sub_le _ _
+  -- Each leaving exit lost at most its slack, its step budgets and the rounding.
+  have losses : ∑ position ∈ leavingExits start.state after.state,
+        (effectiveAt start.state position - run.chargedBalance position) ≤
+      ∑ position ∈ leavingExits start.state after.state,
+        ((effectiveAt start.state position - balanceAt start.state position) +
+          (BalanceFlow.all.map fun flow =>
+            (((chosen position).choose).map (· flow)).sum).sum +
+          (preset.EFFECTIVE_BALANCE_INCREMENT.toNat - 1)) := by
+    refine Finset.sum_le_sum fun position member => ?_
+    obtain ⟨inExits, active, _⟩ := Finset.mem_filter.mp member
+    obtain ⟨_, starts⟩ := mem_exitsBetween.mp inExits
+    obtain ⟨validator, later, found, found', far, set⟩ := startsExit_eq_true starts
+    have loss := Run.charged_loss_le caps increment electra reachable active run small validator
+      later found far found' set
+    have budget := (chosen position).choose_spec.2
+    omega
+  have queued := sum_map_filter_range start.state.validators.data.size
+    (fun position => (start.state.validators.data[position]?).any fun validator =>
+      isActiveValidator validator (getCurrentEpoch start.state) &&
+        decide (validator.exitEpoch ≤ getCurrentEpoch after.state)) (effectiveAt start.state)
+  have leaving : leavingStake start.state after.state =
+      ∑ position ∈ (Finset.range start.state.validators.data.size).filter (fun position =>
+        (activeAt start.state (getCurrentEpoch start.state) position &&
+          !activeAt after.state (getCurrentEpoch after.state) position) = true),
+        effectiveAt start.state position :=
+    sum_map_filter_range _ _ _
+  have union := Nat.le.intro (Finset.sum_union_inter (s₁ :=
+    (Finset.range start.state.validators.data.size).filter (fun position =>
+      ((start.state.validators.data[position]?).any fun validator =>
+        isActiveValidator validator (getCurrentEpoch start.state) &&
+          decide (validator.exitEpoch ≤ getCurrentEpoch after.state)) = true))
+    (s₂ := leavingExits start.state after.state) (f := effectiveAt start.state))
+  have subset := Finset.sum_le_sum_of_subset (f := effectiveAt start.state) split
+  dsimp only
+  rw [leaving, queued]
+  omega
+
 end EthLib.Consensus
