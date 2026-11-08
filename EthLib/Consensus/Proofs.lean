@@ -90,6 +90,7 @@ public import EthLib.Consensus.Proofs.Transition.EffectiveBalanceCap
 public import EthLib.Consensus.Proofs.Transition.EffectiveBalanceCeiling
 public import EthLib.Consensus.Proofs.Transition.EffectiveBalanceDrift
 public import EthLib.Consensus.Proofs.Transition.EffectiveBalanceFloor
+public import EthLib.Consensus.Proofs.Transition.ElectraCrossing
 public import EthLib.Consensus.Proofs.Transition.EpochJustification
 public import EthLib.Consensus.Proofs.Transition.EpochParticipation
 public import EthLib.Consensus.Proofs.Transition.EpochPending
