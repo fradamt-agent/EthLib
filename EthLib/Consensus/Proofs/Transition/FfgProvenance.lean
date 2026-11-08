@@ -231,7 +231,7 @@ theorem JustifiedBy.source_le_target_linked {start after : ForkedBeaconState pre
 /-! ## Threshold -/
 
 /-- The fold of `sumMarked` over two lists, as a sum over positions. -/
-theorem foldl_zip_marked (validators : List Validator) (marks : List Bool) (acc : ℕ) :
+theorem foldl_zip_markedStake (validators : List Validator) (marks : List Bool) (acc : ℕ) :
     (validators.zip marks).foldl
         (fun sum (validator, mark) => if mark then sum + validator.effectiveBalance.toNat else sum)
         acc =
@@ -260,7 +260,7 @@ theorem markedStake_eq_stake {state : BeaconState preset fork} {indices : List V
     (inRange : ∀ i ∈ indices, i.toNat < state.validators.data.size) :
     markedStake state indices = stake (effectiveBalanceAt state) indices.toFinset := by
   unfold markedStake sumMarked
-  rw [← Array.foldl_toList, Array.toList_zip, foldl_zip_marked, Nat.zero_add,
+  rw [← Array.foldl_toList, Array.toList_zip, foldl_zip_markedStake, Nat.zero_add,
     Array.length_toList]
   have term : ∀ j ∈ Finset.range state.validators.data.size,
       (if (markIndices state.validators.data.size indices).toList[j]? = some true then

@@ -116,7 +116,7 @@ theorem states_ne_nil {after : ForkedBeaconState preset} (run : Run config check
   List.ne_nil_of_mem (start_mem_states run)
 
 /-- A state of two runs in sequence is a state of the first or of the second. -/
-theorem mem_states_append {middle : ForkedBeaconState preset}
+theorem mem_states_of_append {middle : ForkedBeaconState preset}
     (head : Run config checks start middle) :
     ∀ {after : ForkedBeaconState preset} (tail : Run config checks middle after)
       {state : ForkedBeaconState preset},
@@ -124,7 +124,7 @@ theorem mem_states_append {middle : ForkedBeaconState preset}
   | _, .nil, _, member => .inl member
   | _, .snoc tail _, _, member => by
     rcases List.mem_append.mp member with earlier | now
-    · rcases mem_states_append head tail earlier with h | h
+    · rcases mem_states_of_append head tail earlier with h | h
       · exact .inl h
       · exact .inr (List.mem_append_left _ h)
     · exact .inr (List.mem_append_right _ now)
@@ -137,7 +137,7 @@ theorem reaches_of_slot_lt {middle after : ForkedBeaconState preset}
     {state : ForkedBeaconState preset} (member : state ∈ (head.append tail).states)
     (later : middle.state.slot.toNat < state.state.slot.toNat) :
     state ∈ tail.states ∧ Reaches config checks middle state := by
-  rcases mem_states_append head tail member with h | h
+  rcases mem_states_of_append head tail member with h | h
   · exact absurd (slot_le_of_mem head state h) (Nat.not_le.mpr later)
   · exact ⟨h, reaches_of_mem_states tail state h⟩
 
