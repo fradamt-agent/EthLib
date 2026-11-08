@@ -2438,6 +2438,53 @@ def LeftBounded (capExit capConsolidation : Nat) (forked : ForkedBeaconState pre
     (forked.state.exitBalanceToConsume electra).toNat ≤ capExit ∧
       (forked.state.consolidationBalanceToConsume electra).toNat ≤ capConsolidation
 
+/-- A cap on every churn of exits, from a bound on the total active balance.
+
+It takes the larger of two shares, one for the forks before Gloas and one for those from Gloas.
+
+The quotients are `CHURN_LIMIT_QUOTIENT` and `CHURN_LIMIT_QUOTIENT_GLOAS`. -/
+def exitCapOfTotal (config : Config) (total : Nat) : Nat :=
+  max config.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA.toNat
+    (max (total / config.CHURN_LIMIT_QUOTIENT.toNat)
+      (total / config.CHURN_LIMIT_QUOTIENT_GLOAS.toNat))
+
+/-- A cap on every churn of consolidations, from a bound on the total active balance.
+
+Before Gloas the churn of consolidations is a part of the whole churn.
+
+From Gloas it is the share `CONSOLIDATION_CHURN_LIMIT_QUOTIENT`. -/
+def consolidationCapOfTotal (config : Config) (total : Nat) : Nat :=
+  max (max config.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA.toNat
+      (total / config.CHURN_LIMIT_QUOTIENT.toNat))
+    (total / config.CONSOLIDATION_CHURN_LIMIT_QUOTIENT.toNat)
+
+/-- A bound on the total active balance of a state bounds both of its churns, at every fork. -/
+theorem ChurnsBounded.of_total {largest total : Nat} {forked : ForkedBeaconState preset}
+    (totalLe : ∀ balance, getTotalActiveBalance forked.state = .ok balance →
+      balance.toNat ≤ total)
+    (effective : ∀ (position : Nat) (validator : Validator),
+      forked.state.validators.data[position]? = some validator →
+        validator.effectiveBalance.toNat ≤ largest) :
+    ChurnsBounded config (exitCapOfTotal config total) (consolidationCapOfTotal config total)
+      largest forked := by
+  intro _
+  refine ⟨fun churn computed => ?_, fun churn computed => ?_, effective⟩
+  · obtain ⟨balance, balanceOk⟩ := exitChurnLimit_total computed
+    have le := exitChurnLimit_le_total balanceOk computed
+    have share := totalLe balance balanceOk
+    -- A share of a smaller balance is no larger.
+    have one := Nat.div_le_div_right (c := config.CHURN_LIMIT_QUOTIENT.toNat) share
+    have two := Nat.div_le_div_right (c := config.CHURN_LIMIT_QUOTIENT_GLOAS.toNat) share
+    unfold exitCapOfTotal
+    split at le <;> omega
+  · obtain ⟨balance, balanceOk⟩ := getConsolidationChurnLimit_total computed
+    have le := getConsolidationChurnLimit_le_total balanceOk computed
+    have share := totalLe balance balanceOk
+    have one := Nat.div_le_div_right (c := config.CHURN_LIMIT_QUOTIENT.toNat) share
+    have two := Nat.div_le_div_right (c := config.CONSOLIDATION_CHURN_LIMIT_QUOTIENT.toNat) share
+    unfold consolidationCapOfTotal
+    split at le <;> omega
+
 /-- An upgrade from Electra on keeps the registry, the slot and both queues. -/
 theorem upgradeNext_keeps {pre : ForkedBeaconState preset}
     {post : {post : ForkedBeaconState preset // pre.fork < post.fork}}
