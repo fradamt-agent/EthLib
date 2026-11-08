@@ -21,8 +21,9 @@ From Gloas, a vote of the payload committee and an envelope keep the checkpoints
 
 From Heze, an inclusion list keeps them too.
 
-Each checkpoint of a reachable store is the anchor checkpoint, or a checkpoint of a state that the
-store keeps, or of such a state after the justification and finalization of an epoch.
+Each checkpoint of a reachable store is the anchor checkpoint, or a checkpoint of a kept state.
+
+Or it is a checkpoint of a kept state after the justification and finalization of an epoch.
 
 Every kept state is the anchor state, or the state after a valid block applied to a kept state.
 
@@ -34,8 +35,9 @@ A block is checked only to descend from the finalized block of the store at that
 
 So the store can first take a justified checkpoint at epoch e+2 from one branch.
 
-It can then take a finalized checkpoint at epoch e from another branch, whose own justified epoch is
-e+1, which leaves the justified checkpoint in place.
+It can then take a finalized checkpoint at epoch e from another branch.
+
+That branch has justified epoch e+1, so the justified checkpoint stays in place.
 
 The two checkpoints then conflict, which needs a third of the stake to sign slashable votes.
 
@@ -647,19 +649,21 @@ variable {config : Config} {anchorState : BeaconState preset fork}
 
 /-- Where the checkpoints of a reachable store come from.
 
-Each justified checkpoint of the store is the anchor checkpoint, or the current justified
-checkpoint of a state that the store keeps, or of such a state after the justification and
-finalization of an epoch.
+Each justified checkpoint of the store is the anchor checkpoint, or that of a kept state.
+
+Or it is that of a kept state after the justification and finalization of an epoch.
+
+Here the checkpoint of a state is its current justified checkpoint.
 
 Each finalized checkpoint comes from the same places, as a finalized checkpoint of such a state.
 
-Every state that the store keeps is the anchor state, or the state after a valid block applied to
-a kept state.
+Every kept state is the anchor state, or the state after a valid block applied to a kept state.
 
 So the store holds no checkpoint that the states do not give it.
 
-Ancestry needs more: the store raises its justified and finalized checkpoints separately, so they
-can come from states on two branches. -/
+Ancestry needs more: the store raises its justified and finalized checkpoints separately.
+
+So they can come from states on two branches. -/
 theorem Store.Reachable.checkpointsFrom
     (reachable : Store.Reachable config anchorState anchorBlock store) :
     ∃ anchorRoot, SszType.hashTreeRoot anchorBlock = .ok anchorRoot ∧
@@ -801,17 +805,19 @@ theorem Store.Reachable.finalized_le_justified (anchor : Invariant anchorState)
     store.finalizedCheckpoint.epoch ≤ store.justifiedCheckpoint.epoch :=
   (reachable.ordered anchor).1.1
 
-/-- In a reachable store, the justified block descends from the finalized block, or the two
-checkpoints come from states that disagree.
+/-- In a reachable store, the justified block descends from the finalized block.
 
-Descent means that the checkpoint block of the justified root at the finalized epoch is the
-finalized root, unless the finalized epoch is genesis.
+Otherwise the two checkpoints come from states that disagree.
 
-Otherwise each checkpoint is the anchor checkpoint or comes from a kept state, as
-`Store.Reachable.checkpointsFrom` says, and they conflict.
+Descent means that the finalized root is the checkpoint block of the justified root.
 
-Two such checkpoints can conflict only when some stake signed slashable votes, by accountable
-safety. -/
+That checkpoint block is at the finalized epoch, and the genesis epoch counts as descent.
+
+Otherwise the two checkpoints conflict.
+
+Each is the anchor checkpoint or comes from a kept state, as `Store.Reachable.checkpointsFrom` says.
+
+By accountable safety, they conflict only when some stake signed slashable votes. -/
 theorem Store.Reachable.justified_descends_or_conflicting
     (reachable : Store.Reachable config anchorState anchorBlock store) :
     (store.finalizedCheckpoint.epoch = GENESIS_EPOCH ∨

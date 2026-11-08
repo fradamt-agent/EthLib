@@ -14,11 +14,13 @@ The check passes when it reaches the finalized root.
 
 Suppose that it does not.
 
-Then the finalized and the justified checkpoint conflict as epoch-boundary pairs, Gasper §4, over
-any parent links that name a header with the child's root, its parent root and its slot.
+Then the finalized and the justified checkpoint conflict as epoch-boundary pairs, Gasper §4.
 
-Otherwise a link names a header with the zero root, or two different headers have one root, or
-the store keeps a block at the zero root.
+That holds over any parent links that name a header with the child's root, parent root and slot.
+
+Otherwise a link names a header with the zero root, or two different headers have one root.
+
+Or the store keeps a block at the zero root.
 
 The finalized root must be the root of a header at or before the first slot of its epoch.
 
@@ -67,18 +69,21 @@ variable [NeZero preset.BYTES_PER_LOGS_BLOOM.toNat] [NeZero preset.SYNC_COMMITTE
   [NeZero preset.MAX_COMMITTEES_PER_SLOT.toNat] [NeZero preset.PTC_SIZE.toNat]
   [NeZero preset.INCLUSION_LIST_COMMITTEE_SIZE.toNat]
 
-/-- When the store's descent check fails, the finalized and the justified checkpoint conflict as
-epoch-boundary pairs over the links.
+/-- When the store's descent check fails, the finalized and the justified checkpoint conflict.
+
+They conflict as epoch-boundary pairs over the links.
 
 Each link must name a header with the child's root, its parent root and its slot.
 
-The store keys each block by its root, its parents sit at lower slots, and a known block with an
-unknown parent has the zero root as parent, as a store from genesis does.
+The store keys each block by its root, and its parents sit at lower slots.
+
+A known block with an unknown parent has the zero root as parent, as in a store from genesis.
 
 The finalized epoch is at most the justified epoch, and its first slot fits in a slot number.
 
-Both roots are nonzero, the store holds the justified block, and the finalized root is the root of
-a header at or before the first slot of the finalized epoch.
+Both roots are nonzero, and the store holds the justified block.
+
+The finalized root is the root of a header at or before the first slot of the finalized epoch.
 
 Otherwise a link names a header with the zero root, or two different headers have one root. -/
 theorem conflicting_of_not_descends
@@ -186,14 +191,17 @@ theorem conflicting_of_not_descends
 variable {config : Config} {anchorState : BeaconState preset fork}
   {anchorBlock : BeaconBlock preset fork}
 
-/-- In a reachable store whose head computes, a failed descent check gives conflicting
-epoch-boundary pairs for the finalized and the justified checkpoint.
+/-- In a reachable store whose head computes, take a failed descent check.
 
-The anchor block sits at or before the slot of its state and has the zero root as parent, as the
-genesis block does.
+Then the finalized and the justified checkpoint conflict as epoch-boundary pairs.
 
-Otherwise a link names a header with the zero root, two different headers have one root, or the
-store keeps a block at the zero root. -/
+The anchor block sits at or before the slot of its state.
+
+It has the zero root as parent, as the genesis block does.
+
+Otherwise a link names a header with the zero root, or two different headers have one root.
+
+Or the store keeps a block at the zero root. -/
 theorem Reachable.conflicting_of_not_descends
     (reachable : Reachable config anchorState anchorBlock store)
     (anchorSlot : anchorBlock.slot ≤ anchorState.slot)

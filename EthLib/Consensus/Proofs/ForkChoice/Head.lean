@@ -580,8 +580,9 @@ theorem isAncestor_getHead (before : fork < .glamsterdam) {head : ForkChoiceNode
     simp [isAncestor, block_ok_iff.mpr justifiedFound, walked, later, bind, Except.bind, pure,
       Except.pure]
 
-/-- From Gloas, the walk from a known node ends at a node whose ancestor at the start's slot has
-the start's root.
+/-- From Gloas, the walk from a known node ends at a node above the start.
+
+Its ancestor at the start's slot has the start's root.
 
 The payload status of that ancestor can differ from the start's. -/
 theorem getAncestor_getHeadFrom_of_gloas (gloas : .glamsterdam ≤ fork)

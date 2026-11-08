@@ -6,8 +6,9 @@ public import EthLib.Consensus.Proofs.Transition.Reachable
 /-!
 # Proofs: the states of a store come from runs of the chain
 
-A store that the handlers build with one choice of signature checks keeps only states that runs of
-the chain reach from the anchor state.
+Take a store that the handlers build with one choice of signature checks.
+
+It keeps only states that runs of the chain reach from the anchor state.
 
 A run is a sequence of slots, due upgrades and blocks, with those signature checks.
 
@@ -15,12 +16,15 @@ The store holds the states of one fork, so a run of its states has no upgrade.
 
 That needs no upgrade to be due at any state of the fork.
 
-It holds at the last fork, and when the next fork is not scheduled and an epoch has two slots or
-more.
+It holds at the last fork.
 
-So each checkpoint of the store is the anchor checkpoint, or a checkpoint of a state that a run
-reaches from the anchor state, or of such a state after the justification and finalization of an
-epoch.
+It also holds when the next fork is not scheduled and an epoch has two slots or more.
+
+So each checkpoint of the store is the anchor checkpoint, or a checkpoint of a reached state.
+
+A reached state is one that a run reaches from the anchor state.
+
+Or the checkpoint is that of a reached state after the justification and finalization of an epoch.
 
 The justified block then descends from the finalized block, or the two checkpoints conflict.
 
@@ -160,8 +164,9 @@ theorem ReachableWith.reachable
   | envelope _ step ih => exact .envelope ih step
   | inclusionList _ step ih => exact .inclusionList ih step
 
-/-- Every state that a map keeps is the anchor state, or the state after a valid block with the
-given signature checks, applied to a kept state. -/
+/-- Every state that a map keeps is the anchor state, or the state after a valid block.
+
+That block runs with the given signature checks, on a kept state. -/
 def StatesReachedWith (config : Config) (checks : SignatureChecks)
     (anchorState : BeaconState preset fork)
     (states : Std.TreeMap Root (BeaconState preset fork)) : Prop :=
@@ -292,8 +297,11 @@ variable {anchorState : BeaconState preset fork} {anchorBlock : BeaconBlock pres
 
 /-- Each checkpoint of a store built with one choice of signature checks comes from runs.
 
-Each is the anchor checkpoint, or a checkpoint of a state that a run with those checks reaches
-from the anchor state, or of such a state after the justification and finalization of an epoch.
+Each is the anchor checkpoint, or a checkpoint of a reached state.
+
+A reached state is one that a run with those checks reaches from the anchor state.
+
+Or the checkpoint is that of a reached state after the justification and finalization of an epoch.
 
 Each state that the store keeps is reached by such a run.
 
@@ -320,15 +328,19 @@ theorem Store.ReachableWith.checkpointsFromRuns
   exact ⟨anchorRoot, rootOk, reaches, holds.justified.runs reaches, holds.finalized.runs reaches,
     holds.unrealizedJustified.runs reaches, holds.unrealizedFinalized.runs reaches⟩
 
-/-- In a store built with one choice of signature checks, the justified block descends from the
-finalized block, or the two checkpoints conflict and each comes from runs.
+/-- Take a store built with one choice of signature checks.
 
-Descent means that the checkpoint block of the justified root at the finalized epoch is the
-finalized root, unless the finalized epoch is genesis.
+Its justified block descends from its finalized block, or the two checkpoints come from runs.
 
-Each checkpoint that conflicts is the anchor checkpoint, or that of a state that a run with those
-checks reaches from the anchor state, or of such a state after the justification and finalization
-of an epoch.
+Descent means that the finalized root is the checkpoint block of the justified root.
+
+That checkpoint block is at the finalized epoch, and the genesis epoch counts as descent.
+
+In the second case each is the anchor checkpoint, or that of a reached state.
+
+A reached state is one that a run with those checks reaches from the anchor state.
+
+Or the checkpoint is that of a reached state after the justification and finalization of an epoch.
 
 No upgrade may be due at any state of the fork. -/
 theorem Store.ReachableWith.justified_descends_or_conflicting_runs

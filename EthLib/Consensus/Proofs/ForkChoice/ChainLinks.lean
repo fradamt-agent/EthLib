@@ -9,14 +9,17 @@ public import EthLib.Consensus.Proofs.Transition.Provenance.Ancestry
 
 The store finds the checkpoint block of a root at an epoch with a walk on its own blocks.
 
-The walk starts at the root and moves to the parent while the block sits after the first slot of
-the epoch.
+The walk starts at the root.
 
-A chain links a parent root to the root of each block that it runs, through the header of the
-block with the root of the state after it.
+It moves to the parent while the block sits after the first slot of the epoch.
 
-Take a path of such links from a root `f` to a known root `j`, each to a block after the first
-slot of the epoch.
+A chain links a parent root to the root of each block that it runs.
+
+That root is the root of the block's header, with the root of the state after it.
+
+Take a path of such links from a root `f` to a known root `j`.
+
+Each link leads to a block after the first slot of the epoch.
 
 The walk of the store from `j` then follows the same path back to `f`.
 
@@ -30,8 +33,9 @@ Otherwise one of three things happened:
 
 The store keys each block by its own root, and a block and its header have one root.
 
-So the store's walk and the chain's links compare through header roots, with no assumption on
-SHA-256.
+So the store's walk and the chain's links compare through header roots.
+
+That needs no assumption on SHA-256.
 -/
 
 @[expose] public section
@@ -147,8 +151,9 @@ theorem getAncestor_root_of_le {root : Root} {slot : Slot} {block : BeaconBlock 
   rw [getAncestor_of_le (node := ⟨root, .pending⟩) found le]
   rfl
 
-/-- The checkpoint block of a root at an epoch is the root that the walk reaches at the first
-slot of the epoch. -/
+/-- The checkpoint block of a root at an epoch is the root that the walk reaches.
+
+The walk goes to the first slot of the epoch. -/
 theorem getCheckpointBlock_eq {root : Root} {epoch : Epoch} {start : Slot}
     (startOk : computeStartSlotAtEpoch preset epoch = .ok start) :
     store.getCheckpointBlock root epoch =
@@ -162,8 +167,9 @@ variable [NeZero preset.BYTES_PER_LOGS_BLOOM.toNat] [NeZero preset.SYNC_COMMITTE
   [NeZero preset.MAX_COMMITTEES_PER_SLOT.toNat] [NeZero preset.PTC_SIZE.toNat]
   [NeZero preset.INCLUSION_LIST_COMMITTEE_SIZE.toNat]
 
-/-- A header with the root of a block that the store keys by its root is the block's header, or
-two headers collide.
+/-- Take a header with the root of a block that the store keys by its root.
+
+It is the block's header, or two headers collide.
 
 The block's header has its slot and its parent root. -/
 theorem KeysAreRoots.header_eq (keys : store.KeysAreRoots) {root : Root}
@@ -184,8 +190,9 @@ theorem KeysAreRoots.header_eq (keys : store.KeysAreRoots) {root : Root}
 
 /-- Along a path of links to blocks after a slot, the store's walk to the slot follows the path.
 
-Each link names a header with the root of its child, its parent root and a slot after the given
-one.
+Each link names a header with the root of its child, its parent root and a slot.
+
+That slot is after the given one.
 
 From each root of the path that the store holds, the walk ends where it ends from `f`.
 
@@ -227,8 +234,9 @@ theorem getAncestor_root_of_links (keys : store.KeysAreRoots) (lower : store.Par
         · exact .inr (.inr collision)
     · exact .inr (.inr collision)
 
-/-- The checkpoint block of a known root is the start of a path of links to blocks after the
-first slot of the epoch.
+/-- The checkpoint block of a known root is the start of a path of links.
+
+Each link leads to a block after the first slot of the epoch.
 
 The store must hold the start at or before the first slot of the epoch.
 
@@ -265,8 +273,9 @@ theorem getCheckpointBlock_of_links (keys : store.KeysAreRoots) (lower : store.P
 variable {config : Config} {checks : SignatureChecks} {anchorState : BeaconState preset fork}
   {anchorBlock : BeaconBlock preset fork}
 
-/-- In a reachable store, the checkpoint block of a known root at an epoch is the start of each
-path of chain links to blocks after the first slot of the epoch, along one chain.
+/-- In a reachable store, the checkpoint block of a known root is the start of a path.
+
+The path is of chain links along one chain, each to a block after the first slot of the epoch.
 
 The store must hold the start at or before the first slot of the epoch.
 
