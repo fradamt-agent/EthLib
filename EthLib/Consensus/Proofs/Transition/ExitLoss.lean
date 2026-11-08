@@ -51,6 +51,78 @@ theorem LedgerReady.small {forked : ForkedBeaconState preset} (ready : LedgerRea
     forked.state.validators.data.size < 2 ^ 64 :=
   Nat.lt_of_le_of_lt ready.within (UInt64.toNat_lt _)
 
+/-- A run with nothing before it is the same run. -/
+theorem Run.nil_append {start : ForkedBeaconState preset} :
+    ∀ {after : ForkedBeaconState preset} (run : Run config checks start after),
+      (Run.nil : Run config checks start start).append run = run
+  | _, .nil => rfl
+  | _, .snoc run step => congrArg (Run.snoc · step) (Run.nil_append run)
+
+/-- Along a run from Electra, what an exit lost before its charge, from an earlier state.
+
+The earlier state is reachable, and a run leads from it to the start of the run from Electra.
+
+The validator is active at the earlier state at some epoch.
+
+It has no exit epoch at the start of the run from Electra, and one at its end.
+
+Take the effective balance it lost, from the earlier state to the step that set its exit.
+
+It is at most three amounts.
+
+They are its slack at the earlier state, what both runs debit its balance, and the rounding.
+
+The rounding is less than one increment.
+
+Every registry of both runs must be below `2^64`. -/
+theorem Run.charged_loss_le_append (caps : EffectiveBalanceCaps preset)
+    (increment : 0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
+    {first start : ForkedBeaconState preset} (electra : .pectra ≤ start.fork)
+    (reachable : Reachable config checks first) (head : Run config checks first start)
+    {position : Nat} {epoch : Epoch} (active : activeAt first.state epoch position = true) :
+    ∀ {after : ForkedBeaconState preset} (run : Run config checks start after),
+      (∀ forked ∈ (head.append run).states, forked.state.validators.data.size < 2 ^ 64) →
+      ∀ (validator later : Validator), start.state.validators.data[position]? = some validator →
+        validator.exitEpoch = FAR_FUTURE_EPOCH →
+        after.state.validators.data[position]? = some later →
+        later.exitEpoch ≠ FAR_FUTURE_EPOCH →
+        effectiveAt first.state position - run.chargedBalance position ≤
+          (effectiveAt first.state position - balanceAt first.state position) +
+            (head.append run).fallen position + (preset.EFFECTIVE_BALANCE_INCREMENT.toNat - 1)
+  | _, .nil, _, validator, later, found, far, found', set => by
+    rw [found] at found'
+    cases found'
+    exact absurd far set
+  | after, .snoc (middle := middle) run step, small, validator, later, found, far, found', set => by
+    have earlier : ∀ forked ∈ (head.append run).states,
+        forked ∈ (head.append (Run.snoc run step)).states :=
+      fun _ member => List.mem_append_left _ member
+    have middleSmall := small middle (earlier _ (Run.end_mem_states _))
+    have grows : (head.append run).fallen position ≤
+        (head.append (Run.snoc run step)).fallen position := by
+      show (head.append run).fallen position ≤ (Run.snoc (head.append run) step).fallen position
+      simp only [Run.fallen]
+      omega
+    unfold Run.chargedBalance
+    split
+    · -- The last step set the exit, from the effective balance of the state before it.
+      rw [effectiveBalanceAtPosition_eq_effectiveAt]
+      have fall := (head.append run).effectiveAt_fall_le caps increment reachable middleSmall
+        active
+      omega
+    · -- The exit was set earlier, and the validator is still there before the last step.
+      rename_i notStarted
+      have kept := Run.exitsKept electra run middleSmall
+      obtain ⟨current, currentFound, -⟩ := kept.exits middleSmall position validator found
+      have currentSet : current.exitEpoch ≠ FAR_FUTURE_EPOCH := by
+        intro currentFar
+        apply notStarted
+        simp [startedExit, currentFound, found', currentFar, set]
+      have := Run.charged_loss_le_append caps increment electra reachable head active run
+        (fun forked member => small forked (earlier forked member)) validator current found far
+        currentFound currentSet
+      omega
+
 /-- Along a run from a reachable state from Electra, what an exit lost before its charge.
 
 The validator is active at the start at some epoch, and has no exit epoch then.
@@ -68,45 +140,19 @@ theorem Run.charged_loss_le (caps : EffectiveBalanceCaps preset)
     (increment : 0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
     {start : ForkedBeaconState preset} (electra : .pectra ≤ start.fork)
     (reachable : Reachable config checks start) {position : Nat} {epoch : Epoch}
-    (active : activeAt start.state epoch position = true) :
-    ∀ {after : ForkedBeaconState preset} (run : Run config checks start after),
-      (∀ forked ∈ run.states, forked.state.validators.data.size < 2 ^ 64) →
-      ∀ (validator later : Validator), start.state.validators.data[position]? = some validator →
-        validator.exitEpoch = FAR_FUTURE_EPOCH →
-        after.state.validators.data[position]? = some later →
-        later.exitEpoch ≠ FAR_FUTURE_EPOCH →
-        effectiveAt start.state position - run.chargedBalance position ≤
-          (effectiveAt start.state position - balanceAt start.state position) +
-            run.fallen position + (preset.EFFECTIVE_BALANCE_INCREMENT.toNat - 1)
-  | _, .nil, _, validator, later, found, far, found', set => by
-    rw [found] at found'
-    cases found'
-    exact absurd far set
-  | after, .snoc (middle := middle) run step, small, validator, later, found, far, found', set => by
-    have earlier : ∀ forked ∈ run.states, forked ∈ (Run.snoc run step).states :=
-      fun _ member => List.mem_append_left _ member
-    have middleSmall := small middle (earlier _ (Run.end_mem_states run))
-    have grows : run.fallen position ≤ (Run.snoc run step).fallen position := by
-      simp only [Run.fallen]
-      omega
-    unfold Run.chargedBalance
-    split
-    · -- The last step set the exit, from the effective balance of the state before it.
-      rw [effectiveBalanceAtPosition_eq_effectiveAt]
-      have fall := run.effectiveAt_fall_le caps increment reachable middleSmall active
-      omega
-    · -- The exit was set earlier, and the validator is still there before the last step.
-      rename_i notStarted
-      have kept := Run.exitsKept electra run middleSmall
-      obtain ⟨current, currentFound, -⟩ := kept.exits middleSmall position validator found
-      have currentSet : current.exitEpoch ≠ FAR_FUTURE_EPOCH := by
-        intro currentFar
-        apply notStarted
-        simp [startedExit, currentFound, found', currentFar, set]
-      have := Run.charged_loss_le caps increment electra reachable active run
-        (fun forked member => small forked (earlier forked member)) validator current found far
-        currentFound currentSet
-      omega
+    (active : activeAt start.state epoch position = true)
+    {after : ForkedBeaconState preset} (run : Run config checks start after)
+    (small : ∀ forked ∈ run.states, forked.state.validators.data.size < 2 ^ 64)
+    (validator later : Validator) (found : start.state.validators.data[position]? = some validator)
+    (far : validator.exitEpoch = FAR_FUTURE_EPOCH)
+    (found' : after.state.validators.data[position]? = some later)
+    (set : later.exitEpoch ≠ FAR_FUTURE_EPOCH) :
+    effectiveAt start.state position - run.chargedBalance position ≤
+      (effectiveAt start.state position - balanceAt start.state position) +
+        run.fallen position + (preset.EFFECTIVE_BALANCE_INCREMENT.toNat - 1) := by
+  have loss := Run.charged_loss_le_append caps increment electra reachable .nil active run
+    (by rw [Run.nil_append]; exact small) validator later found far found' set
+  rwa [Run.nil_append] at loss
 
 /-- The stake that starts to exit over a run from a reachable state from Electra.
 
