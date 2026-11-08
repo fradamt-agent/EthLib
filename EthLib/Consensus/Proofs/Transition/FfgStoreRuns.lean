@@ -77,6 +77,23 @@ def lossBudget (x : BeaconState preset fork) (budgets : Nat → List (BalanceFlo
       (BalanceFlow.all.map fun flow => ((budgets j).map (· flow)).sum).sum +
       (preset.EFFECTIVE_BALANCE_INCREMENT.toNat - 1))
 
+/-- Every state of a run from a reachable state to a state before Gloas is ready for a ledger.
+
+The registry limit must leave room for the pending deposits of an epoch in 64 bits. -/
+theorem Run.ledgerReady
+    (room : preset.VALIDATOR_REGISTRY_LIMIT.toNat + preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat <
+      2 ^ 64)
+    {x after : ForkedBeaconState preset} (reachable : Reachable config checks x)
+    (run : Run config checks x after) (early : after.fork < .glamsterdam) :
+    ∀ y ∈ run.states, LedgerReady y := by
+  intro y member
+  obtain ⟨-, -, toEnd⟩ := run.fallen_prefix member
+  have before := Nat.lt_of_le_of_lt toEnd.fork_le early
+  have limit := BeaconState.registryWithinLimit_of_lt before y.state
+  unfold BeaconState.RegistryWithinLimit at limit
+  exact LedgerReady.of_reachable (ReachableFrom.reaches reachable (run.reaches_of_mem_states y
+    member)) before (by omega)
+
 /-- Along a run from a reachable state, before Gloas, the stake lost up to each state of it.
 
 The validators active at the start lose at most `lossBudget` of step budgets of the whole run.
@@ -92,22 +109,12 @@ theorem Run.lostStake_le_budgets (caps : EffectiveBalanceCaps preset)
     (run : Run config checks x after) (early : after.fork < .glamsterdam) :
     ∃ budgets : Nat → List (BalanceFlow → Nat), (∀ j, run.Budgets j (budgets j)) ∧
       ∀ y ∈ run.states, lostStake x.state y.state ≤ lossBudget x.state budgets := by
-  have within : ∀ y ∈ run.states, y.state.RegistryWithinLimit := by
-    intro y member
-    obtain ⟨-, -, toEnd⟩ := run.fallen_prefix member
-    exact BeaconState.registryWithinLimit_of_lt (Nat.lt_of_le_of_lt toEnd.fork_le early) y.state
-  have ready : ∀ y ∈ run.states, LedgerReady y := by
-    intro y member
-    obtain ⟨-, -, toEnd⟩ := run.fallen_prefix member
-    have limit := within y member
-    unfold BeaconState.RegistryWithinLimit at limit
-    exact LedgerReady.of_reachable (ReachableFrom.reaches reachable (run.reaches_of_mem_states y
-      member)) (Nat.lt_of_le_of_lt toEnd.fork_le early) (by omega)
+  have ready := run.ledgerReady room reachable early
   have each := fun j => run.fallen_le_stepBudgets j ready
   choose budgets budgetsOk bound using each
   refine ⟨budgets, budgetsOk, fun y member => ?_⟩
   obtain ⟨pre, le, -⟩ := run.fallen_prefix member
-  have limit := within y member
+  have limit := (ready y member).within
   unfold BeaconState.RegistryWithinLimit at limit
   refine (lostStake_le_fallen caps increment reachable pre (by omega)).trans ?_
   refine Finset.sum_le_sum fun j _ => ?_

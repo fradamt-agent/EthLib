@@ -1490,6 +1490,10 @@ With `E` the epoch of `X` and `n = J + 1 - E`, the bound is `2 n K MAX + 2 L + 3
 It takes the two runs from the store's states, and holds for every split of them at a shared state `X` before the first slot of the finalized epoch; `CommonState.atStart` gives the split at genesis.
 Its alternatives are the hash evidence of `store_accountable_safety`, on the two runs.
 Its lost-stake term is proved too: `CommonState.lostStake_le_budgets` bounds it by `lossBudget`, the slack at `X`, the step budgets of each tail (`StepBudget`, flow by flow) and the rounding, so only the per-flow budgets remain as named amounts.
+From Electra, `Run.drift_le_electra` (`Transition/FfgElectra.lean`) bounds the drift along one run from a reachable state `x` to a state before Gloas.
+It uses the exit and consolidation churn with step budgets (`Run.leavingStake_le_budgets`), `lossBudget`, the deposit churn (`Run.depositsCharged_le`), and the joining split (`Run.joiningStakePrev_le`).
+Three sums stay named: the gains after deposits of the validators active at `x`, the growth of joiners already in the registry, and the effective balance of the joiners the run adds; the churn caps are hypotheses.
+It is not yet composed into the two-run or store theorems.
 
 ### Engine API
 
