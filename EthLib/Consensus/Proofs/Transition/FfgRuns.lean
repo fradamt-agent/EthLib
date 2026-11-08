@@ -72,6 +72,15 @@ theorem OnRuns.cases {g a b : ForkedBeaconState preset} {runA : Run config check
   · exact ⟨a, .inl rfl, call.record, .inl call.mem⟩
   · exact ⟨b, .inr rfl, call.record, .inr call.mem⟩
 
+/-- A `k`-finalization along a run by weighing calls is one by calls of either kind. -/
+theorem KFinalizedByOn.callOn {start after : ForkedBeaconState preset}
+    {run : Run config checks start after} {c : Checkpoint} (finalized : KFinalizedByOn run c) :
+    KFinalizedByCallOn run c :=
+  have ⟨k, one, two, cs, first, epochs, justified, ancestry, nonzero, fork, state, cached, weighed,
+    _, voters, pre, call, onRun, source⟩ := finalized
+  ⟨k, one, two, cs, first, epochs, fun i lt => .inl (justified i lt), ancestry, nonzero, fork,
+    state, cached, weighed, voters, ⟨pre, call.record, onRun⟩, source⟩
+
 /-- The FFG refinement of two runs from genesis. -/
 def runRefinement {g a b : ForkedBeaconState preset} (runA : Run config checks g a)
     (runB : Run config checks g b) (genesis : Genesis config checks g)
@@ -96,8 +105,8 @@ def runRefinement {g a b : ForkedBeaconState preset} (runA : Run config checks g
     ∃ (fork : Base.Fork) (state cached weighed : BeaconState preset fork)
       (voters : List ValidatorIndex),
       OnRuns config checks runA runB fork state cached weighed voters c}
-  finalized := {c | c = ⟨GENESIS_EPOCH, Vector.replicate 32 0⟩ ∨ KFinalizedByOn runA c ∨
-    KFinalizedByOn runB c}
+  finalized := {c | c = ⟨GENESIS_EPOCH, Vector.replicate 32 0⟩ ∨ KFinalizedByCallOn runA c ∨
+    KFinalizedByCallOn runB c}
   justified_recorded := by
     obtain ⟨-, previous, current, finalized⟩ := genesis_state genesis
     rintro c (rfl | rfl | rfl | ⟨fork, state, cached, weighed, voters, on⟩)
@@ -216,7 +225,7 @@ def runRefinement {g a b : ForkedBeaconState preset} (runA : Run config checks g
           {voters : List ValidatorIndex} {d : Checkpoint},
           CallRecordOn run fork state cached weighed voters d →
           OnRuns config checks runA runB fork state cached weighed voters d) →
-        ∀ {c : Checkpoint}, KFinalizedByOn run c →
+        ∀ {c : Checkpoint}, KFinalizedByCallOn run c →
           ∃ k, 1 ≤ k ∧ ∃ cs : ℕ → Checkpoint, cs 0 = c ∧
             (∀ i ≤ k, (cs i).epoch.toNat = c.epoch.toNat + i) ∧
             (∀ i < k, cs i ∈ {c | c = g.state.finalizedCheckpoint ∨
@@ -235,7 +244,7 @@ def runRefinement {g a b : ForkedBeaconState preset} (runA : Run config checks g
                 r = ⟨recordSource cached c.epoch, c, Weighing.ofState cached voters.toFinset⟩},
               r.source = c ∧ r.target = cs k := by
       rintro x run hx lift c ⟨k, hk, -, cs, h0, epochs, justified, ancestors, nonzero, fork, state,
-        cached, weighed, next, voters, pre, call, onRun, source⟩
+        cached, weighed, voters, callOn, source⟩
       have evidenceOf : ZeroRootFound config checks g x ∨ ZeroHeaderFound config checks g x →
           runEvidence config checks (g := g) (a := a) (b := b) := by
         rcases hx with rfl | rfl <;> rintro (z | z)
@@ -244,14 +253,15 @@ def runRefinement {g a b : ForkedBeaconState preset} (runA : Run config checks g
         · exact .inr (.inl z)
         · exact .inr (.inr (.inr z))
       refine ⟨k, hk, cs, h0, epochs, fun i hi => ?_, fun i hi => ?_,
-        _, ⟨fork, state, cached, weighed, voters, cs k, lift ⟨pre, call.record, onRun⟩, rfl⟩,
+        _, ⟨fork, state, cached, weighed, voters, cs k, lift callOn, rfl⟩,
         source, rfl⟩
-      · rcases justified i hi with h | h | h | byOn
+      · rcases justified i hi with (h | h | h | byOn) | ⟨fork, state, cached, weighed, voters, call⟩
         · exact .inl h
         · exact .inr (.inl h)
         · exact .inr (.inr (.inl h))
         · obtain ⟨fork, state, cached, weighed, voters, call⟩ := byOn.callRecordOn
           exact .inr (.inr (.inr ⟨fork, state, cached, weighed, voters, lift call⟩))
+        · exact .inr (.inr (.inr ⟨fork, state, cached, weighed, voters, lift call⟩))
       · rcases ancestors i hi with path | zero
         · rcases nonzero (i + 1) hi (Nat.le_add_left 1 i) with ne | header
           · have ei := epochs i hi.le

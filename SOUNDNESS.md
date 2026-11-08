@@ -1486,6 +1486,9 @@ Two terms stay named hypotheses: `K` bounds the churn cap over the reached state
 `accountable_safety_runs_preElectra` measures the drift at a state `X` that both runs pass through, at a slot before the first slot of the finalized epoch.
 With `E` the epoch of `X` and `n = J + 1 - E`, the bound is `2 n K MAX + 2 L + 3 deficit(X) + 3 (n+1) K MAX + 3 INC`, so it depends on the epochs after `X`, not on `J`.
 `accountable_safety_runs_preElectra_registry` proves `K = max 1 (churnCapWithin X n)` from the registry growth after `X`; `L`, a bound on `lostStake X y` over the states `y` that `X` reaches up to epoch `J + 1`, stays a named hypothesis.
+`store_accountable_safety_runs_preElectra` (`Transition/FfgStoreRuns.lean`) gives the same bound for the checkpoints of a fork-choice store that starts at genesis, before Electra.
+It takes the two runs from the store's states, and holds for every split of them at a shared state `X` before the first slot of the finalized epoch; `CommonState.atStart` gives the split at genesis.
+Its alternatives are the hash evidence of `store_accountable_safety`, on the two runs.
 
 ### Engine API
 

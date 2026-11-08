@@ -109,6 +109,7 @@ public import EthLib.Consensus.Proofs.Transition.FfgProvenance
 public import EthLib.Consensus.Proofs.Transition.FfgStore
 public import EthLib.Consensus.Proofs.Transition.FfgStorePreElectra
 public import EthLib.Consensus.Proofs.Transition.FfgRuns
+public import EthLib.Consensus.Proofs.Transition.FfgStoreRuns
 public import EthLib.Consensus.Proofs.Transition.FfgRefinement
 public import EthLib.Consensus.Proofs.Transition.FfgVotes
 public import EthLib.Consensus.Proofs.Transition.ForkBoundary
