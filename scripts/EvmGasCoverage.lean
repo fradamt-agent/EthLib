@@ -1,6 +1,7 @@
 module
 
 public import EthLib.Execution.Evm.Interpreter
+public import EthLib.Execution.Evm.OpTables
 
 /-!
 # Opcode gas coverage
@@ -116,14 +117,34 @@ private def GasRule.label : GasRule → String
 private def whenRule (condition : Bool) (rule : GasRule) : Array GasRule :=
   if condition then #[rule] else #[]
 
-private def fixedPrices (fork : Fork) : Array Nat := Id.run do
-  let mut prices := #[GasCosts.ZERO, GasCosts.OPCODE_JUMPDEST, GasCosts.BASE, GasCosts.VERY_LOW,
-    GasCosts.LOW, GasCosts.MID, GasCosts.HIGH, GasCosts.OPCODE_BLOCKHASH]
-  if fork < .berlin then
-    prices := prices ++ #[balanceCost fork false, externalBaseCost fork false]
-    if fork ≥ Op.extcodehash.since then prices := prices.push (extcodehashCost fork false)
-  if fork ≥ Op.tload.since then prices := prices.push GasCosts.OPCODE_TLOAD
-  return prices.toList.eraseDups.toArray
+private def usesMemory : Op → Bool
+  | .keccak256 | .calldatacopy | .codecopy | .extcodecopy | .returndatacopy
+  | .mload | .mstore | .mstore8 | .mcopy | .log _ | .«return» | .revert
+  | .call | .callcode | .delegatecall | .staticcall | .create | .create2 => true
+  | _ => false
+
+private inductive FixedCharge where
+  /-- The whole charge of the step, as measured. -/
+  | whole
+  /-- The base charge from the table, since the step also pays for memory. -/
+  | base
+
+/-- The charge that the report counts as a fixed price for an active opcode. -/
+private def fixedCharge (fork : Fork) (op : Op) : Option FixedCharge :=
+  match op with
+  -- Before Berlin, the base charge of EXTCODECOPY does not depend on access, by EIP-2929.
+  | .extcodecopy => if fork < .berlin then some .base else none
+  | .balance | .extcodehash | .extcodesize => if fork < .berlin then some .whole else none
+  -- These charges have their own rules; that of SLOAD applies even before Berlin.
+  | .exp | .sload | .sstore | .selfdestruct => none
+  | _ => if usesMemory op then none else some .whole
+
+private def fixedPrices (fork : Fork) : Array Nat :=
+  let prices := (List.range 256).filterMap fun byte => do
+    let op ← Op.ofByte fork (UInt8.ofNat byte)
+    let _ ← fixedCharge fork op
+    return Op.constantGas fork op
+  prices.eraseDups.mergeSort.toArray
 
 /-- The gas rules this observer can distinguish at `fork`. -/
 public def gasRuleInventory (fork : Fork) : Array String := Id.run do
@@ -160,25 +181,12 @@ public def gasRuleInventory (fork : Fork) : Array String := Id.run do
 
 variable {fork : Fork} {Meter : Type} [GasMeter Meter]
 
-private def usesMemory : Op → Bool
-  | .keccak256 | .calldatacopy | .codecopy | .extcodecopy | .returndatacopy
-  | .mload | .mstore | .mstore8 | .mcopy | .log _ | .«return» | .revert
-  | .call | .callcode | .delegatecall | .staticcall | .create | .create2 => true
-  | _ => false
-
 private def callKind : Op → Option CallKind
   | .call => some .call
   | .callcode => some .callcode
   | .delegatecall => some .delegatecall
   | .staticcall => some .staticcall
   | _ => none
-
-private def usesFixedPrice (fork : Fork) (op : Op) : Bool :=
-  if usesMemory op then false else
-  match op with
-  | .exp | .sload | .sstore | .selfdestruct => false
-  | .balance | .extcodehash | .extcodesize => fork < .berlin
-  | _ => true
 
 private def storageWriteRules (original current new : U256) : Array GasRule :=
   let branch := sstoreCase fork original current new
@@ -275,12 +283,7 @@ private def variableRules (op : Op) (evm after : Evm fork Meter)
   | .exp => #[.exponent (nonzero 1)]
   | .keccak256 => #[.hash (nonzero 1)]
   | .calldatacopy | .codecopy | .returndatacopy | .mcopy => #[.copy (nonzero 2)]
-  | .extcodecopy =>
-    -- Before Berlin, the base price of the copy does not depend on access.
-    --
-    -- Its memory charge keeps it out of the fixed prices, so it is recorded here.
-    #[.copy (nonzero 3)] ++ externalCodeRules ++
-      whenRule (fork < .berlin) (.fixedPrice (externalBaseCost fork false))
+  | .extcodecopy => #[.copy (nonzero 3)] ++ externalCodeRules
   | .extcodesize => externalCodeRules
   | .balance | .extcodehash => accountRules
   | .log n => #[.logData (nonzero 1)] ++ whenRule (n.val > 0) .logTopics
@@ -309,9 +312,14 @@ public def stepGasRules (evm : Evm fork Meter) (step : StepResult fork Meter) :
   if after.error.any (· != .revert) then return #[]
   let op := if h : evm.pc < evm.code.size then Op.ofByte fork evm.code[evm.pc] else some .stop
   let some op := op | return #[]
-  let price := GasMeter.gasHeld evm.gas - GasMeter.gasHeld after.gas
-  let fixed := whenRule (usesFixedPrice fork op) (.fixedPrice price)
   let memory := whenRule (usesMemory op) (.memory (after.memory.size > evm.memory.size))
-  return (fixed ++ memory ++ variableRules op evm after child).map GasRule.label
+  let rules := memory ++ variableRules op evm after child
+  let rules : Array GasRule := match fixedCharge fork op with
+    | some .whole =>
+      let price := GasMeter.gasHeld evm.gas - GasMeter.gasHeld after.gas
+      #[.fixedPrice price] ++ rules
+    | some .base => rules.push (.fixedPrice (Op.constantGas fork op))
+    | none => rules
+  return rules.map GasRule.label
 
 end EthLib.Coverage

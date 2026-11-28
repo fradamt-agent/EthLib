@@ -30,6 +30,15 @@ TRANSITION = (
     "fixtures/blockchain_tests/for_bpo2toamsterdamattime15k/amsterdam/"
     "eip8038_state_access_gas_cost_increase/fork_transition/sstore_write_cost_at_transition.json"
 )
+BEACON_ROOT_CALL = (
+    "fixtures/blockchain_tests/for_cancun/cancun/eip4788_beacon_root/"
+    "beacon_root_contract/tx_to_beacon_root_contract.json"
+)
+REQUEST_FIXTURES = (
+    "fixtures/blockchain_tests/for_amsterdam/amsterdam/eip8282_builder_execution_requests"
+)
+IMPLICIT_REQUESTS = f"{REQUEST_FIXTURES}/modified_builder_contract/partial_request_records.json"
+REQUEST_SUBMISSIONS = f"{REQUEST_FIXTURES}/request_predeploys/request_overpayment.json"
 BERLIN_CALL = (
     "fixtures/state_tests/for_berlin/berlin/eip2929_gas_cost_increases/call/"
     "call_insufficient_balance.json"
@@ -593,14 +602,76 @@ def transition_case(archive: Path) -> Case:
 def test_pinned_sstore_transition(archive, observer) -> None:
     counts = gas_coverage.replay_blockchain(archive, transition_case(archive), observer)
     assert {fork: result.blocks for fork, result in counts.items()} == {"bpo2": 1, "glamsterdam": 1}
-    before, after = counts["bpo2"].gas_rules, counts["glamsterdam"].gas_rules
-    # Each block fills three empty slots with the timestamp, the parent hash and 1.
-    # The beacon roots contract also writes a zero root to an empty slot.
-    assert before["opcode.sstore.set-execution-charge"] == 3
-    assert before["opcode.sstore.new-slot-state-charge"] == 0
-    assert after["opcode.sstore.set-execution-charge"] == 0
-    assert after["opcode.sstore.clean-write-execution-charge"] == 3
-    assert after["opcode.sstore.new-slot-state-charge"] == 3
+    # The transaction in each block writes 1 to an empty slot with 0x6001600055.
+    # The system calls of the block also write slots, but replay does not count their steps.
+    common = {"opcode.sstore.cold": 1, "opcode.sstore.sentry-passed": 1}
+    assert {
+        fork: {rule: n for rule, n in result.gas_rules.items() if rule.startswith("opcode.sstore.")}
+        for fork, result in counts.items()
+    } == {
+        "bpo2": {**common, "opcode.sstore.set-execution-charge": 1},
+        "glamsterdam": {
+            **common,
+            "opcode.sstore.clean-write-execution-charge": 1,
+            "opcode.sstore.new-slot-state-charge": 1,
+        },
+    }
+
+
+@pytest.mark.archive(catalogue.EXECUTION, BEACON_ROOT_CALL)
+def test_pinned_transaction_reads_beacon_root(archive, observer) -> None:
+    case = Case(
+        "execution-spec-tests",
+        "",
+        "Cancun",
+        "blockchain_test",
+        "tests/cancun/eip4788_beacon_root/test_beacon_root_contract.py"
+        "::test_tx_to_beacon_root_contract"
+        "[fork_Cancun-tx_type_0-blockchain_test-call_beacon_root_contract_True-"
+        "auto_access_list_False]",
+        BEACON_ROOT_CALL,
+    )
+    counts = gas_coverage.replay_blockchain(archive, case, observer)["dencun"]
+    assert counts.blocks == 1
+    # The transaction reads the timestamp and root that the implicit call stored.
+    assert counts.gas_rules["opcode.sload.cold"] == 2
+    assert counts.gas_rules["opcode.sstore.sentry-passed"] == 0
+
+
+@pytest.mark.archive(catalogue.EXECUTION, IMPLICIT_REQUESTS, REQUEST_SUBMISSIONS)
+@pytest.mark.parametrize(
+    "kind",
+    ["WithdrawalRequest", "ConsolidationRequest", "BuilderDepositRequest", "BuilderExitRequest"],
+)
+def test_pinned_request_contract_calls(archive, observer, kind) -> None:
+    prefix = "tests/amsterdam/eip8282_builder_execution_requests"
+    implicit = Case(
+        "execution-spec-tests",
+        "",
+        "Amsterdam",
+        "blockchain_test",
+        f"{prefix}/test_modified_builder_contract.py::test_partial_request_records"
+        f"[fork_Amsterdam-request_class_{kind}-blockchain_test-one_byte]",
+        IMPLICIT_REQUESTS,
+    )
+    submission = Case(
+        "execution-spec-tests",
+        "",
+        "Amsterdam",
+        "blockchain_test",
+        f"{prefix}/test_request_predeploys.py::test_request_overpayment"
+        f"[fork_Amsterdam-request_class_{kind}-blockchain_test]",
+        REQUEST_SUBMISSIONS,
+    )
+    # The block of the first fixture has no transaction, so its requests come from a system call.
+    counts = gas_coverage.replay_blockchain(archive, implicit, observer)["glamsterdam"]
+    assert counts.blocks == 1
+    assert not counts.gas_rules
+
+    # In the second fixture, the transaction calls the request contract, which runs one LOG.
+    counts = gas_coverage.replay_blockchain(archive, submission, observer)["glamsterdam"]
+    assert counts.blocks == 1
+    assert counts.gas_rules["opcode.log.per-data-byte"] == 1
 
 
 @pytest.mark.archive(catalogue.EXECUTION, SSTORE_RESTORATION)

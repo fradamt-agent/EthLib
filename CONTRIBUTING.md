@@ -743,8 +743,17 @@ ETHLIB_ARCHIVES=~/.cache/ethlib/archives PYTHONPATH=bindings/python/tests \
 ```
 
 The report reads the pinned execution release and selected legacy and devnet block fixtures.
-It counts a block at its active fork after checking its state and receipt roots.
+It checks the observed run of a block against every header field that the body gives.
+These include the state and receipt roots and, from Pectra, the requests hash.
 It also checks the encoded block receipts when the fixture supplies them.
+It counts a block at its active fork after these checks pass.
+
+Block events come only from included transactions, which may call system contracts.
+The system calls that a block makes itself run during replay, but their steps are not counted.
+From Dencun, the block calls the beacon roots contract.
+From Pectra, it also calls the history storage, withdrawal request and consolidation request contracts.
+From Glamsterdam, it also calls the builder deposit and builder exit contracts.
+
 For a state test, it checks the state root and logs hash.
 It checks the encoded receipt, cumulative gas used and status when the fixture supplies them.
 Use `--suite`, `--network`, `--format` or `--group` to limit the replay.
