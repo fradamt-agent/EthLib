@@ -729,6 +729,7 @@ def test_pinned_legacy_gas_branches(archive, observer) -> None:
 )
 def test_corrupt_pinned_block_root_discards_events(archive, observer, field, error) -> None:
     case = transition_case(archive)
+    accepted_counts = gas_coverage.replay_blockchain(archive, case, observer)
     fixture = json.loads((archive / case.path).read_text())[case.id]
     root = bytes.fromhex(fixture["blocks"][-1]["blockHeader"][field][2:])
     corrupted = bytes([root[0] ^ 1]) + root[1:]
@@ -744,6 +745,7 @@ def test_corrupt_pinned_block_root_discards_events(archive, observer, field, err
     assert report.counts == {}
     message = f"block invalid: {error} (expected := 0x{corrupted.hex()}) (actual := 0x{root.hex()})"
     assert report.failures == [(case, message)]
+    assert gas_coverage.replay_blockchain(archive, case, observer) == accepted_counts
 
 
 def test_complete_inventory_at_each_execution_fork(observer) -> None:

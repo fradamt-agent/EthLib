@@ -63,7 +63,7 @@ theorem runBody_simulatedLogs {chain : BlockChain} {block : Block fork Transacti
     {overrides : BodyOverrides} {blobGasPrice : Option Nat} {result : BodyResult fork}
     (hfork : fork ≥ .glamsterdam) (h : runBody chain block overrides blobGasPrice = .ok result) :
     result.output.results.map (·.simulatedLogs) = result.output.receipts.map (·.2.logs) := by
-  unfold runBody at h
+  rw [runBody_unfold] at h
   obtain ⟨hashes, -, h⟩ := bind_ok_iff.mp h
   obtain ⟨output, hOutput, h⟩ := bind_ok_iff.mp h
   obtain ⟨roots, -, h⟩ := bind_ok_iff.mp h
