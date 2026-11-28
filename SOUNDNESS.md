@@ -4442,7 +4442,8 @@ There the confirmed block is of an earlier epoch than the target, so Theorem 1 s
 The confirmed-root coverage theorem does not supply this origin coverage, even from Fulu.
 Its confirmed root may predate the target epoch.
 Its coverage starts at the following slot, not at the call.
-`Execution.confirmedRoot_covers` applies only to the last call of a consecutive run, and `Execution.confirmedWalk_end_on_honest_heads` to any call of it; neither applies to an arbitrary caller at a slot start.
+`Execution.confirmedRoot_covers` applies only to the last call of a consecutive run, and `Execution.confirmedWalk_end_on_honest_heads` to any call of it before Gloas.
+Neither applies to an arbitrary caller at a slot start.
 
 `Execution.confirmedRoot_covers` in `Consensus/Proofs/ForkChoice/FastConfirmation/ConfirmedCallStep.lean` addresses Theorem 1 of [#1458](https://github.com/ethereum/EthLib/issues/1458).
 It takes consecutive calls of the rule by one honest validator, one per slot from `firstSlot`, run from the anchor store.
@@ -4506,31 +4507,40 @@ It derives the agreement of honest blocks, the held states before the next fork 
 The endpoint above still assumes `JustifiedPinned`.
 Only the two preset theorems `justifiedPinned_of_setting.mainnet` and `.minimal` call `justifiedPinned_of_setting`, and no endpoint calls any of them.
 
-`Execution.confirmedWalk_end_on_honest_heads` in `Consensus/Proofs/ForkChoice/FastConfirmationSafety.lean` addresses the confirming walk of [#2056](https://github.com/ethereum/EthLib/issues/2056) at every fork before Gloas, Phase 0 included.
+`Execution.confirmedWalk_end_on_honest_heads` in `Consensus/Proofs/ForkChoice/FastConfirmationSafety.lean` gives a bounded form of the confirming walk of [#2056](https://github.com/ethereum/EthLib/issues/2056) at every fork before Gloas, Phase 0 included.
+It is conditional on the premises below, and #2056 stays open.
 It takes any one call of the consecutive run of calls above, not only the last; each call is at the start of its slot.
 The call's slot needs a checked successor slot, whose start time is representable.
 The root that this call stores is on every up-to-date honest head from the start of that following slot through the inclusive time limit.
 The alternatives are those of `Execution.confirmedRoot_covers`: a collision of two honest stores or one of its four kinds of evidence.
 It asserts nothing after the limit, and nothing at the maximum slot, which has no checked successor.
-It does not cover a walk that no call of the run makes, and it proves no safety without its premises.
+It says nothing about a root that no call of the run stores, and it proves no safety without its premises.
 `Execution.callInvariant_of_run` in `Consensus/Proofs/ForkChoice/FastConfirmation/ConfirmedCallStep.lean` gives the call invariant at each call of the run by the limit, or the same alternatives; both endpoints read it.
-The three theorems share the run, anchor, timing, parameter, store-bound and caller premises of `Execution.confirmedRoot_covers` listed above, and differ in how they name the call.
+The three theorems share the run, anchor, timing, parameter, store-bound and caller premises of `Execution.confirmedRoot_covers` listed above.
 Those shared premises include duty-window agreement (`AssignmentWindowAgreement`) and the checkpoint stake ceiling (`CheckpointStakeCeiling`).
-`Execution.confirmedRoot_covers` takes the complete fold of the calls, the last event, its following slot start and that this start is at most the limit.
-`Execution.callInvariant_of_run` takes one call of the run (`CallAt`) and a bound on that call's time, with the three premises from Gloas.
-The new endpoint takes one call, its successor slot and that slot's start time, and needs neither a time bound nor a following start at most the limit.
-It drops the three premises from Gloas and fixes the checks to BLS.
-It also fixes the anchor epoch to `anchor.justifiedCheckpoint.epoch`.
-So it also assumes `CallObligations` of each call of the run.
+They also include the anchored BLS run from genesis, synchrony, block admission, prompt processing, validated duty votes, the bounded store epochs, the stake floors and the Byzantine bound.
+They include a reference honest store up to date at or after the limit, whose slot has a checked predecessor.
+The first slot's epoch is at least two, and strictly after the epoch of the anchor state.
+All three assume `CallObligations` of each call of the run.
 They are the source reads of later windows, the target count bounds with the pin reserve and the realized guards.
 For each walked member they include the margin drift bound, the near exit reserve and the late and newly active voters.
-It also assumes the anchored BLS run from genesis, synchrony, block admission, prompt processing and validated duty votes.
-It assumes the bounded store epochs, the pinned justification, the stake floors and the Byzantine bound.
-It assumes a reference honest store up to date at or after the limit, whose slot has a checked predecessor.
-The first slot's epoch is at least two, and strictly after the epoch of the anchor state.
-It assumes the quorum drift bound only before Electra; from Electra it derives it.
-That assumption allows a collision of two honest stores in place of the bound.
+All three assume the quorum drift bound only before Electra and derive it from Electra.
+That premise is itself a disjunction: the bound, or a collision of two honest stores.
+
+The three theorems differ in how they name the call, in their fork range and in two fixed values.
+`Execution.confirmedRoot_covers` takes the complete fold of the calls, the last event, its following slot start and that this start is at most the limit.
+`Execution.callInvariant_of_run` takes one call of the run (`CallAt`) and a bound on that call's time, with the three premises from Gloas.
+`Execution.confirmedWalk_end_on_honest_heads` takes one call, its successor slot and that slot's start time.
+It needs neither a time bound nor a following start at most the limit.
+It takes no premise from Gloas, since its fork is before Gloas.
+It writes the BLS checks and the anchor epoch `anchor.justifiedCheckpoint.epoch` in place of the variables that the other two constrain by equations.
 The invariant at earlier calls and the start facts of each call are derived, not assumed.
+The obligations of later calls are not read, so a caller may end the run at the call.
+
+Three premises of this endpoint have no proof on every fork it covers.
+No theorem derives `CallObligations`.
+No endpoint derives `JustifiedPinned`; `justifiedPinned_of_setting` covers only Fulu up to Gloas.
+No theorem derives `QuorumDriftWithin` before Electra.
 
 `Consensus/Proofs/ForkChoice/FastConfirmation/ConfirmedRoot.lean` states where the confirmed block of a slot comes from.
 `Store.onFastConfirmation_confirmedRoot` shows that the rule starts from the block stored before, the finalized block or the observed justified block.

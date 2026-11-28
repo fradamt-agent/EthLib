@@ -72,5 +72,5 @@ The last confirmed root of one honest validator's consecutive calls is on up-to-
 
 That holds from the slot after the last call to a horizon, unless stores collide or evidence holds.
 
-Before Gloas, each call's root is on those heads from the following slot start through the limit.
+Before Gloas, so is the root of each call, from its following slot through the limit.
 -/

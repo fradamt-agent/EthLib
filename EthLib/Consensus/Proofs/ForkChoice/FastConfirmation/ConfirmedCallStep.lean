@@ -1182,63 +1182,10 @@ private theorem time_le_following {u : ValidatorIndex} {events : List ℕ} {firs
 
 The call is any one of the validator's consecutive calls, at a time by the limit.
 
-The evidence is `Bad`: a collision of honest stores or four kinds of accountable-safety evidence.
+The alternatives are a collision of two honest stores and four kinds of accountable-safety evidence.
 
-Only before Electra it assumes that the quorum drift is within each call's reserve.
-
-That assumption allows a collision of two honest stores in place of the bound.
-
-From Gloas the anchor's registry leaves room up to the horizon.
-
-From Gloas the configured head weights fit, and each weak-head weight read by the limit is capped.
-
-The run starts from genesis, verifies signatures with BLS and reaches the anchor state.
-
-The model's genesis time is the anchor state's genesis time.
-
-The anchor store is built from that state and its block, which share a slot at an epoch boundary.
-
-Every honest store starts at the anchor store.
-
-The anchor state's latest header has the anchor block's slot, proposer and parent root.
-
-Its body root is the root of the anchor block's body, and its state root is zero.
-
-The anchor epoch is the epoch of the anchor store's justified checkpoint.
-
-Timing assumes synchrony, a positive slot duration, fitting delays and prompt processing.
-
-Blocks are admitted after the delay, duty votes are validated and honest duty windows agree.
-
-The parameter facts are the committee windows, the seed lookahead and the ring of RANDAO mixes.
-
-They also include the direct-safety parameters, multi-slot epochs, the upward band and increment.
-
-They also include the threshold, the aligned maximum balances and the cap order.
-
-They also include the inclusion and withdrawal delays and the proposer score fit.
-
-The activation balance is at most the largest effective balance before Electra.
-
-The horizon precedes the next scheduled fork.
-
-The store bounds are the epoch horizon, nonzero held state roots and unslashed counted states.
-
-Through the limit, no honest store holds the anchor's parent, and checkpoint stakes are capped.
-
-The stake floors hold for the held runs and for the terminal states.
-
-The run assumptions are the pinned justification, the Byzantine bound and target inclusion.
-
-They also include stale head voters in the committees that the rule reads.
-
-Some honest store is up to date at or after the limit, and its slot has a checked predecessor.
-
-The calls are at the starts of consecutive slots from a first slot.
-
-The first slot's epoch is at least two, and strictly after the epoch of the anchor state.
-
-The validator is honest, it is up to date at each call, and each call assumes its obligations. -/
+Before Electra it assumes the quorum drift bound, which also accepts a collision of honest stores.
+-/
 theorem Execution.callInvariant_of_run [DecidablePred (· ∈ J)] {Δ : ℕ} {anchor : Store preset fork}
     {limit : ℕ} {horizon anchorEpoch : Epoch} {g : ForkedBeaconState preset}
     -- The execution verifies signatures with BLS, as the pulled-up head state of the rule does.
@@ -1308,6 +1255,7 @@ theorem Execution.callInvariant_of_run [DecidablePred (· ∈ J)] {Δ : ℕ} {an
     (caps : CapOrder preset) (activation : ActivationWithinMaxEffective preset)
     (forkWindow : ∀ next ∈ config.nextFork fork, horizon.toNat < next.2.toNat)
     (included : TargetIncluded (e := e) limit) (stale : StaleHeadVotersInWindow (e := e) limit)
+    -- Some honest store is up to date at or after the limit, and its slot has a checked predecessor.
     (reference : ∃ x ∈ J, ∃ m, ∃ referenceSlot finish : Slot, limit ≤ (e.world m).time ∧
       UpToDate config checks sources (e.world m).time ((e.world m).view x)
         ((e.world m).state x) ∧
@@ -1328,6 +1276,8 @@ theorem Execution.callInvariant_of_run [DecidablePred (· ∈ J)] {Δ : ℕ} {an
       computeTimeAtSlotMs config genesisTimeMs slot = .ok begin ∧
       (e.world n).time = begin.toNat)
     -- Each call assumes its obligations.
+    --
+    -- Only the calls up to this one are read, so the run may end at this call.
     (obligations : ∀ i n fcr after,
       CallAt (e := e) u events (getFastConfirmationStore anchor) i n fcr after →
       CallObligations (e := e) 0 limit u n fcr after)
@@ -1349,7 +1299,7 @@ theorem Execution.callInvariant_of_run [DecidablePred (· ∈ J)] {Δ : ℕ} {an
     afterAnchor byzantine
   by_cases bad : Bad (e := e) pre limit
   · exact .inr bad
-  -- The run's calls are ordered in time, so an earlier call is also by the limit.
+  -- Two epochs of slots fit in the ring of historical roots.
   have window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat := by
     have := parameters.roots
     omega
@@ -1368,6 +1318,7 @@ theorem Execution.callInvariant_of_run [DecidablePred (· ∈ J)] {Δ : ℕ} {an
       band withdrawDelay caps activation forkWindow included stale reference caller
       confirmationEpoch anchorEpochBefore upToDate atSlots calls bound
       (obligations i n fcr after calls)
+      -- The run's calls are ordered in time, so an earlier call is also by the limit.
       (fun i' lt n' fcr' after' prev => earlier i' lt prev
         (Nat.le_trans (Nat.le_of_lt (call_order ctx prev.1 calls.1 lt).2) bound)) with
       holds | evidence
