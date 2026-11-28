@@ -1431,17 +1431,12 @@ theorem ledger_processConsolidationRequest {electra : .pectra ≤ fork}
       beq_iff_eq] at valid
     simp [hasCompoundingWithdrawalCredential, isCompoundingWithdrawalCredential, valid.1.1.2,
       ETH1_ADDRESS_WITHDRAWAL_PREFIX, COMPOUNDING_WITHDRAWAL_PREFIX]
-  unfold processConsolidationRequest at computed
-  simp only [bind, Except.bind, pure, Except.pure] at computed
-  repeat' split at computed
-  all_goals try first
-    | (cases computed; done)
-    | (cases computed; exact ⟨∅, Ledger.refl _, by simp⟩)
-  · rename_i checked valid
-    exact ⟨_, Ledger.switch (getElem?_toNat_of_ofNatChecked checked) (fresh _ valid)
-      (liftAccessor_ok.mp computed), (Finset.card_singleton _).le⟩
-  · rename_i checked _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
-    exact ⟨∅, Ledger.consolidate (getElem?_toNat_of_ofNatChecked checked) computed, by simp⟩
+  rcases consolidationRequest_cases computed with rfl | ⟨_, _, switch, switched⟩ |
+    ⟨_, _, _, _, accepted, queued⟩
+  · exact ⟨∅, Ledger.refl _, by simp⟩
+  · exact ⟨_, Ledger.switch switch.found (fresh _ switch.valid) switched,
+      (Finset.card_singleton _).le⟩
+  · exact ⟨∅, Ledger.consolidate accepted.sourceAt queued, by simp⟩
 
 /-- The deposit requests and then the withdrawal requests of a payload move no balance.
 

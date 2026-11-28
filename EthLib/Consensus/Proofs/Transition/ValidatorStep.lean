@@ -3035,30 +3035,14 @@ private theorem CapStepR.withdrawalRequest {f : Fork} {s t : BeaconState preset 
       (∀ c, PartialsAt c s → PartialsAt c t) ∧
       (∀ candidate i, preKeyCharge candidate t i ≤ preKeyCharge candidate s i) ∧
       (ScheduledFree s → ScheduledFree t) := by
-  unfold processWithdrawalRequest at ok
-  simp only [bind, Except.bind, pure, Except.pure] at ok
-  repeat' split at ok
-  all_goals first
-    | (cases ok; done)
-    | (cases ok; exact ⟨CapStepR.refl _, id, fun _ => id, fun _ _ => Nat.le_refl _, id⟩)
-    | (have step := CapStepR.exit (liftAccessor_ok.mp ok)
-       exact ⟨step.1, step.2.1, step.2.2.1, step.2.2.2.1, step.2.2.2.2⟩)
-    | (obtain ⟨step, funded, retained, charge, scheduled⟩ := CapStep.partialWithdrawal ok
-       rename_i noRoom candidate position located checkedResult index checked credentials
-         acceptedResult allowed accepted yes owedResult owed owedOk isPartial
-       refine ⟨step, funded, (fun c held => retained c held ?_), charge, scheduled⟩
-       have read := getElem?_toNat_of_ofNatChecked (by assumption)
-       refine ⟨_, read, ?_⟩
-       apply assigned_and_reached_of_active (epoch := getCurrentEpoch s)
-       have acceptedTrue : canRequest config s s.validators.data[position] = .ok true :=
-         yes ▸ accepted
-       unfold canRequest at acceptedTrue
-       dsimp only at acceptedTrue
-       split at acceptedTrue
-       · cases acceptedTrue
-       · rename_i active
-         have both := (not_or.mp (by simpa only [Bool.or_eq_true] using active)).1
-         simpa using both)
+  rcases withdrawalRequest_cases ok with rfl | ⟨_, _, _, exited⟩ | ⟨_, v, _, accepted, withdrawn⟩
+  · exact ⟨CapStepR.refl _, id, fun _ => id, fun _ _ => Nat.le_refl _, id⟩
+  · exact CapStepR.exit exited
+  · -- The requesting validator may make a request, so it is active.
+    obtain ⟨step, funded, retained, charge, scheduled⟩ := CapStep.partialWithdrawal withdrawn
+    exact ⟨step, funded, fun c held => retained c held ⟨v, accepted.found,
+      assigned_and_reached_of_active (isActiveValidator_of_canRequest accepted.allowed)⟩,
+      charge, scheduled⟩
 
 private theorem CapStep.depositRequest {f : Fork} {s t : BeaconState preset f}
     {electra : .pectra ≤ f} {request : DepositRequest}
