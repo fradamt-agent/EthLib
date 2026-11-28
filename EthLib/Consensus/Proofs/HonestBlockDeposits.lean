@@ -3,6 +3,7 @@ module
 public import EthLib.Consensus.Proofs.HonestBlockInput
 public import EthLib.Consensus.Proofs.Transition.BlockLedger
 public import EthLib.Consensus.Proofs.Transition.Totality.PendingDeposits
+import Batteries.Data.UInt
 
 /-!
 # Proofs: the deposit steps of a block accept the deposits that are due
@@ -44,7 +45,7 @@ theorem expectedDepositCount_index_lt {state : BeaconState preset fork} {before 
       have limitLe : (min (state.eth1Data before).depositCount
           (state.depositRequestsStartIndex ⟨electra, before⟩)).toNat ≤
             (state.eth1Data before).depositCount.toNat := by
-        rw [Uint64.toNat_min]
+        rw [UInt64.toNat_min]
         exact Nat.min_le_left _ _
       have takeLe : (min preset.MAX_DEPOSITS (min (state.eth1Data before).depositCount
           (state.depositRequestsStartIndex ⟨electra, before⟩) -
@@ -52,14 +53,14 @@ theorem expectedDepositCount_index_lt {state : BeaconState preset fork} {before 
           (min (state.eth1Data before).depositCount
             (state.depositRequestsStartIndex ⟨electra, before⟩)).toNat -
               (state.eth1DepositIndex before).toNat := by
-        rw [Uint64.toNat_min, UInt64.toNat_sub_of_le _ _ (UInt64.le_of_lt below)]
+        rw [UInt64.toNat_min, UInt64.toNat_sub_of_le _ _ (UInt64.le_of_lt below)]
         exact Nat.min_le_right _ _
       omega
     · omega
   · simp only [bind_ok_iff, liftAccessor_ok, liftArith, mapError_ok_iff, subChecked_ok_iff,
       pure, Except.pure, Except.ok.injEq] at expected
     obtain ⟨outstanding, ⟨le, taken⟩, rfl⟩ := expected
-    rw [Uint64.toNat_min]
+    rw [UInt64.toNat_min]
     have := Nat.min_le_right preset.MAX_DEPOSITS.toNat outstanding.toNat
     omega
 

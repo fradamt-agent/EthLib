@@ -31,6 +31,7 @@ import EthLib.Consensus.Proofs.Transition.BalanceNotRaisedBlock
 import EthLib.Consensus.Proofs.Transition.BranchLedger
 import Mathlib.Algebra.Order.BigOperators.Group.Finset
 import EthLib.Base.Proofs.Nat
+import Batteries.Data.UInt
 
 /-!
 # The fall of an effective balance over the end of an epoch
@@ -94,7 +95,7 @@ private theorem updatedEffectiveBalance_fall {largest balance effective result :
   · have value : (min (balance - balance % preset.EFFECTIVE_BALANCE_INCREMENT) largest).toNat =
         min (balance.toNat - balance.toNat % preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
           largest.toNat := by
-      rw [Base.Uint64.toNat_min, toNat_rounded]
+      rw [UInt64.toNat_min, toNat_rounded]
     rw [value]
     have remainder := Nat.mod_lt balance.toNat increment
     have remainderLe := Nat.mod_le balance.toNat preset.EFFECTIVE_BALANCE_INCREMENT.toNat
@@ -487,7 +488,7 @@ private theorem partials_floor {f : Fork} {s : BeaconState preset f} {electra : 
           decide_eq_true_eq] at eligible
         have amountLe :
             partials[j].amount.toNat ≤ left.toNat - preset.MIN_ACTIVATION_BALANCE.toNat := by
-          rw [amount, Base.Uint64.toNat_min,
+          rw [amount, UInt64.toNat_min,
             UInt64.toNat_sub_of_le _ _ (UInt64.le_of_lt eligible.2)]
           exact Nat.min_le_left _ _
         have above := UInt64.lt_iff_toNat_lt.mp eligible.2

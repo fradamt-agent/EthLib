@@ -4,6 +4,7 @@ public import EthLib.Base.Except
 public import EthLib.Base.Proofs.MapM
 public import EthLib.Base.Proofs.Uint64
 public import EthLib.Consensus.Churn
+import Batteries.Data.UInt
 
 /-!
 # Proofs: the balance churn
@@ -218,7 +219,7 @@ theorem churnQueue_window_le (cap : Nat) :
     obtain ⟨placed, spent, _⟩ := churnQueue_spend queued
     have rate := rates call (by simp)
     have later := UInt64.le_iff_toNat_le.mp placed
-    rw [Base.Uint64.toNat_max] at later
+    rw [UInt64.toNat_max] at later
     have firstLe : earliest.toNat ≤ middle.toNat := Nat.le_trans (Nat.le_max_left _ _) later
     obtain ⟨lastLe, tailBound⟩ := ih middle remaining epoch left
       (fun c hc => rates c (List.mem_cons_of_mem _ hc)) restOk
@@ -227,14 +228,14 @@ theorem churnQueue_window_le (cap : Nat) :
       split at spent
       · rename_i reset
         have reset := UInt64.lt_iff_toNat_lt.mp reset
-        rw [Base.Uint64.toNat_max] at reset
+        rw [UInt64.toNat_max] at reset
         have distance : middle.toNat - max earliest.toNat call.1.toNat + 1 ≤
             middle.toNat - earliest.toNat := by omega
-        rw [Base.Uint64.toNat_max] at spent
+        rw [UInt64.toNat_max] at spent
         have product := Nat.mul_le_mul distance rate
         rw [Nat.add_mul, Nat.one_mul] at product
         omega
-      · rw [Base.Uint64.toNat_max] at spent
+      · rw [UInt64.toNat_max] at spent
         have distance : middle.toNat - max earliest.toNat call.1.toNat ≤
             middle.toNat - earliest.toNat := by omega
         have product := Nat.mul_le_mul distance rate
@@ -524,7 +525,7 @@ theorem roundToIncrement_share_bounds {config : Config} (total quotient : Gwei)
       (roundToIncrement preset (max config.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA
           (total / quotient))).toNat ≤
         config.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA.toNat + total.toNat := by
-  rw [toNat_roundToIncrement, toNat_max, UInt64.toNat_div]
+  rw [toNat_roundToIncrement, UInt64.toNat_max, UInt64.toNat_div]
   have positive : 0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat :=
     UInt64.lt_iff_toNat_lt.mp increment
   have minimum := UInt64.le_iff_toNat_le.mp minimum

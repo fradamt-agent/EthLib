@@ -11,6 +11,7 @@ import EthLib.Consensus.Proofs.Transition.EpochParticipation
 import EthLib.Consensus.Proofs.Transition.ForkBoundary
 import EthLib.Consensus.Proofs.Transition.Slot
 import EthLib.Consensus.Proofs.Transition.SyncCommitteeProvenance
+import Batteries.Data.UInt
 
 /-!
 # The reads of one epoch, as natural numbers
@@ -82,7 +83,7 @@ theorem getTotalActiveBalance_toNat {fork : Fork} {state : BeaconState preset fo
         rw [beq_iff_eq, same]
     rw [getElem?_markIndices]
     simp only [inside, ↓reduceIte, Option.getD_some, marked]
-  rw [← sum, toNat_max, Nat.toUInt64_eq, UInt64.toNat_ofNat_of_lt' lt]
+  rw [← sum, UInt64.toNat_max, Nat.toUInt64_eq, UInt64.toNat_ofNat_of_lt' lt]
 
 /-- The participant reward of the sync committee as a natural number, from the active total.
 
@@ -179,7 +180,7 @@ private theorem getTotalBalance_increments_le {fork : Fork} {state : BeaconState
         ((state.validators.data[i]?).map (·.effectiveBalance.toNat)).getD 0) /
         preset.EFFECTIVE_BALANCE_INCREMENT.toNat) := by
   obtain ⟨_, small, rfl⟩ := getTotalBalance_ok_iff.mp weighed
-  rw [toNat_max, Nat.toUInt64_eq, UInt64.toNat_ofNat', Nat.mod_eq_of_lt small]
+  rw [UInt64.toNat_max, Nat.toUInt64_eq, UInt64.toNat_ofNat', Nat.mod_eq_of_lt small]
   -- Each marked validator is active in the previous epoch.
   have marked : sumMarked state.validators.data
       (markIndices state.validators.data.size indices) ≤

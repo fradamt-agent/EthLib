@@ -13,6 +13,7 @@ import EthLib.Consensus.Proofs.Transition.SyncCommitteeProvenance
 public import EthLib.Consensus.Proofs.Transition.PendingConsolidations
 import EthLib.Consensus.Proofs.Transition.BalanceNotRaised
 import EthLib.Consensus.Proofs.Transition.EpochPending
+import Batteries.Data.UInt
 
 /-!
 # Effective-balance changes from the actual balance path
@@ -1205,7 +1206,7 @@ private theorem balanceDrift_reference_update {f : Fork} {s t : BeaconState pres
     simp only [effectiveAt, read, Option.map_some, Option.getD_some]
     rcases updatedEffectiveBalance_cases changed with rfl | rfl
     · exact previous
-    · rw [Base.Uint64.toNat_min, Base.Uint64.toNat_sub_mod]
+    · rw [UInt64.toNat_min, Base.Uint64.toNat_sub_mod]
       refine Nat.le_min.mpr ⟨?_, UInt64.le_iff_toNat_le.mp capped⟩
       simpa only [aligned, Nat.sub_zero] using
         Base.rounded_mono preset.EFFECTIVE_BALANCE_INCREMENT.toNat funded
@@ -1595,7 +1596,7 @@ private theorem admissionFunded_add {f : Fork} {s t : BeaconState preset f}
     simp only [effectiveAt, actualBalanceAt, validators, balances,
       Array.getElem?_push, matched,
       ↓reduceIte, Option.map_some, Option.getD_some,
-      getValidatorFromDeposit, Base.Uint64.toNat_min,
+      getValidatorFromDeposit, UInt64.toNat_min,
       UInt64.toNat_sub_of_le _ _ rounded]
     omega
   · simpa only [effectiveAt, actualBalanceAt, validators, balances,

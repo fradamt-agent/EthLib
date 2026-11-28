@@ -3,6 +3,7 @@ module
 public import EthLib.Consensus.Proofs.Transition.Totality.Supply
 import EthLib.Base.Proofs.FilterM
 import EthLib.Consensus.Proofs.Transition.Committees
+import Batteries.Data.UInt
 
 /-!
 # Proofs: the supply grows by at most the issuance over one epoch, before Altair
@@ -143,7 +144,7 @@ private theorem getTotalBalance_le_of_subset {few many : List ValidatorIndex}
         simp [listed, also]
       · simp [listed]
     · simp
-  rw [UInt64.le_iff_toNat_le, toNat_max, toNat_max, Nat.toUInt64_eq, Nat.toUInt64_eq,
+  rw [UInt64.le_iff_toNat_le, UInt64.toNat_max, UInt64.toNat_max, Nat.toUInt64_eq, Nat.toUInt64_eq,
     UInt64.toNat_ofNat', UInt64.toNat_ofNat', Nat.mod_eq_of_lt smallFits,
     Nat.mod_eq_of_lt largeFits]
   exact max_le_max (le_refl _) marked
@@ -290,7 +291,7 @@ private theorem sum_range_weights_le (within : state.RegistryWithinLimit)
   obtain ⟨-, small, balance⟩ := getTotalBalance_ok_iff.mp weighed
   have covers : sumMarked state.validators.data
       (markIndices state.validators.data.size attesters) ≤ attestingBalance.toNat := by
-    rw [balance, toNat_max, Nat.toUInt64_eq, UInt64.toNat_ofNat', Nat.mod_eq_of_lt small]
+    rw [balance, UInt64.toNat_max, Nat.toUInt64_eq, UInt64.toNat_ofNat', Nat.mod_eq_of_lt small]
     exact Nat.le_max_right _ _
   rw [sumMarked_eq_sum] at covers
   refine Nat.le_trans (sum_map_le_sum_map (g := fun j =>

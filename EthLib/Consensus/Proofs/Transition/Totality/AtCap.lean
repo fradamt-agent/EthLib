@@ -4,6 +4,7 @@ public import EthLib.Consensus.Proofs.Transition.Totality.EpochElectra
 public import EthLib.Consensus.Proofs.Transition.Totality.Rewards
 import EthLib.Base.Proofs.Nat
 import EthLib.Consensus.Proofs.Transition.RegistryLifecycle
+import Batteries.Data.UInt
 
 /-!
 # Proofs: a validator at the cap stays there through an epoch before Electra
@@ -501,7 +502,7 @@ private theorem effective_atCap (before : fork < .pectra)
     split
     · rw [capped]
       apply UInt64.toNat_inj.mp
-      rw [toNat_min]
+      rw [UInt64.toNat_min]
       exact Nat.min_eq_right (UInt64.le_iff_toNat_le.mp rounded)
     · rfl
   rw [same]

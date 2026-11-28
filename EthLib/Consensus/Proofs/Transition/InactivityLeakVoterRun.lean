@@ -4,6 +4,7 @@ public import EthLib.Consensus.Proofs.Transition.BalanceCappedBlock
 public import EthLib.Consensus.Proofs.Transition.InactivityLeakRun
 public import EthLib.Consensus.Proofs.Transition.InactivityLeakVoter
 import EthLib.Base.Proofs.Nat
+import Batteries.Data.UInt
 
 /-!
 # Proofs: the voters of a leak keep a stake read at the start of the run
@@ -35,7 +36,7 @@ theorem min_le_updatedEffectiveBalance {cap balance effective updated : Gwei}
   rcases updatedEffectiveBalance_cases computed with rfl | rfl
   · exact Nat.min_le_left _ _
   refine Nat.le_trans (Nat.min_le_right _ _) ?_
-  rw [cappedFloor, Uint64.toNat_min, Uint64.toNat_min, toNat_rounded]
+  rw [cappedFloor, UInt64.toNat_min, UInt64.toNat_min, toNat_rounded]
   exact Nat.le_min.mpr ⟨rounded_mono _ (Nat.min_le_left _ _),
     Nat.le_trans (Nat.sub_le _ _) (Nat.min_le_right _ _)⟩
 
@@ -136,14 +137,14 @@ theorem effectiveBalance_ge_of_voterRun (altair : .altair ≤ fork)
       obtain ⟨last, atLast, settledLow⟩ := capped settled atSettled
       have settledNat := UInt64.le_iff_toNat_le.mp settledLow
       have raisedNat := UInt64.le_iff_toNat_le.mp raised
-      rw [Uint64.toNat_min, Uint64.toNat_min] at settledNat capLow
+      rw [UInt64.toNat_min, UInt64.toNat_min] at settledNat capLow
       have floorLow := cappedFloor_mono (preset := preset)
         (cap := withdrawalMaxEffectiveBalance preset fork validator) (low := balance)
         (high := settled) (UInt64.le_iff_toNat_le.mpr (by
-          rw [Uint64.toNat_min, Uint64.toNat_min]; omega))
+          rw [UInt64.toNat_min, UInt64.toNat_min]; omega))
       have updatedLow := min_le_updatedEffectiveBalance effectiveOk
       refine ⟨final, last, atFinal, finalKey, finalCap, atLast, ?_, ?_⟩
-      · rw [Uint64.toNat_min, Uint64.toNat_min]
+      · rw [UInt64.toNat_min, UInt64.toNat_min]
         omega
       · rw [finalEffective, nowEffective]
         omega

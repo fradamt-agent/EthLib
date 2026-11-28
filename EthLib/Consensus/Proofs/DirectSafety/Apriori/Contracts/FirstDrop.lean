@@ -3,6 +3,7 @@ module
 public import EthLib.Consensus.Proofs.DirectSafety.Apriori.Ownership
 import EthLib.Consensus.Proofs.Transition.ChainRoots
 import EthLib.Consensus.Proofs.Transition.Slot
+import Batteries.Data.UInt
 
 /-!
 # The supported branch and the first drop of a key
@@ -765,7 +766,7 @@ private theorem effective_origin_slot {f : Fork} {s t : BeaconState preset f}
       rw [eNew, ← keptS, same]
       simp [effectiveAt, found]
     · right
-      rw [eNew, bNew, rounded, Base.Uint64.toNat_min, toNat_rounded]
+      rw [eNew, bNew, rounded, UInt64.toNat_min, toNat_rounded]
       exact Nat.le_trans (Nat.min_le_left _ _) (Nat.sub_le _ _)
   · exact .inl rfl
 

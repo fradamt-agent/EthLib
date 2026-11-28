@@ -4,6 +4,7 @@ public import EthLib.Base.Proofs.Uint64
 public import EthLib.Consensus.LightClient.Sync
 import EthLib.Serialization.Proofs.Ssz.Type.ValueEquality
 import EthLib.Base.Proofs.CodeInjective
+import Batteries.Data.UInt
 
 /-!
 # Proofs: the light client sync protocol
@@ -204,14 +205,14 @@ private theorem processLightClientUpdate_eq_bind {config : Config} {checks : Sig
   have threshold (kept : LightClientStore preset fork) :
       kept.safetyThreshold.toNat = max kept.previousMaxActiveParticipants.toNat
         kept.currentMaxActiveParticipants.toNat / 2 := by
-    simp [LightClientStore.safetyThreshold, Base.Uint64.toNat_max, UInt64.toNat_div]
+    simp [LightClientStore.safetyThreshold, UInt64.toNat_max, UInt64.toNat_div]
   have count : update.syncAggregate.participants.toUInt64.toNat =
       update.syncAggregate.participants := by
     simp [Nat.toUInt64, Nat.mod_eq_of_lt small]
   -- Split on the kept update and on the move of the optimistic header, then read both sides.
   cases kept : store.bestValidUpdate with
   | none =>
-    simp only [Option.all_none, ↓reduceIte, threshold, Base.Uint64.toNat_max, count]
+    simp only [Option.all_none, ↓reduceIte, threshold, UInt64.toNat_max, count]
     by_cases opt : max store.previousMaxActiveParticipants.toNat
           (max store.currentMaxActiveParticipants.toNat update.syncAggregate.participants) / 2 <
         update.syncAggregate.participants ∧
@@ -220,7 +221,7 @@ private theorem processLightClientUpdate_eq_bind {config : Config} {checks : Sig
   | some best =>
     by_cases better : isBetterUpdate update best = true <;>
     simp only [better, Option.all_some, ↓reduceIte, Bool.false_eq_true, threshold,
-      Base.Uint64.toNat_max, count] <;>
+      UInt64.toNat_max, count] <;>
     by_cases opt : max store.previousMaxActiveParticipants.toNat
           (max store.currentMaxActiveParticipants.toNat update.syncAggregate.participants) / 2 <
         update.syncAggregate.participants ∧
@@ -763,7 +764,7 @@ private theorem processLightClientUpdate_fields {config : Config} {checks : Sign
   obtain ⟨-, -, rfl⟩ := processLightClientUpdate_eq_ok_iff.mp computed
   -- An applied update with a known next committee finalizes a newer header.
   dsimp only
-  simp only [gt_iff_lt, ge_iff_le, Base.Uint64.toNat_max, count, apply_ite UInt64.toNat,
+  simp only [gt_iff_lt, ge_iff_le, UInt64.toNat_max, count, apply_ite UInt64.toNat,
     UInt64.toNat_zero]
   clear computed
   refine ⟨?_, ?_, ?_, ?_⟩ <;> (repeat' split) <;> simp_all [← UInt64.not_le]

@@ -13,6 +13,7 @@ import Mathlib.Algebra.BigOperators.Fin
 public import Mathlib.Order.Interval.Finset.Defs
 public import Mathlib.Order.Interval.Finset.Nat
 import Mathlib.Algebra.Order.BigOperators.Group.Finset
+import Batteries.Data.UInt
 
 /-!
 # Departure queue accounting
@@ -53,7 +54,7 @@ private def departureQueuePotential (high cap : Nat) (epoch : Epoch) (left : Gwe
 private theorem DepartureQueueCall.epoch_ge (call : DepartureQueueCall) :
     call.earliest.toNat ≤ call.epoch.toNat ∧ call.first.toNat ≤ call.epoch.toNat := by
   have placed := UInt64.le_iff_toNat_le.mp (churnQueue_spend call.computed).1
-  rw [Base.Uint64.toNat_max] at placed
+  rw [UInt64.toNat_max] at placed
   exact ⟨by omega, by omega⟩
 
 /-- A call cannot move the open queue epoch backwards. -/
@@ -301,8 +302,8 @@ private theorem DepartureQueueTrace.window_le_of_reset {call : DepartureQueueCal
   by_cases inside : call.epoch.toNat ≤ high
   · obtain ⟨placed, spent, _⟩ := churnQueue_spend call.computed
     have placed := UInt64.le_iff_toNat_le.mp placed
-    rw [ite_eq_left reset, Uint64.toNat_max] at spent
-    rw [Uint64.toNat_max] at placed
+    rw [ite_eq_left reset, UInt64.toNat_max] at spent
+    rw [UInt64.toNat_max] at placed
     have one : call.left.toNat + call.amount.toNat ≤ (call.epoch.toNat + 1 - start) * cap := by
       calc
         _ = (call.epoch.toNat - max call.earliest.toNat call.first.toNat + 1) *
@@ -351,7 +352,7 @@ private theorem DepartureQueueTrace.window_le_from {earliest epoch : Epoch} {ava
         omega
     · have first := firsts call (by simp)
       have reset : call.earliest < max call.earliest call.first := by
-        rw [UInt64.lt_iff_toNat_lt, Uint64.toNat_max]
+        rw [UInt64.lt_iff_toNat_lt, UInt64.toNat_max]
         omega
       rw [Nat.max_eq_left (by omega : call.earliest.toNat ≤ start)]
       exact (tail.window_le_of_reset start high cap rates reset (by omega)).trans
@@ -995,7 +996,7 @@ private theorem electra_departure_epochs {s : BeaconState preset .dencun}
       apply Nat.le_trans _ restLe
       split
       · exact Nat.le_refl _
-      · rw [Uint64.toNat_max]; exact Nat.le_max_left _ _
+      · rw [UInt64.toNat_max]; exact Nat.le_max_left _ _
   have bound := latest s.validators.data.toList first
   rw [Array.foldl_toList] at bound
   have exitEq := (Uint64.addChecked_ok_iff.mp exitOk).2
@@ -1935,7 +1936,7 @@ theorem validatorChurnLimit_le_of_active {fork : Fork} (s : BeaconState preset f
   have converted : (getActiveValidatorIndices s (getCurrentEpoch s)).length.toUInt64.toNat ≤
       bound := (Nat.mod_le _ _).trans counted
   obtain ⟨-, rfl⟩ := getValidatorChurnLimit_ok_iff.mp limitOk
-  simp only [Uint64.toNat_max, UInt64.toNat_div, cohortCap]
+  simp only [UInt64.toNat_max, UInt64.toNat_div, cohortCap]
   exact max_le_max_left _ (Nat.div_le_div_right converted)
 
 /-- The validator-count churn is bounded by the registry size, not just active entries. -/
@@ -4636,7 +4637,7 @@ private theorem DepartureQueueTrace.window_le_initialized
       exact (Nat.le_add_right _ _).trans (budget.trans initial)
     · exact tail.window_le_of_reset start high cap rates
         (by
-          rw [UInt64.lt_iff_toNat_lt, Uint64.toNat_max]
+          rw [UInt64.lt_iff_toNat_lt, UInt64.toNat_max]
           exact Nat.lt_of_lt_of_le (UInt64.lt_iff_toNat_lt.mp reset) (Nat.le_max_right _ _))
         (by omega)
 
@@ -5205,10 +5206,10 @@ private theorem call_opened_envelope (call : DepartureQueueCall) (envelope : Nat
         envelope epoch := by
   obtain ⟨placed, spent, _⟩ := churnQueue_spend call.computed
   have placed := UInt64.le_iff_toNat_le.mp placed
-  rw [Uint64.toNat_max] at placed
+  rw [UInt64.toNat_max] at placed
   by_cases reset : call.earliest < max call.earliest call.first
   · have opened : call.earliest.toNat < call.first.toNat := by
-      rw [UInt64.lt_iff_toNat_lt, Uint64.toNat_max] at reset
+      rw [UInt64.lt_iff_toNat_lt, UInt64.toNat_max] at reset
       omega
     have capacity := queue_opened_capacity envelope call.first.toNat (call.epoch.toNat + 1)
       call.rate.toNat (fun epoch lower upper => rates epoch lower (by omega) (by omega))
@@ -5219,18 +5220,18 @@ private theorem call_opened_envelope (call : DepartureQueueCall) (envelope : Nat
       omega
     have enlarged := Finset.sum_le_sum_of_subset_of_nonneg (f := envelope) included
       (fun _ _ _ => Nat.zero_le _)
-    rw [ite_eq_left reset, Uint64.toNat_max, Nat.max_eq_right (by omega)] at spent
+    rw [ite_eq_left reset, UInt64.toNat_max, Nat.max_eq_right (by omega)] at spent
     have distance : call.epoch.toNat + 1 - call.first.toNat =
         1 + (call.epoch.toNat - call.first.toNat) := by omega
     rw [distance, Nat.add_mul, Nat.one_mul] at capacity
     omega
   · have first : call.first.toNat ≤ call.earliest.toNat := by
-      rw [UInt64.lt_iff_toNat_lt, Uint64.toNat_max] at reset
+      rw [UInt64.lt_iff_toNat_lt, UInt64.toNat_max] at reset
       omega
     have capacity := queue_opened_capacity envelope (call.earliest.toNat + 1)
       (call.epoch.toNat + 1) call.rate.toNat
       (fun epoch lower upper => rates epoch (by omega) (by omega) (by omega))
-    rw [ite_eq_right reset, Uint64.toNat_max, Nat.max_eq_left first] at spent
+    rw [ite_eq_right reset, UInt64.toNat_max, Nat.max_eq_left first] at spent
     have distance : call.epoch.toNat + 1 - (call.earliest.toNat + 1) =
         call.epoch.toNat - call.earliest.toNat := by omega
     rw [distance] at capacity

@@ -5,6 +5,7 @@ public import EthLib.Consensus.Proofs.Gossip.Topics
 public import EthLib.Networking.Proofs.Gossip.Payload
 public import EthLib.Networking.Proofs.ReqResp.Bounds
 public import EthLib.Serialization.Proofs.Ssz.Typed.Class
+import Batteries.Data.UInt
 
 /-!
 # `Consensus.Proofs.Gossip.Bounds`
@@ -89,7 +90,7 @@ private theorem topicBound_of_maxSize {shape other : Desc}
     obtain ⟨hother, hle⟩ := same
     rw [topicBound_eq_min h hl, Option.some.injEq]
     apply UInt64.toNat_inj.mp
-    rw [Base.Uint64.toNat_min, toNat_payloadBounds_snd, toNat_payloadBounds_snd, hother,
+    rw [UInt64.toNat_min, toNat_payloadBounds_snd, toNat_payloadBounds_snd, hother,
       Option.getD_some]
     have := limit.toNat_lt
     cases hm : shape.maxSize with

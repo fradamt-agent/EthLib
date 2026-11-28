@@ -1,6 +1,7 @@
 module
 
 public import EthLib.Consensus.Proofs.DirectSafety.Apriori.Baseline
+import Batteries.Data.UInt
 
 /-!
 # The replay of a slot
@@ -1147,7 +1148,7 @@ private theorem processDeposit_electra_shape {fork : Fork} {a b : BeaconState pr
     refine ⟨rfl, rfl, rfl, rfl, .inr ⟨_, validators, balances, ?_, rfl, rfl, rfl, rfl⟩⟩
     -- The new validator is built from an amount of 0.
     apply UInt64.toNat_inj.mp
-    simp [getValidatorFromDeposit, Uint64.toNat_min]
+    simp [getValidatorFromDeposit, UInt64.toNat_min]
   · exact absurd (Nat.lt_of_lt_of_le early electra) (Nat.lt_irrefl _)
 
 /-- A block deposit from Electra replays as its recorded event, keeping the queue and ownership. -/

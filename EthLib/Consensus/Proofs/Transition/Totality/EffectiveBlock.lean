@@ -11,6 +11,7 @@ import EthLib.Consensus.Proofs.Transition.RegistryLifecycle
 import EthLib.Consensus.Proofs.Transition.Requests
 import EthLib.Consensus.Proofs.Transition.Withdrawals
 import EthLib.Consensus.Proofs.PayloadTimeliness
+import Batteries.Data.UInt
 
 /-!
 # Proofs: a block raises the effective balances only through new validators
@@ -85,12 +86,12 @@ private theorem getValidatorFromDeposit_effectiveBalance_le {pubkey : Cryptograp
   unfold getValidatorFromDeposit
   rcases early with early | rfl
   · -- Before Electra the cap of every validator is `MAX_EFFECTIVE_BALANCE`.
-    simp only [withdrawalMaxEffectiveBalance, Uint64.toNat_min]
+    simp only [withdrawalMaxEffectiveBalance, UInt64.toNat_min]
     split
     · exact absurd ‹_› (Nat.not_le.mpr early)
     · exact Nat.min_le_right _ _
   · -- No Gwei gives an effective balance of zero.
-    simp [Uint64.toNat_min]
+    simp [UInt64.toNat_min]
 
 /-- A deposit of a block keeps each effective balance and adds at most one validator.
 

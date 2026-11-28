@@ -25,6 +25,7 @@ import EthLib.Consensus.Proofs.Transition.Requests
 import EthLib.Consensus.Proofs.Transition.ValidatorCaps
 import EthLib.Consensus.Proofs.Transition.ValidatorKeys
 import EthLib.Consensus.Proofs.Transition.Withdrawals
+import Batteries.Data.UInt
 
 /-!
 # The rise of the effective balances over the end of an epoch
@@ -417,7 +418,7 @@ private theorem passConsolidations_gain {f : Fork} {next : Epoch} :
       have clear : source.slashed = false := by simpa using notSlashed
       have due : source.withdrawableEpoch ≤ next := UInt64.not_lt.mp waiting
       simp [consolidationGain, sourceRead, clear, due]
-    have moved := Base.Uint64.toNat_min ‹Gwei› source.effectiveBalance
+    have moved := UInt64.toNat_min ‹Gwei› source.effectiveBalance
     have movedLe : (min ‹Gwei› source.effectiveBalance).toNat ≤ source.effectiveBalance.toNat := by
       rw [moved]; exact Nat.min_le_right _ _
     have later := bound i
@@ -499,7 +500,7 @@ private theorem rise_update {f : Fork} {s t : BeaconState preset f}
         (withdrawalMaxEffectiveBalance preset f v)).toNat =
         min (balance.toNat - balance.toNat % preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
           (withdrawalMaxEffectiveBalance preset f v).toNat := by
-      rw [Base.Uint64.toNat_min, Base.Uint64.toNat_sub_mod]
+      rw [UInt64.toNat_min, Base.Uint64.toNat_sub_mod]
     rw [value]
     have := Nat.mod_le balance.toNat preset.EFFECTIVE_BALANCE_INCREMENT.toNat
     have low := Nat.min_le_left (balance.toNat - balance.toNat %

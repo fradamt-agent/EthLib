@@ -8,6 +8,7 @@ import EthLib.Consensus.Proofs.DirectSafety.Apriori.BlockFold
 import Mathlib.Algebra.Order.Floor.Div
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.PinDriftBound.EventsKept
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.PinDriftBound.SlashFloor
+import Batteries.Data.UInt
 
 @[expose] public section
 
@@ -353,7 +354,7 @@ private theorem effective_floor_update {f : Fork} {s t : BeaconState preset f}
   simp only [effectiveAt, read, Option.map_some, Option.getD_some]
   rcases updatedEffectiveBalance_split updated with ⟨rfl, -⟩ | ⟨rfl, fires⟩
   · exact previous
-  · rw [Base.Uint64.toNat_min, toNat_rounded]
+  · rw [UInt64.toNat_min, toNat_rounded]
     exact Nat.le_min.mpr ⟨reach fires, Nat.le_trans lowCap capped⟩
 
 /-- One slot step keeps the lower bound, given the balance and the cap after it.
@@ -426,13 +427,13 @@ private theorem effective_ceiling_update {f : Fork} {s t : BeaconState preset f}
     · have newHigh : new.toNat ≤ capHigh := by
         rcases updatedEffectiveBalance_cases updated with rfl | rfl
         · exact old
-        · rw [Base.Uint64.toNat_min, toNat_rounded]
+        · rw [UInt64.toNat_min, toNat_rounded]
           exact Nat.le_trans (Nat.min_le_right _ _) capped
       omega
   · rcases updatedEffectiveBalance_cases updated with rfl | rfl
     · exact Nat.le_max_left _ _
     · refine Nat.le_trans ?_ (Nat.le_max_right _ _)
-      rw [Base.Uint64.toNat_min, toNat_rounded]
+      rw [UInt64.toNat_min, toNat_rounded]
       by_cases small : balance.toNat ≤ capHigh
       · have funded' : balance.toNat ≤ ceil := by omega
         exact Nat.le_min.mpr ⟨Nat.le_trans (Nat.min_le_left _ _) (rounded_mono _ funded'),
@@ -1895,7 +1896,7 @@ private theorem pass_credits_le_targets {f : Fork} (next : Epoch) (T : Finset �
           (sameSizes_decreaseBalance loweredOk).2
         have moved : (min balance source.effectiveBalance).toNat ≤
             source.effectiveBalance.toNat := by
-          rw [Uint64.toNat_min]; exact Nat.min_le_right _ _
+          rw [UInt64.toNat_min]; exact Nat.min_le_right _ _
         have restBound : (((rest.take read').filter fun c => c.targetIndex.toNat ∈ T).map
             (sourceBound raised next)) =
             (((rest.take read').filter fun c => c.targetIndex.toNat ∈ T).map

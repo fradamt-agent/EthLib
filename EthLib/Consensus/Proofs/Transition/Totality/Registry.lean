@@ -3,6 +3,7 @@ module
 public import EthLib.Consensus.Proofs.Containers.State
 public import EthLib.Consensus.Proofs.Time
 public import EthLib.Consensus.Proofs.Transition.EpochUpdates
+import Batteries.Data.UInt
 
 /-!
 # Proofs: registry updates before Electra succeed
@@ -69,7 +70,7 @@ private theorem foldl_maxExitEpoch_le {validators : List Validator} {start : Epo
   refine List.foldlRecOn (motive := fun epoch : Epoch => epoch.toNat ≤ ceiling) validators _
     first ?_
   intro latest held validator member
-  simpa only [Uint64.toNat_max] using Nat.max_le.mpr ⟨held, exits validator member⟩
+  simpa only [UInt64.toNat_max] using Nat.max_le.mpr ⟨held, exits validator member⟩
 
 /-- A pre-Electra exit queue adds at most one to the ceiling of its existing exit epochs. -/
 private theorem exitQueueEpoch_exists_ok {config : Config} {state : BeaconState preset fork}

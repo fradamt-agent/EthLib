@@ -5,6 +5,7 @@ public import EthLib.Base.Proofs.MapM
 public import EthLib.Base.Proofs.Uint64
 public import EthLib.Consensus.Proofs.Churn
 public import EthLib.Consensus.WeakSubjectivity
+import Batteries.Data.UInt
 
 /-!
 # Proofs: weak subjectivity
@@ -461,7 +462,7 @@ theorem computeWeakSubjectivityPeriodElectra_le {config : Config}
   have hincrement : 0 < i := Nat.pos_of_ne_zero fun zero => by
     rw [zero, Nat.mod_zero] at hwhole
     omega
-  rw [toNat_roundToIncrement, toNat_max, UInt64.toNat_div, hQ, hm, hi, ht] at hvalue hpos
+  rw [toNat_roundToIncrement, UInt64.toNat_max, UInt64.toNat_div, hQ, hm, hi, ht] at hvalue hpos
   rw [hvalue]
   refine Nat.add_le_add_left ?_ _
   generalize hx : max m (t / Q) = x at hvalue hpos
@@ -544,8 +545,8 @@ private theorem gloasWeightedChurn_bounds {config : Config} {state : BeaconState
   generalize hM : config.MAX_PER_EPOCH_ACTIVATION_CHURN_LIMIT_GLOAS.toNat = M at *
   generalize hi : preset.EFFECTIVE_BALANCE_INCREMENT.toNat = i at *
   generalize ht : total.toNat = t at *
-  rw [toNat_min, toNat_roundToIncrement, toNat_roundToIncrement, toNat_max, UInt64.toNat_div,
-    UInt64.toNat_div, hQe, hQc, hm, hM, hi, ht] at hch
+  rw [UInt64.toNat_min, toNat_roundToIncrement, toNat_roundToIncrement, UInt64.toNat_max,
+    UInt64.toNat_div, UInt64.toNat_div, hQe, hQc, hm, hM, hi, ht] at hch
   generalize hx : max m (t / Qe) = x at hch
   obtain ⟨hem, hexHi⟩ :=
     roundToIncrement_bounds hincrement hwhole (hx ▸ Nat.le_max_left m (t / Qe))

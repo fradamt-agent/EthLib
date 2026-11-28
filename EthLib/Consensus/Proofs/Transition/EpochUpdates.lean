@@ -4,6 +4,7 @@ public import EthLib.Consensus.Proofs.Containers.Misc
 public import EthLib.Consensus.Proofs.Transition.EpochRewards
 public import EthLib.Consensus.Transition.EpochParticipation
 public import EthLib.Consensus.Transition.EpochUpdates
+import Batteries.Data.UInt
 
 /-!
 # Proofs: the other steps of the epoch transition
@@ -1246,7 +1247,7 @@ theorem processSlashings_balances_toNat_of_lt_electra (before : fork < .pectra)
   have balances := foldlM_slashingSteps_balances (LosesPenaltyToNat preset _) within
     applySlashingPenalty_balances_toNat applied
   -- The cap applies to the checked product, which fits, so it is not reduced modulo `2^64`.
-  simp only [toNat_min, value] at balances
+  simp only [UInt64.toNat_min, value] at balances
   exact ⟨total, sum, totalOk, sumOk, fits, balances⟩
 
 /-- From Electra, the slashings lower each balance by its penalty in natural numbers.
@@ -1286,7 +1287,7 @@ theorem processSlashings_balances_toNat_of_electra (electra : .pectra ≤ fork)
   have balances := foldlM_slashingSteps_balances (LosesPenaltyToNat preset _) within
     applySlashingPenaltyElectra_balances_toNat applied
   -- The cap applies to the checked product, which fits, so it is not reduced modulo `2^64`.
-  simp only [(divChecked_ok_iff.mp divided).2, (divChecked_ok_iff.mp counted).2, toNat_min,
+  simp only [(divChecked_ok_iff.mp divided).2, (divChecked_ok_iff.mp counted).2, UInt64.toNat_min,
     value] at balances
   exact ⟨total, sum, totalOk, sumOk, fits, balances⟩
 

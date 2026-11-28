@@ -12,6 +12,7 @@ import EthLib.Consensus.Proofs.Transition.Totality.EffectiveBalances
 import EthLib.Consensus.Proofs.Transition.Totality.PendingDeposits
 import EthLib.Consensus.Proofs.Transition.BalanceNotRaised
 import EthLib.Consensus.Proofs.DirectSafety.Provenance
+import Batteries.Data.UInt
 
 /-!
 # Source bounds over a selected execution interval
@@ -3068,7 +3069,7 @@ private theorem depositChurnLimit_le_max {fork : Fork} {s : BeaconState preset f
   simp only [getActivationExitChurnLimit, bind_ok_iff, pure, Except.pure,
     Except.ok.injEq] at churnOk
   obtain ⟨whole, _, rfl⟩ := churnOk
-  simp only [Uint64.toNat_min]
+  simp only [UInt64.toNat_min]
   exact Nat.min_le_left _ _
 
 /-- The pending deposits spend at most the carry plus the churn that they read. -/

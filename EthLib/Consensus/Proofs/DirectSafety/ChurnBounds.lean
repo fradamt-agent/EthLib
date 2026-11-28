@@ -7,6 +7,7 @@ public import EthLib.Consensus.Proofs.Transition.BalanceDrift
 import EthLib.Consensus.Proofs.Transition.ActiveKept
 import EthLib.Consensus.Proofs.Transition.Committees
 import EthLib.Consensus.Proofs.Transition.SlashedPersistence
+import Batteries.Data.UInt
 
 /-!
 # Departure charges and the Electra crossing
@@ -540,13 +541,13 @@ theorem electra_crossing_queues {pre : BeaconState preset .dencun}
             (if w.exitEpoch = FAR_FUTURE_EPOCH then start else max start w.exitEpoch) := by
           split
           · exact UInt64.le_refl _
-          · rw [UInt64.le_iff_toNat_le, Uint64.toNat_max]
+          · rw [UInt64.le_iff_toNat_le, UInt64.toNat_max]
             exact Nat.le_max_left _ _
         refine ⟨UInt64.le_trans startLe monotone, ?_⟩
         intro u member set
         rcases List.mem_cons.mp member with rfl | member
         · apply UInt64.le_trans _ monotone
-          rw [ite_eq_right set, UInt64.le_iff_toNat_le, Uint64.toNat_max]
+          rw [ite_eq_right set, UInt64.le_iff_toNat_le, UInt64.toNat_max]
           exact Nat.le_max_right _ _
         · exact members u member set
     have bound := (latest pre.validators.data.toList activation).2 v

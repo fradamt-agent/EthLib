@@ -2,6 +2,7 @@ module
 
 public import EthLib.Consensus.Proofs.Accessors
 public import EthLib.Consensus.Proofs.Models.Stake
+import Batteries.Data.UInt
 
 /-!
 # Proofs: total balances as stake of the consensus models
@@ -108,7 +109,8 @@ theorem getTotalBalance_ok_iff_stake {state : BeaconState preset fork}
   -- The total is never below one increment, which matters only for small totals.
   rw [getTotalBalance_ok_iff, sumMarked_markIndices_eq_stake]
   refine and_congr_right fun _ => and_congr_right fun lt => ?_
-  rw [← UInt64.toNat_inj, toNat_max, Nat.toUInt64_eq, UInt64.toNat_ofNat', Nat.mod_eq_of_lt lt]
+  rw [← UInt64.toNat_inj, UInt64.toNat_max, Nat.toUInt64_eq, UInt64.toNat_ofNat',
+    Nat.mod_eq_of_lt lt]
 
 /-- A finite active stake supplies the checked total, without bounding inactive balances.
 

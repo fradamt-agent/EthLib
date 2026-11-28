@@ -12,6 +12,7 @@ import EthLib.Consensus.Proofs.Transition.Operations
 import EthLib.Consensus.Proofs.Transition.ParentPayload
 import EthLib.Consensus.Proofs.Transition.RegistryLifecycle
 import EthLib.Consensus.Proofs.Transition.Requests
+import Batteries.Data.UInt
 
 /-!
 # Proofs: the exit queue after one block
@@ -389,7 +390,7 @@ private theorem churnQueue_bound {earliest first churn left₀ amount epoch left
       left.toNat ≤ max left₀.toNat churn.toNat := by
   obtain ⟨placed, spent, last⟩ := churnQueue_spend computed
   have openLe : (max earliest first).toNat ≤ r := by
-    rw [Uint64.toNat_max]
+    rw [UInt64.toNat_max]
     omega
   have availableLe : (if earliest < max earliest first then churn else left₀).toNat ≤
       max left₀.toNat churn.toNat := by
@@ -430,7 +431,7 @@ private theorem exitChurnLimit_bounds (increment : 0 < preset.EFFECTIVE_BALANCE_
     obtain ⟨lower, upper⟩ := roundToIncrement_share_bounds (config := config) total
       config.CHURN_LIMIT_QUOTIENT increment minimum
     have maximum := UInt64.le_iff_toNat_le.mp maximum
-    rw [Uint64.toNat_min]
+    rw [UInt64.toNat_min]
     unfold exitChurnCeiling
     constructor <;> omega
 
@@ -472,7 +473,7 @@ private theorem foldl_latest_le {r : Nat} :
   | v :: rest, latest, le, each => by
     rw [List.foldl_cons]
     refine foldl_latest_le rest _ ?_ fun w member => each w (List.mem_cons_of_mem _ member)
-    rw [Uint64.toNat_max]
+    rw [UInt64.toNat_max]
     exact max_le le (each v List.mem_cons_self)
 
 /-- Before Electra, an exit epoch lands at most one epoch past the bound.
@@ -643,7 +644,7 @@ private theorem moves_partialWithdrawal (rates : Rates preset config)
       exact Nat.sub_le _ _
     have smaller : (min (balance - kept) amount).toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤
         min amount.toNat cap / preset.EFFECTIVE_BALANCE_INCREMENT.toNat :=
-      Nat.div_le_div_right (by rw [Uint64.toNat_min]; omega)
+      Nat.div_le_div_right (by rw [UInt64.toNat_min]; omega)
     refine ⟨_, Holds.shift holds rfl (by simp [keys]) (fun _ => ?_) (fun electra => ?_)
       (fun _ => leftLe)⟩
     · show epoch.toNat ≤ _
