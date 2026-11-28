@@ -136,7 +136,7 @@ def makeReceiptsFrom {fork : Fork} (gasUsed : Nat) :
   --
   -- Each result carries its `Upsilon^g`.
   --
-  -- From Glamsterdam, it is the gas that its sender pays, by EIP-7778.
+  -- From Glamsterdam, it is the gas that its sender pays, by EIP-8037.
   | (outcome, gas, logs) :: rest =>
     makeReceipt outcome (gasUsed + gas) logs :: makeReceiptsFrom (gasUsed + gas) rest
 

@@ -197,7 +197,7 @@ structure Preset where
   MAX_SIGNED_EXECUTION_PAYLOAD_BID_SIZE : UInt64
   /-- From Heze: the number of members of the inclusion list committee of a slot.
 
-  [EIP-7805](https://eips.ethereum.org/EIPS/eip-7805#preset) names it `IL_COMMITTEE_SIZE`. -/
+  [EIP-7805](https://eips.ethereum.org/EIPS/eip-7805#preset) defines it. -/
   INCLUSION_LIST_COMMITTEE_SIZE : UInt64
   /-- From Heze: the most bytes of a signed execution payload bid, which carries inclusion bits. -/
   MAX_SIGNED_EXECUTION_PAYLOAD_BID_SIZE_HEZE : UInt64

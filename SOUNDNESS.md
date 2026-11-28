@@ -6523,7 +6523,7 @@ The run of the block reaches each transaction, and on the state that the transac
 Buying it lowers the balance of the sender by exactly the gas limit of the transaction times `effectiveGasPrice`.
 A blob transaction also pays `blobGasUsed` times `blobGasPrice`; other types add nothing (`receiptInfo_blob`).
 The theorem states the purchase on that state; that the run of the transaction starts with it rests on the proof, not on the statement.
-From Glamsterdam, EIP-7778 makes the cumulative gas of a receipt the gas that the senders paid.
+From Glamsterdam, EIP-8037 makes the cumulative gas of a receipt the gas that the senders paid.
 As a choice of EthLib, the object copies it, so `gasUsed` is the gas that the sender paid, while the descriptions of `receipt.yaml` read "gas used".
 
 `eth_getLogs` reads the logs that a filter of [`filter.yaml`](https://github.com/ethereum/execution-apis/blob/1ca0818569467cff85b7f41372f22e728d5daa14/src/schemas/filter.yaml) selects (`Execution/Rpc/Filter.lean`).
