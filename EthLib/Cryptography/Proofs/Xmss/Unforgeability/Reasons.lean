@@ -435,8 +435,8 @@ theorem reasonForgeAdvantage_le (adversary : ReasonAdversary) :
           x = true] := by
     rw [SufCma.advantage, run_randomOracleModel]
   rw [hwin, hfail, hgame, reasonRun_eq, game_hideReasons_eq]
-  simp only [map_bind]
-  refine prEvent_bind_le_add ((simulateQ romImpl keys).run ∅) _ _ _ _ _ fun p => ?_
+  refine prEvent_bind_le_add_of_forall_le ((simulateQ romImpl keys).run ∅) _ _ _ _ _ _
+    fun p => ?_
   rw [add_comm]
   refine prEvent_le_prEvent_add_of_prEvent_and_not_le _ _ _ _ _ ?_
   have h := prEvent_logReply_and_not_bad_le keyedRo passImpl signerEntry hiddenReply

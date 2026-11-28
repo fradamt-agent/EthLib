@@ -35,8 +35,6 @@ open OracleComp OracleSpec
 
 namespace SphincsSecurity.Security.SeedCoupling
 
-export EthLib.Cryptography.HashSig (evalDist_independent_uniform_pair)
-
 variable [Params]
 open SeedModel Completeness
 open EthLib.Cryptography.HashSig

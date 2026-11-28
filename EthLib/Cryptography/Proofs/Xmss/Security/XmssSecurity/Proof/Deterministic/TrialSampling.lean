@@ -57,7 +57,8 @@ theorem evalDist_randomizer :
       (Concrete.signingRandomness) := by
   have h := SampleableType.map_uniformSample_evalDistEq_of_bijective
     (α := HashOutput) (β := BitVec 128 × Randomness) randomizerHalves.bijective
-  have hpair := evalDist_independent_uniform_pair (α := BitVec 128) (β := Randomness)
+  have hpair := (EvalDistEq.of_eq
+    (SampleableType.uniformSample_prod_eq_bind (BitVec 128) Randomness)).symm
   calc
     _ =ᵈ (Prod.snd <$> (randomizerHalves <$> ($ᵗ HashOutput))) := by
       simp only [Functor.map_map]; rfl
