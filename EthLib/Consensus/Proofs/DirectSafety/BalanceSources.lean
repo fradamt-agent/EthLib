@@ -6,6 +6,7 @@ public import EthLib.Consensus.Proofs.Transition.EpochPending
 public import EthLib.Consensus.Proofs.Transition.Requests
 public import Mathlib.Algebra.Order.BigOperators.Group.Finset
 public import Mathlib.Algebra.BigOperators.Group.Finset.Piecewise
+import Batteries.Data.UInt
 
 /-!
 # Bounds for the sources of balance drift
@@ -569,7 +570,7 @@ theorem consolidation_transfer_bound {fork : Fork} (s t : BeaconState preset for
           have nextCredits := credits_triangle s raised u later.2.1
           have nextDebits := debits_triangle s raised u (size2.trans size1).symm
           have cap : (min balance v.effectiveBalance).toNat ≤ v.effectiveBalance.toNat := by
-            rw [toNat_min]
+            rw [UInt64.toNat_min]
             exact Nat.min_le_right _ _
           have head : cost s c = v.effectiveBalance.toNat := by
             simp [cost, found', notSlashed]
@@ -684,7 +685,7 @@ theorem electra_upgrade_debit (s : BeaconState preset .dencun) (t : BeaconState 
       simp only [queued, queue, List.map_append, List.sum_append]
     have minimum : (min b preset.MIN_ACTIVATION_BALANCE).toNat ≤
         preset.MIN_ACTIVATION_BALANCE.toNat := by
-      rw [toNat_min]
+      rw [UInt64.toNat_min]
       exact Nat.min_le_right _ _
     exact ⟨(sameSizes_queueExcessActiveBalance ok).2, bounds.1, by omega⟩
   have pre (s t : BeaconState preset .pectra) (i : ValidatorIndex)

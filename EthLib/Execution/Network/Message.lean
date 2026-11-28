@@ -343,12 +343,14 @@ def checkCellsResponse (blobs : List Nat) (request response : Message) :
 def accessListsResponse (expected : List Hash32) (request response : Message) : Bool :=
   match request, response with
   | getBlockAccessLists i _, blockAccessLists j lists =>
+    -- The response mirrors the request ID, by EIP-2481.
+    --
     -- The section BlockAccessLists of `eth.md` gives each response element one requested block.
     --
-    -- So the response has exactly one entry per requested block.
+    -- The 2 MiB soft limit of EIP-8159 tells the peer when to stop appending entries.
     --
-    -- This differs from snap/2, which lets the peer cut the tail.
-    i == j && lists.length == expected.length && accessListsAnswer expected lists
+    -- So the peer may cut the tail, as in snap/2: there are no more entries than requests.
+    i == j && accessListsAnswer expected lists
   | _, _ => false
 
 end Message

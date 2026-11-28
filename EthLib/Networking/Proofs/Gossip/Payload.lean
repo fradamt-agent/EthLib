@@ -6,6 +6,7 @@ public import EthLib.Networking.Gossip.Payload
 public import EthLib.Networking.Proofs.Snappy.Block
 public import EthLib.Networking.Proofs.Snappy.CompressSize
 import EthLib.Base.Proofs.CodeInjective
+import Batteries.Data.UInt
 
 /-!
 # `Networking.Proofs.Gossip.Payload`
@@ -125,7 +126,7 @@ theorem size_add_le_maxMessageSize_of_decodePayload {maxPayloadSize typeBound : 
   refine ⟨_, maxMessageSize_eq hcap, ?_⟩
   have within := (decodePayload_eq_ok_iff hcap).mp h |>.1
   have value := toNat_ofNat_compressed hcap (k := 1024) (Nat.le_refl _)
-  rw [Base.Uint64.toNat_max, value]
+  rw [UInt64.toNat_max, value]
   omega
 
 /-- The decoder accepts the block of the compressor for a payload exactly when the payload fits.
@@ -241,7 +242,7 @@ theorem gossipsubParameters_mesh {slotDurationMs slotsPerEpoch : UInt64} {p : Go
     p.D_low ≤ p.D ∧ p.D ≤ p.D_high ∧ 0 < p.D_lazy := by
   simp only [gossipsubParameters, bind, Except.bind] at h
   split at h <;> try split at h
-  all_goals first | cases h | skip
+  all_goals cases h
   all_goals simp_all
 
 /-- The message cache windows are ordered.
@@ -254,7 +255,7 @@ theorem gossipsubParameters_mcache {slotDurationMs slotsPerEpoch : UInt64}
     p.mcache_gossip ≤ p.mcache_len := by
   simp only [gossipsubParameters, bind, Except.bind] at h
   split at h <;> try split at h
-  all_goals first | cases h | skip
+  all_goals cases h
   all_goals simp_all
 
 end EthLib.Networking.Proofs.Gossip.Payload

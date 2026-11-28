@@ -705,20 +705,20 @@ theorem runBody_eq_ok {chain : BlockChain} {block : Block fork Transaction}
         result.output.block.applyChanges = .ok result.roots := by
   constructor
   · intro h
-    unfold runBody at h
+    rw [runBody_unfold] at h
     obtain ⟨hashes, hHashes, h⟩ := bind_ok_iff.mp h
     obtain ⟨output, hOutput, h⟩ := bind_ok_iff.mp h
     obtain ⟨roots, hRoots, h⟩ := bind_ok_iff.mp h
     cases h
     exact ⟨hashes, hHashes, hOutput, hRoots⟩
   · rintro ⟨hashes, hHashes, hOutput, hRoots⟩
-    simp only [runBody, hHashes, hOutput, hRoots, bind, Except.bind, pure, Except.pure]
+    simp only [runBody_unfold, hHashes, hOutput, hRoots, bind, Except.bind, pure, Except.pure]
 
 /-- From Hegotá, the transition fails, since the rules of that fork are not here yet. -/
 theorem stateTransition_of_hegota_le {chain : BlockChain} {block : Block fork Transaction}
     {checkSeal : Bool} (h : .hegota ≤ fork) :
     stateTransition chain block checkSeal = .error (.aborted (.forkNotYetSpecified fork)) := by
-  simp only [stateTransition, h, ↓reduceIte]
+  simp only [stateTransition_unfold, h, ↓reduceIte]
   rfl
 
 /-- A block that passes the transition takes each step of it, in order. -/
@@ -742,7 +742,7 @@ theorem stateTransition_eq_ok {chain : BlockChain} {block : Block fork Transacti
         firstFailure (outputChecks block.header output roots) = .ok () ∧
         -- The state after the block is the state that the body gives.
         post = output.block.applyChanges := by
-  unfold stateTransition at h
+  rw [stateTransition_unfold] at h
   have hNotHegota : ¬.hegota ≤ fork := fun hH => by
     simp [hH, throw, throwThe, MonadExceptOf.throw, bind, Except.bind] at h
   simp only [hNotHegota, ↓reduceIte] at h
@@ -772,7 +772,7 @@ theorem stateTransition_of_runBody {chain : BlockChain} {block : Block fork Tran
     (hBody : runBody chain block = .ok result)
     (hChecks : firstFailure (outputChecks block.header result.output result.roots) = .ok ()) :
     stateTransition chain block checkSeal = .ok result.post := by
-  simp only [stateTransition, hFork, hActive, ↓reduceIte, hCheck, hBody, hChecks, bind,
+  simp only [stateTransition_unfold, hFork, hActive, ↓reduceIte, hCheck, hBody, hChecks, bind,
     Except.bind, pure, Except.pure]
 
 /-- A block that passes its checks has a header that passes the checks against its parent.

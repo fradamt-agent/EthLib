@@ -390,7 +390,7 @@ theorem runBody_drop_recent (chain : BlockChain) {fork : Fork} (block : Block fo
     runBody { chain with recent := chain.recent.drop (chain.recent.length - 255) } block overrides
       blobGasPrice = runBody chain block overrides blobGasPrice := by
   -- The body reads the recent blocks only through their hashes.
-  simp only [runBody, recentHashes_drop_recent]
+  simp only [runBody_unfold, recentHashes_drop_recent]
 
 /-- From Paris, the transition of a block reads only the last 255 recent blocks of its chain.
 
@@ -402,6 +402,6 @@ theorem stateTransition_drop_recent (chain : BlockChain) {fork : Fork}
       checkSeal = stateTransition chain block checkSeal := by
   -- The checks read the same parent, and the ommer checks do not run from Paris.
   have hcheck := checkBlock_drop_recent chain.config checkSeal chain.recent block paris
-  simp only [stateTransition, hcheck, runBody_drop_recent]
+  simp only [stateTransition_unfold, hcheck, runBody_drop_recent]
 
 end EthLib.Execution.Blocks

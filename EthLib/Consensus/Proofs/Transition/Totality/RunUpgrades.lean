@@ -2,6 +2,7 @@ module
 
 public import EthLib.Consensus.Proofs.Transition.Totality.RegistryLoadUpgrades
 public import EthLib.Consensus.Proofs.Transition.Totality.RunBounds
+import Batteries.Data.UInt
 
 /-!
 # Proofs: the upgrades keep the bounds of a run of slots
@@ -236,7 +237,7 @@ private theorem getActivationExitChurnLimit_le {fork : Fork} {state : BeaconStat
   have share : (total / config.CHURN_LIMIT_QUOTIENT).toNat ≤ total.toNat := by
     rw [UInt64.toNat_div]
     exact Nat.div_le_self _ _
-  rw [Uint64.toNat_min, roundToIncrement, UInt64.toNat_sub_of_le _ _ (remainder _), UInt64.max_def]
+  rw [UInt64.toNat_min, roundToIncrement, UInt64.toNat_sub_of_le _ _ (remainder _), UInt64.max_def]
   unfold exitChurnCeiling
   split <;> omega
 
@@ -256,7 +257,7 @@ private theorem foldl_latestExit_le {bound : Nat} :
     split
     · exact startLe
     · rename_i set
-      rw [Uint64.toNat_max]
+      rw [UInt64.toNat_max]
       exact max_le startLe (each validator List.mem_cons_self set)
 
 /-- What the upgrade to Electra keeps or starts, for the bounds of a run. -/

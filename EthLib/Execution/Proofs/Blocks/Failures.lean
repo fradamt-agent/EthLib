@@ -440,7 +440,7 @@ theorem errorsMeet_stateTransition_of_plain {chain : BlockChain} {block : Block 
       pure result.post : Except BlockError State) := by
     refine ErrorsMeet.bind (other plain_checkBlock) fun _ _ => ?_
     refine ErrorsMeet.bind ?_ fun result _ => ?_
-    · unfold runBody
+    · rw [runBody_unfold]
       refine ErrorsMeet.bind ?_ fun hashes _ => ?_
       · unfold recentHashes
         dsimp only
@@ -467,7 +467,7 @@ theorem errorsMeet_stateTransition_of_plain {chain : BlockChain} {block : Block 
     and_intros
     all_goals repeat' split
     all_goals simp [Plain]
-  unfold stateTransition
+  rw [stateTransition_unfold]
   dsimp only
   split
   · rename_i hle

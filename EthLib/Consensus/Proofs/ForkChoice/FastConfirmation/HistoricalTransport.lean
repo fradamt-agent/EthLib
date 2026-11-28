@@ -8,6 +8,7 @@ import EthLib.Consensus.Proofs.ForkChoice.CheckpointAncestry
 import EthLib.Consensus.Proofs.ForkChoice.SiblingCap
 import EthLib.Consensus.Proofs.Transition.PendingTail
 import EthLib.Consensus.Proofs.Transition.SlashedFlags
+import Batteries.Data.UInt
 
 /-!
 # Checked reads for historical-anchor transport
@@ -106,7 +107,7 @@ private theorem relation_of_checkpoint_lookahead {config : Config} {checks : Sig
   have targetBound : start ≤ target := by
     have := UInt64.le_iff_toNat_le.mp bound
     have := UInt64.lt_iff_toNat_lt.mp below
-    simp only [toNat_max] at *
+    simp only [UInt64.toNat_max] at *
     exact UInt64.le_iff_toNat_le.mpr (by omega)
   by_cases before : base.slot < start
   · have advancing : base.slot < target := UInt64.lt_of_lt_of_le before targetBound
@@ -1473,7 +1474,7 @@ private theorem registry_of_honest_block {store : Store preset fork}
   have identity : lookaheadState config checks source source.slot = .ok source := by
     simp [lookaheadState, pure, Except.pure]
   have sourceStart : start ≤ max sourceBlock.slot source.slot := by
-    rw [UInt64.le_iff_toNat_le, toNat_max]
+    rw [UInt64.le_iff_toNat_le, UInt64.toNat_max]
     exact Nat.le_trans (UInt64.le_iff_toNat_le.mp sourceBound) (Nat.le_max_left _ _)
   exact registry_of_checkpointPrefix anchorSlot reached anchorInvariant positive
     walk found startOk bound baseFound advanced identity sourceWalk
@@ -1597,7 +1598,7 @@ public theorem _root_.EthLib.Consensus.Store.ForwardReachableWith.registered_of_
     have identity : lookaheadState config checks source source.slot = .ok source := by
       simp [lookaheadState, pure, Except.pure]
     have sourceStart : start ≤ max sourceBlock.slot source.slot := by
-      rw [UInt64.le_iff_toNat_le, toNat_max]
+      rw [UInt64.le_iff_toNat_le, UInt64.toNat_max]
       exact Nat.le_trans (UInt64.le_iff_toNat_le.mp atBlock) (Nat.le_max_left _ _)
     obtain ⟨_, inside⟩ := registry_of_checkpointPrefix anchorSlot reached anchorInvariant positive
       walk found startOk bound baseFound advanced identity sourceWalk
@@ -1747,7 +1748,7 @@ private theorem registry_of_nongenesis_window {anchor : Store preset fork}
       (UInt64.le_iff_toNat_le.mp ordered)
     rw [← (computeStartSlotAtEpoch_ok_iff.mp startOk).2,
       ← (computeStartSlotAtEpoch_ok_iff.mp targetOk).2] at le
-    rw [UInt64.le_iff_toNat_le, toNat_max]
+    rw [UInt64.le_iff_toNat_le, UInt64.toNat_max]
     exact Nat.le_trans le (Nat.le_max_right _ _)
   by_cases same : head.root = ((e.world n).state u).finalizedCheckpoint.root
   · rw [same, boundaryBaseFound, Option.some.injEq] at headStateFound

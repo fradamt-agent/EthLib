@@ -8,7 +8,7 @@ import EthLib.Execution.Exports.Transition
 
 The runner accepts one JSON request per line and counts gas rules during replay.
 
-A block must pass the state transition before the runner observes its body.
+The runner reports the observations of a block when its state transition succeeds.
 -/
 
 namespace EthLib.Coverage
@@ -164,10 +164,6 @@ def blockRequest (request : Json) (forkName : String) : Result Json := do
   let chain : BlockChain := ⟨config, pre, ← recent.mapM (recentBlock config)⟩
   let ⟨fork, block⟩ ← Blocks.Exports.blockOf config forkName (← fromHexField request "block")
   let checkSeal : Bool ← field request "checkSeal"
-  -- The state transition checks the active fork and the roots before the observed run.
-  let _ ← toResult none (stateTransition chain block checkSeal)
-  let hashes ← toResult none (recentHashes chain.recent)
-  let env := blockEnvironment chain.config hashes block.header
   let observer : BodyObserver (StateT Counts (Except EvmError))
       (StateT Counts (Except BlockError)) fork :=
     { BodyObserver.ofSteps observeStep
@@ -177,15 +173,11 @@ def blockRequest (request : Json) (forkName : String) : Result Json := do
       -- Run implicit system calls without a step observer.
       systemCall := fun env block target data =>
         liftExcept (Blocks.systemCall env block target data) }
-  let (output, counts) ← toResult "observed block"
-    ((applyBodyWith observer chain.config env block ⟨chain.state, ∅, ∅, ∅, ∅⟩).run {})
-  let post := output.block.applyChanges
-  toResult "observed block" do
-    let roots ← outputRoots block.transactions block.withdrawals output post
-    firstFailure (outputChecks block.header output roots)
-  let receipts ← toResult "receipts" (output.receipts.mapM fun (type, receipt) =>
+  -- A failed transition discards the counts in the state of the observer.
+  let (result, counts) ← toResult none ((stateTransitionWith observer chain block checkSeal).run {})
+  let receipts ← toResult "receipts" (result.output.receipts.mapM fun (type, receipt) =>
     encodeReceipt type receipt)
-  let accounts ← toResult none (Blocks.Exports.accountsItem post)
+  let accounts ← toResult none (Blocks.Exports.accountsItem result.post)
   let state ← toResult "accounts" (encode accounts)
   return Json.mkObj [("gasRules", countsJson counts), ("state", encodeHex state),
     ("receipts", Json.arr (receipts.toArray.map encodeHex))]

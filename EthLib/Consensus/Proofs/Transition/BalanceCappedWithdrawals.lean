@@ -1,6 +1,7 @@
 module
 
 public import EthLib.Consensus.Proofs.Transition.Withdrawals
+import Batteries.Data.UInt
 
 /-!
 # Proofs: the withdrawals keep the capped balance of a validator that may not yet withdraw
@@ -80,7 +81,7 @@ private theorem getPendingPartialWithdrawals_loop_taken {state : BeaconState pre
         have sum := appendWithdrawal_withdrawnFrom_eq appendedOk #[] index
         simp only [Array.empty_append] at sum
         rw [sum]
-        exact ⟨Nat.le_add_right _ _, by split <;> simp [Uint64.toNat_min] <;> omega⟩
+        exact ⟨Nat.le_add_right _ _, by split <;> simp [UInt64.toNat_min]; omega⟩
       · exact ⟨_, fun _ => ⟨Nat.le_refl _, Nat.le_add_right _ _⟩, _, computed⟩
     obtain ⟨k, counted, taken, sums⟩ := getPendingPartialWithdrawals_loop_taken rest _ _ _ ok
     refine ⟨k + 1, by omega, ?_, fun index => ?_⟩
@@ -398,7 +399,7 @@ theorem processWithdrawals_capped {state after : BeaconState preset fork}
           min later (withdrawalMaxEffectiveBalance preset fork validator) := by
     intro applied balances later atLater low
     refine ⟨later, by rw [balances]; exact atLater, ?_⟩
-    rw [UInt64.le_iff_toNat_le, Uint64.toNat_min, Uint64.toNat_min]
+    rw [UInt64.le_iff_toNat_le, UInt64.toNat_min, UInt64.toNat_min]
     omega
   -- The withdrawals that the step applies are the expected ones, or there are none.
   have applies : ∀ expected, getExpectedWithdrawals state capella = .ok expected →

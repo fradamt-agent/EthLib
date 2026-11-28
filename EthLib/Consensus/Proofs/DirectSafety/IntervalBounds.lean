@@ -13,6 +13,7 @@ import EthLib.Consensus.Proofs.Transition.BalanceCappedBlock
 import EthLib.Consensus.Proofs.Transition.InactivityLeakVoter
 import EthLib.Consensus.Proofs.Transition.Totality.EpochBounds
 import EthLib.Consensus.Proofs.Transition.ValidatorCaps
+import Batteries.Data.UInt
 
 /-!
 # Departure charges over a funded window
@@ -340,12 +341,12 @@ private theorem consolidation_rate_le {fork : Fork}
         (total / config.CHURN_LIMIT_QUOTIENT))) ≤
       roundToIncrement preset (max config.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA
         (total / config.CHURN_LIMIT_QUOTIENT)) := by
-    rw [UInt64.le_iff_toNat_le, Uint64.toNat_min]
+    rw [UInt64.le_iff_toNat_le, UInt64.toNat_min]
     exact Nat.min_le_right _ _
-  rw [UInt64.toNat_sub_of_le _ _ subtract, Uint64.toNat_min]
+  rw [UInt64.toNat_sub_of_le _ _ subtract, UInt64.toNat_min]
   have upper := rounded (max config.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA
     (total / config.CHURN_LIMIT_QUOTIENT))
-  rw [Uint64.toNat_max, UInt64.toNat_div] at upper
+  rw [UInt64.toNat_max, UInt64.toNat_div] at upper
   have rate := max_le_max_left config.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA.toNat
     (Nat.div_le_div_right bounded (c := config.CHURN_LIMIT_QUOTIENT.toNat))
   unfold consolidationRate
@@ -2648,7 +2649,7 @@ private theorem intervalLoss_consolidationRequest_balance {fork : Fork}
         have capped := getBalance_eq_ok_iff.mp (queueExcessActiveBalance_balance
           (getBalance_eq_ok_iff.mpr (by simpa [BeaconState.putValidator] using read)) queued).1
         refine .inr ⟨?_, v, found, eth1⟩
-        simp [actualBalanceAt, read, capped, Uint64.toNat_min]
+        simp [actualBalanceAt, read, capped, UInt64.toNat_min]
     · left
       simp only [queueExcessActiveBalance, bind_ok_iff] at queued
       obtain ⟨_, _, queued⟩ := queued

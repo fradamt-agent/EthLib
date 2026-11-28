@@ -9,6 +9,7 @@ import EthLib.Consensus.Proofs.HonestAggregation
 import EthLib.Consensus.Proofs.ForkChoice.StoreEntries
 import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.HistoricalReads
 import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.SourceWindowMargin
+import Batteries.Data.UInt
 
 /-!
 # Proofs: up-to-date honest stores have a head
@@ -783,7 +784,7 @@ private theorem Execution.activeEquivocatorsRegistered_or_evidence {anchor : Sto
     have one := (computeStartSlotAtEpoch_ok_iff.mp startOk).2
     have two := (computeStartSlotAtEpoch_ok_iff.mp targetOk).2
     have le := Nat.mul_le_mul_right preset.SLOTS_PER_EPOCH.toNat (UInt64.le_iff_toNat_le.mp epochLe)
-    rw [UInt64.le_iff_toNat_le, toNat_max]
+    rw [UInt64.le_iff_toNat_le, UInt64.toNat_max]
     omega
   exact forward.registered_of_shared_checkpoint (UInt64.le_of_eq anchorSlot) sound
     (UInt64.lt_iff_toNat_lt.mpr positive) walk justifiedFound startOk bound baseFound advanced

@@ -496,7 +496,30 @@ structure BodyResult (fork : Fork) where
 def BodyResult.post {fork : Fork} (result : BodyResult fork) : State :=
   result.output.block.applyChanges
 
+/-- Run the body of `block` on the chain `chain` with the observer `obs`, and compute its roots.
+
+The body reads none of the header fields that it gives: the roots, the gas counts, the logs Bloom.
+
+Nor does it read the requests hash and the block access list hash.
+
+So a builder can run it before it fills those fields. -/
+def runBodyWith {fork : Fork} {M N : Type → Type} [Monad M] [MonadExceptOf EvmError M]
+    [Monad N] [MonadExceptOf BlockError N] (obs : BodyObserver M N fork) (chain : BlockChain)
+    (block : Block fork Transaction) (overrides : BodyOverrides := {})
+    (blobGasPrice : Option Nat := none) : N (BodyResult fork) := do
+  -- The body runs in the environment of its header and of the recent hashes of the chain.
+  let hashes ← liftExcept (recentHashes chain.recent)
+  -- A simulation sets its base fee per blob gas here.
+  let env := blockEnvironment chain.config hashes block.header blobGasPrice
+  -- A simulation runs the body with its overrides.
+  let output ← applyBodyWith obs chain.config env block ⟨chain.state, ∅, ∅, ∅, ∅⟩ overrides
+  let roots ← liftExcept
+    (outputRoots block.transactions block.withdrawals output output.block.applyChanges)
+  return ⟨output, roots⟩
+
 /-- Run the body of `block` on the state of the chain `chain`, and compute the roots it gives.
+
+It is the run with no observer, in the monad of errors.
 
 The body reads none of the header fields that it gives: the roots, the gas counts, the logs Bloom.
 
@@ -505,15 +528,8 @@ Nor does it read the requests hash and the block access list hash.
 So a builder can run it before it fills those fields. -/
 def runBody (chain : BlockChain) {fork : Fork} (block : Block fork Transaction)
     (overrides : BodyOverrides := {}) (blobGasPrice : Option Nat := none) :
-    Except BlockError (BodyResult fork) := do
-  -- The body runs in the environment of its header and of the recent hashes of the chain.
-  let hashes ← recentHashes chain.recent
-  -- A simulation sets its base fee per blob gas here.
-  let env := blockEnvironment chain.config hashes block.header blobGasPrice
-  -- A simulation runs the body with its overrides.
-  let output ← applyBody chain.config env block ⟨chain.state, ∅, ∅, ∅, ∅⟩ overrides
-  let roots ← outputRoots block.transactions block.withdrawals output output.block.applyChanges
-  return ⟨output, roots⟩
+    Except BlockError (BodyResult fork) :=
+  runBodyWith .none chain block overrides blobGasPrice
 
 /-- A header with the fields that the body of its block gives, as after a build or a simulation. -/
 def fillHeader {fork : Fork} (header : Header fork) (output : BlockOutput fork)
@@ -531,15 +547,18 @@ def fillHeader {fork : Fork} (header : Header fork) (output : BlockOutput fork)
 
 /-! ## The transition -/
 
-/-- Run the state transition of `block` at `fork` on the chain `chain`, and give the state after.
+/-- Run the state transition of `block` with an observer, and give the result of its body.
+
+The observer runs the system calls and the transactions of the body, before the output checks.
 
 The fork of the block must be the active fork of the chain at its number and its time.
 
 With `checkSeal` off, the proof of work is left out, as for chains that run without one.
 
 From Hegotá it fails, since the rules of that fork are not yet specified here. -/
-def stateTransition (chain : BlockChain) {fork : Fork} (block : Block fork Transaction)
-    (checkSeal : Bool := true) : Except BlockError State := do
+def stateTransitionWith {fork : Fork} {M N : Type → Type} [Monad M] [MonadExceptOf EvmError M]
+    [Monad N] [MonadExceptOf BlockError N] (obs : BodyObserver M N fork) (chain : BlockChain)
+    (block : Block fork Transaction) (checkSeal : Bool := true) : N (BodyResult fork) := do
   -- No EIP fixes the rules of Hegotá yet.
   if .hegota ≤ fork then throw (.aborted (.forkNotYetSpecified fork))
   -- The fork of the block is the one that the chain activates at it.
@@ -548,14 +567,27 @@ def stateTransition (chain : BlockChain) {fork : Fork} (block : Block fork Trans
   -- The block is first checked alone and against its parent.
   --
   -- The checks of the block: the size, the header and the ommers.
-  checkBlock chain.config checkSeal chain.recent block
+  liftExcept (checkBlock chain.config checkSeal chain.recent block)
   -- Then its body runs on the state after the parent, and gives the roots.
-  let result ← runBody chain block
+  let result ← runBodyWith obs chain block
   -- Last, the block must agree with what the body gave.
   --
   -- The checks of the header against the output, in order.
-  firstFailure (outputChecks block.header result.output result.roots)
+  liftExcept (firstFailure (outputChecks block.header result.output result.roots))
+  return result
+
+/-- Run the state transition of `block` at `fork` on the chain `chain`, and give the state after.
+
+It is the run with no observer, in the monad of errors.
+
+The fork of the block must be the active fork of the chain at its number and its time.
+
+With `checkSeal` off, the proof of work is left out, as for chains that run without one.
+
+From Hegotá it fails, since the rules of that fork are not yet specified here. -/
+def stateTransition (chain : BlockChain) {fork : Fork} (block : Block fork Transaction)
+    (checkSeal : Bool := true) : Except BlockError State :=
   -- The changes of the block apply to the state of the chain.
-  return result.post
+  BodyResult.post <$> stateTransitionWith .none chain block checkSeal
 
 end EthLib.Execution.Blocks

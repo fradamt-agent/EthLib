@@ -6,6 +6,7 @@ public import EthLib.Consensus.Accessors
 public import EthLib.Consensus.Credentials
 public import EthLib.Consensus.Proofs.ShufflePermutation
 public import EthLib.Consensus.Proofs.Signing
+import Batteries.Data.UInt
 
 /-!
 # Proofs: state accessors
@@ -731,7 +732,6 @@ theorem one_le_getCommitteeCountPerSlot (state : BeaconState preset fork) (epoch
   simp only [getCommitteeCountPerSlot, committeeCountOf, max, min]
   repeat' split
   all_goals simp_all [UInt64.le_iff_toNat_le]
-  all_goals omega
 
 /-- A slot has at most the most committees of the preset, or one if that is zero. -/
 theorem getCommitteeCountPerSlot_le (state : BeaconState preset fork) (epoch : Epoch) :
@@ -754,7 +754,7 @@ theorem committeeCount_fits {state : BeaconState preset fork} (epoch : Epoch)
         ((getCommitteeCountPerSlot state epoch).toNat * preset.SLOTS_PER_EPOCH.toNat) < 2 ^ 64 := by
   have perSlotMax := UInt64.le_iff_toNat_le.mp (getCommitteeCountPerSlot_le state epoch)
   have lengthLe := length_getActiveValidatorIndices_le state epoch
-  simp only [Base.Uint64.toNat_max] at perSlotMax
+  simp only [UInt64.toNat_max] at perSlotMax
   have one : (1 : UInt64).toNat = 1 := rfl
   -- With no validator, a slot has one committee.
   have empty : state.validators.data.size = 0 → getCommitteeCountPerSlot state epoch = 1 := by
@@ -762,7 +762,7 @@ theorem committeeCount_fits {state : BeaconState preset fork} (epoch : Epoch)
     have hlen : (getActiveValidatorIndices state epoch).length = 0 := by omega
     simp [getCommitteeCountPerSlot, committeeCountOf, hlen]
     apply UInt64.toNat_inj.mp
-    simp [Base.Uint64.toNat_max, Base.Uint64.toNat_min]
+    simp [UInt64.toNat_max, UInt64.toNat_min]
   have perSlotLe : (getCommitteeCountPerSlot state epoch).toNat ≤
       preset.MAX_COMMITTEES_PER_SLOT.toNat + 1 := by omega
   have slotsSmall := preset.SLOTS_PER_EPOCH.toNat_lt

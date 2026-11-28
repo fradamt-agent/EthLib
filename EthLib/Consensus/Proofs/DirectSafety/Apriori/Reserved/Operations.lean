@@ -1,6 +1,7 @@
 module
 
 public import EthLib.Consensus.Proofs.DirectSafety.Apriori.Penalties
+import Batteries.Data.UInt
 
 /-!
 # The reserved replay of a branch
@@ -1388,9 +1389,9 @@ private theorem pendingTransfer_paying {fork : Fork} {next : Epoch}
     exact Option.some.inj held
   subst bEq
   refine ⟨v, read, unslashed, UInt64.le_iff_toNat_le.mp due, ?_, ?_, ?_⟩
-  · simp [actualBalanceAt, Array.getElem?_eq_getElem insideS, Base.Uint64.toNat_min]
+  · simp [actualBalanceAt, Array.getElem?_eq_getElem insideS, UInt64.toNat_min]
   · simp [actualBalanceAt, BeaconState.putBalance, Ne.symm apartNat,
-      Array.getElem?_eq_getElem insideS, Base.Uint64.toNat_saturatingSub, Base.Uint64.toNat_min]
+      Array.getElem?_eq_getElem insideS, Base.Uint64.toNat_saturatingSub, UInt64.toNat_min]
   · simp [BeaconState.putBalance] at fits
     simp [actualBalanceAt, BeaconState.putBalance, Array.getElem?_eq_getElem insideU]
     rw [Array.getElem_set_ne _ insideU apartNat] at fits ⊢
@@ -3534,7 +3535,7 @@ theorem switchToCompoundingValidator_lookup {fork : Fork}
     have was : actualBalanceAt (⟨fork, u⟩ : ForkedBeaconState preset) index.toNat =
         balance.toNat := by
       simp [actualBalanceAt, balanceU]
-    have minimum := Uint64.toNat_min balance preset.MIN_ACTIVATION_BALANCE
+    have minimum := UInt64.toNat_min balance preset.MIN_ACTIVATION_BALANCE
     refine ⟨validator, _, foundU, rfl, ?_, ?_⟩
     · rw [below, was]
       omega
@@ -4647,7 +4648,7 @@ private theorem reserveCut_payment_funded {x : ForkedBeaconState preset} {fork :
     exact (reserve.2.1 _ retired w read).2 ⟨c, List.mem_cons_self, rfl⟩
   refine ⟨unretired, ?_⟩
   have amount : (min b w.effectiveBalance).toNat = min b.toNat w.effectiveBalance.toNat :=
-    Uint64.toNat_min _ _
+    UInt64.toNat_min _ _
   by_cases fresh : NewReference x c.sourceIndex.toNat
   · have relevant : FundingRelevant ⟨fork, s⟩ next (c :: suffix) c.sourceIndex.toNat :=
       ⟨w, read, Or.inr (Or.inr ⟨c, List.mem_cons_self, rfl⟩)⟩

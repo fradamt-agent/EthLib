@@ -10,6 +10,7 @@ import EthLib.Consensus.Proofs.Transition.Execution
 import EthLib.Consensus.Proofs.Transition.Payload
 import EthLib.Consensus.Proofs.Transition.ValidatorKeys
 import EthLib.Consensus.Proofs.Transition.Withdrawals
+import Batteries.Data.UInt
 
 /-!
 # Proofs: a block keeps the capped balance of a validator that does not act against it
@@ -150,7 +151,7 @@ private theorem Rise.capped {index : Nat} (rise : Rise index state after) (cap :
   obtain ⟨later, atLater, low⟩ := rise.1 earlier found
   refine ⟨later, atLater, ?_⟩
   rw [UInt64.le_iff_toNat_le] at low ⊢
-  rw [Uint64.toNat_min, Uint64.toNat_min]
+  rw [UInt64.toNat_min, UInt64.toNat_min]
   omega
 
 /-- The validator at a position has the key it had, when the registry grows. -/

@@ -2,6 +2,7 @@ module
 
 public import EthLib.Consensus.Proofs.DirectSafety.Apriori.Credits
 import EthLib.Consensus.Proofs.Transition.ActiveKept
+import Batteries.Data.UInt
 
 /-!
 # The active-stake ceiling
@@ -1060,11 +1061,11 @@ theorem consolidationChurnLimit_le {f : Fork} {s : BeaconState preset f}
         (max config.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA (total / config.CHURN_LIMIT_QUOTIENT)))) := by
     simp [getActivationExitChurnLimit, wholeOk, bind, Except.bind, pure, Except.pure]
   have sum := getConsolidationChurnLimit_add early computed exitOk wholeOk
-  rw [Uint64.toNat_min] at sum
+  rw [UInt64.toNat_min] at sum
   generalize hAmount : max config.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA
     (total / config.CHURN_LIMIT_QUOTIENT) = amount at sum
   have value := congrArg UInt64.toNat hAmount
-  rw [Uint64.toNat_max, UInt64.toNat_div] at value
+  rw [UInt64.toNat_max, UInt64.toNat_div] at value
   rw [toNat_roundToIncrement] at sum
   -- The rounded churn is at most the churn of the formula, which rounds only the share.
   have share := Nat.div_add_mod (total.toNat / config.CHURN_LIMIT_QUOTIENT.toNat)

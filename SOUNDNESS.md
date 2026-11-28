@@ -3722,12 +3722,12 @@ The caller gives the receipts root, the fork of the block and the eth version, a
 ### The block access lists and the cells of the eth protocol
 
 `accessListsResponse` (`Execution/Network/Message.lean`) checks a BlockAccessLists answer of eth/71 against the access list hashes of the requested blocks.
-It follows "BlockAccessLists (0x13)" in [`caps/eth.md`](https://github.com/ethereum/devp2p/blob/277ceb399c15df86efb17d51eb58200c26879784/caps/eth.md#blockaccesslists-0x13).
-`accessListsResponse_eq_true_iff` (`Execution/Proofs/Network/Message.lean`) states when an answer passes: it repeats the request ID and has one entry for each hash that the caller gives.
+It follows "BlockAccessLists (0x13)" in [`caps/eth.md`](https://github.com/ethereum/devp2p/blob/277ceb399c15df86efb17d51eb58200c26879784/caps/eth.md#blockaccesslists-0x13), and the response size limit of [EIP-8159](https://eips.ethereum.org/EIPS/eip-8159#response-size-limit).
+The soft limit there tells the peer when to stop appending entries, so a response may hold only the first entries that its request asks for.
+`accessListsResponse_eq_true_iff` (`Execution/Proofs/Network/Message.lean`) states when an answer passes: it repeats the request ID and has no more entries than the hashes that the caller gives.
 Each entry is the RLP empty string, or the bytes it was decoded from have that hash under Keccak-256.
 `Message.kept_of_decode` and `SnapMessage.kept_of_decode` state that those bytes are the RLP encoding of the entry.
 `accessListsAnswer_eq_true_iff` (`Execution/Proofs/Network/Snap.lean`) states the check of the entries alone, which snap/2 shares.
-There the peer may cut the list short, so that check asks only for no more entries than hashes.
 The caller gives the access list hash of each requested block, in the order of the request.
 The check trusts these hashes: it reads neither the block hashes of the request nor their number.
 
@@ -6559,7 +6559,7 @@ The run of the block reaches each transaction, and on the state that the transac
 Buying it lowers the balance of the sender by exactly the gas limit of the transaction times `effectiveGasPrice`.
 A blob transaction also pays `blobGasUsed` times `blobGasPrice`; other types add nothing (`receiptInfo_blob`).
 The theorem states the purchase on that state; that the run of the transaction starts with it rests on the proof, not on the statement.
-From Glamsterdam, EIP-7778 makes the cumulative gas of a receipt the gas that the senders paid.
+From Glamsterdam, EIP-8037 makes the cumulative gas of a receipt the gas that the senders paid.
 As a choice of EthLib, the object copies it, so `gasUsed` is the gas that the sender paid, while the descriptions of `receipt.yaml` read "gas used".
 
 `eth_getLogs` reads the logs that a filter of [`filter.yaml`](https://github.com/ethereum/execution-apis/blob/1ca0818569467cff85b7f41372f22e728d5daa14/src/schemas/filter.yaml) selects (`Execution/Rpc/Filter.lean`).
@@ -7896,8 +7896,6 @@ Points that remain open:
   The [sync protocol](https://github.com/ethereum/consensus-specs/blob/aa16bb4c156184e9548a997d53efaf2a228a6304/specs/altair/light-client/sync-protocol.md#validate_light_client_update) rejects an update whose signature period is more than one period after the period of the finalized header of the store.
   The period of an update is that of its attested header, which is at most its signature period.
   So a light client that applies the answer in order cannot use an update after a gap.
-- The source writes the context of an updates chunk as the digest of a fork version and the genesis validators root, the form before Fulu.
-  EthLib takes the digest of the epoch of the attested header, which from Fulu also depends on the blob schedule.
 - The source bounds the range of the updates answer by the period of the head; the answer leaves that bound to the updates that the caller gives.
 - Which update is the best of a period, and which update is the latest, depend on what the node has seen; the answers take them as input.
 - The source names no consensus version for Heze, so the answers on a Heze state carry no version, although the schemas list it as required.

@@ -2,6 +2,7 @@ module
 
 public import EthLib.Consensus.Proofs.DirectSafety.Apriori.Contracts.FirstDrop
 import EthLib.Consensus.Proofs.Transition.ActiveKept
+import Batteries.Data.UInt
 
 /-!
 # The round ledger of a branch
@@ -445,7 +446,7 @@ theorem exit_rate_le_churn {fork : Fork} {s : BeaconState preset fork}
     obtain ⟨_, again, -, rfl⟩ := getBalanceChurnLimit_ok_iff.mp balanceOk
     cases read.symm.trans again
     rfl
-  rw [value, Uint64.toNat_min, toNat_roundToIncrement, Uint64.toNat_max, UInt64.toNat_div]
+  rw [value, UInt64.toNat_min, toNat_roundToIncrement, UInt64.toNat_max, UInt64.toNat_div]
   have share := Nat.div_add_mod (total.toNat / config.CHURN_LIMIT_QUOTIENT.toNat)
     preset.EFFECTIVE_BALANCE_INCREMENT.toNat
   have rounded :

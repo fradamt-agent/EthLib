@@ -6,6 +6,7 @@ public import EthLib.Consensus.Proofs.ForkDigest
 public import EthLib.Consensus.ReqResp.ResponseBounds
 public import EthLib.Consensus.Proofs.ReqResp.Bounds
 public import EthLib.Serialization.Proofs.Ssz.Typed.Collections
+import Batteries.Data.UInt
 
 /-!
 # `Consensus.Proofs.ReqResp.ResponseBounds`
@@ -224,7 +225,7 @@ theorem payloadBounds_errorMessage :
   simp only [payloadBounds, hmin, hmax, Nat.zero_min, Option.getD_some]
   refine Prod.ext rfl (UInt64.toNat_inj.mp ?_)
   have := config.MAX_PAYLOAD_SIZE.toNat_lt
-  rw [Base.Uint64.toNat_min, UInt64.toNat_ofNat_of_lt' (by unfold UInt64.size; omega)]
+  rw [UInt64.toNat_min, UInt64.toNat_ofNat_of_lt' (by unfold UInt64.size; omega)]
   rfl
 
 /-- An error chunk that decodes carries an error message: its payload reads back as one.

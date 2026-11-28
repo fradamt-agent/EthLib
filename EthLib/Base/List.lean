@@ -19,6 +19,10 @@ Also the distinct elements of a list, as batch checks share one copy of each.
 
 namespace EthLib.Base
 
+-- Batteries has these readers, with the list first and a `BEq` test.
+--
+-- A specification imports only the Lean toolchain, so they stay here.
+
 /-- The rest of a list after a prefix, if the list starts with it. -/
 def dropPrefix? {α : Type} [DecidableEq α] : List α → List α → Option (List α)
   | [], cs => some cs

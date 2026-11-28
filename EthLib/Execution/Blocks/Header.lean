@@ -139,7 +139,9 @@ def toItem (h : Header fork) : Item :=
   --
   -- Then the block access list hash of EIP-7928 and the slot of EIP-7843, from Glamsterdam.
   --
-  -- EIP-7685, EIP-7928 and EIP-7843 do not place their fields: each is appended last, in order.
+  -- EIP-8159 places the block access list hash right after the requests hash.
+  --
+  -- EIP-7685 and EIP-7843 do not place their fields: each is appended last, in order.
   .list ([Codec.toItem h.parentHash, Codec.toItem h.ommersHash,
     Codec.toItem h.coinbase, Codec.toItem h.stateRoot, Codec.toItem h.transactionsRoot,
     Codec.toItem h.receiptRoot, Codec.toItem h.bloom, Codec.toItem h.difficulty,

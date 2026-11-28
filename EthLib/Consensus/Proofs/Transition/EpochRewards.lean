@@ -5,6 +5,7 @@ public import EthLib.Consensus.Proofs.Accessors
 public import EthLib.Consensus.Proofs.Participation
 public import EthLib.Consensus.Proofs.Transition.Operations
 public import EthLib.Consensus.Transition.EpochRewards
+import Batteries.Data.UInt
 
 /-!
 # Proofs: rewards and penalties
@@ -1080,7 +1081,7 @@ theorem getFlagIndexDeltas_rewards_le {altair : .altair ≤ fork}
       participatingBalance.toNat := by
     have covers : sumMarked state.validators.data
         (markIndices state.validators.data.size participating) ≤ participatingBalance.toNat := by
-      rw [balance, toNat_max, Nat.toUInt64_eq, UInt64.toNat_ofNat', Nat.mod_eq_of_lt small]
+      rw [balance, UInt64.toNat_max, Nat.toUInt64_eq, UInt64.toNat_ofNat', Nat.mod_eq_of_lt small]
       exact Nat.le_max_right _ _
     rw [sumMarked_eq_sum] at covers
     exact covers

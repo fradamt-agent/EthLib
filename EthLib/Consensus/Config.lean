@@ -227,9 +227,7 @@ structure Config extends Networking.Gossip.SubnetParameters where
   MIN_SLOTS_FOR_INCLUSION_LISTS_REQUESTS : Slot
   /-- From Heze: the most bytes of the transactions of one inclusion list.
 
-  [EIP-7805] names it `MAX_BYTES_PER_INCLUSION_LIST`.
-
-  [EIP-7805]: https://eips.ethereum.org/EIPS/eip-7805#il-building -/
+  [EIP-7805](https://eips.ethereum.org/EIPS/eip-7805#configs) defines it. -/
   MAX_TRANSACTIONS_BYTES_PER_INCLUSION_LIST : UInt64
   /-- From Fulu: the limits of blobs from given epochs, as EIP-7892 allows. -/
   BLOB_SCHEDULE : List BlobScheduleEntry

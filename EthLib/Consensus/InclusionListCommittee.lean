@@ -18,9 +18,7 @@ A validator finds its seat in an epoch up to the next one, since later committee
 
 [EIP-7805](https://eips.ethereum.org/EIPS/eip-7805#consensus-layer) adds the committee.
 
-The EIP names its domain `DOMAIN_IL_COMMITTEE` with the value `0x0C000000`.
-
-Heze uses `DOMAIN_INCLUSION_LIST_COMMITTEE`, with the value `0x10000000`.
+The EIP names its domain `DOMAIN_INCLUSION_LIST_COMMITTEE`, with the value `0x10000000`.
 
 EIP-7805 is a Draft on 2026-11-03, so these rules can still change.
 -/

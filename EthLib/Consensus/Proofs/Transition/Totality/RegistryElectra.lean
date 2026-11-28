@@ -2,6 +2,7 @@ module
 
 public import EthLib.Consensus.Proofs.Transition.Totality.Bound
 public import EthLib.Consensus.Proofs.Transition.Totality.Registry
+import Batteries.Data.UInt
 
 /-!
 # Proofs: registry updates from Electra succeed
@@ -135,7 +136,7 @@ private theorem exitChurnLimit_exists_ok {config : Config} {state : BeaconState 
     refine ⟨_, by simp only [getActivationExitChurnLimit, getBalanceChurnLimit, totalOk,
       liftArith, divChecked, quotient, ↓reduceIte, Except.mapError, bind,
       Except.bind, pure, Except.pure]; rfl, ?_⟩
-    rw [toNat_min]
+    rw [UInt64.toNat_min]
     have maximum := UInt64.le_iff_toNat_le.mp maximum
     omega
 
@@ -233,7 +234,7 @@ private theorem computeExitEpochAndUpdateChurn_kept {config : Config} {electra :
   have leftLe := kept.2.2.2.2.2
   rw [current] at firstValue
   have openLe : (max (state.earliestExitEpoch electra) firstEpoch).toNat ≤ bound := by
-    rw [toNat_max]
+    rw [UInt64.toNat_max]
     omega
   have positive : 0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat :=
     UInt64.lt_iff_toNat_lt.mp increment

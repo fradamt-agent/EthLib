@@ -1062,7 +1062,7 @@ theorem checkBlock_simulateBlock {chain chain' : BlockChain} {base parent : Rece
   subst hP
   have hUsed : result.output.gas.gasUsed ≤ parent.header.gasLimit := by
     have hU : txs.map Transaction.unsigned = filled.map (·.1) := hUnsigned
-    unfold runBody at hRun
+    rw [runBody_unfold] at hRun
     obtain ⟨hashes, -, hRun⟩ := bind_ok_iff.mp hRun
     obtain ⟨output, hOutput, hRun⟩ := bind_ok_iff.mp hRun
     obtain ⟨roots, -, hRun⟩ := bind_ok_iff.mp hRun
@@ -1118,7 +1118,7 @@ private theorem stateTransition_of_runBody_error {fork : Fork} {chain : BlockCha
     (hCheck : checkBlock chain.config checkSeal chain.recent block = .ok ())
     (hBody : runBody chain block = .error e) :
     stateTransition chain block checkSeal = .error e := by
-  simp only [stateTransition, hFork, hActive, ↓reduceIte, hCheck, hBody, bind, Except.bind]
+  simp only [stateTransition_unfold, hFork, hActive, ↓reduceIte, hCheck, hBody, bind, Except.bind]
 
 /-- A simulated block agrees with the state transition, or a sender has code or lacks it.
 
@@ -1150,7 +1150,7 @@ private theorem stateTransition_of_simulateBlock_or {chain chain' : BlockChain} 
     simp only [List.length_map] at this ⊢
     omega
   rw [← hUnsigned] at hRun
-  unfold runBody at hRun
+  rw [runBody_unfold] at hRun
   obtain ⟨hashes, hHashes, hRun⟩ := bind_ok_iff.mp hRun
   obtain ⟨output, hOutput, hRun⟩ := bind_ok_iff.mp hRun
   obtain ⟨roots, hRoots, hRun⟩ := bind_ok_iff.mp hRun
@@ -1188,7 +1188,7 @@ private theorem stateTransition_of_simulateBlock_or {chain chain' : BlockChain} 
   · left
     have hBody : runBody chain (⟨header, txs, [], fun _ => []⟩ : Block fork Transaction) =
         .ok ⟨output, { roots with transactions := root }⟩ := by
-      unfold runBody
+      rw [runBody_unfold]
       simp only [hHashes, hReal, outputRoots_of_transactionsRoot hRoots hRoot, bind, Except.bind,
         pure, Except.pure]
     obtain ⟨_, _, txsOut, _, _, _, _, hApply, _, _, _, _, _, _, hGasEq, _⟩ :=
@@ -1211,7 +1211,7 @@ private theorem stateTransition_of_simulateBlock_or {chain chain' : BlockChain} 
     refine ⟨i, e, ?_, hP⟩
     have hBody : runBody chain (⟨header, txs, [], fun _ => []⟩ : Block fork Transaction) =
         .error (.invalidTransaction i e) := by
-      unfold runBody
+      rw [runBody_unfold]
       simp only [hHashes, hErr, bind, Except.bind]
     exact stateTransition_of_runBody_error hNot hFork hCheck (Eq.trans rfl hBody)
 

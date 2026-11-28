@@ -73,7 +73,9 @@ Capella adds the changes of withdrawal credentials.
 
 Deneb adds the commitments to the blobs of [EIP-4844], and Electra the requests of [EIP-7685].
 
-Gloas moves the payload, the commitments and the requests to the envelope of the builder.
+Gloas moves the payload and the requests to the envelope of the builder.
+
+It moves the commitments to the bid of the builder.
 
 In their place it adds the bid of the builder, the payload votes and the parent's requests.
 

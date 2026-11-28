@@ -23,6 +23,7 @@ import EthLib.Consensus.Proofs.Transition.BalanceNotRaised
 import EthLib.Consensus.Proofs.Transition.DepositCarryCore
 import EthLib.Consensus.Proofs.Transition.ActiveKept
 import Mathlib.Algebra.Order.BigOperators.Group.Finset
+import Batteries.Data.UInt
 
 /-!
 # The facts that one step keeps for every validator
@@ -291,7 +292,7 @@ private theorem UnassignedEligibleBalance.add {f : Fork} {s t : BeaconState pres
     · simp [balances, equal, sizes]
     · apply UInt64.le_iff_toNat_le.mpr
       change (min (amount - amount % preset.EFFECTIVE_BALANCE_INCREMENT) _).toNat ≤ amount.toNat
-      rw [Uint64.toNat_min]
+      rw [UInt64.toNat_min]
       apply Nat.le_trans (Nat.min_le_left _ _)
       exact UInt64.le_iff_toNat_le.mp (UInt64.sub_le (Base.Uint64.mod_le _ _))
   · rename_i different
@@ -360,7 +361,7 @@ private theorem updatedEffectiveBalance_minimum {cap balance effective result : 
   rcases updatedEffectiveBalance_cases updated with rfl | rfl
   · exact old
   · apply UInt64.le_iff_toNat_le.mpr
-    rw [Uint64.toNat_min, toNat_rounded]
+    rw [UInt64.toNat_min, toNat_rounded]
     apply Nat.le_min.mpr
     constructor
     · have whole := congrArg UInt64.toNat aligned
@@ -599,11 +600,11 @@ private theorem UnassignedEligibleBalance.withdrawals {f : Fork}
   have bound := capped v (Array.mem_of_getElem? found)
   exact UInt64.le_trans (by
       apply UInt64.le_iff_toNat_le.mpr
-      rw [Uint64.toNat_min]
+      rw [UInt64.toNat_min]
       exact Nat.le_min.mpr ⟨UInt64.le_iff_toNat_le.mp low, UInt64.le_iff_toNat_le.mp bound⟩)
     (UInt64.le_trans retained (by
       apply UInt64.le_iff_toNat_le.mpr
-      rw [Uint64.toNat_min]
+      rw [UInt64.toNat_min]
       exact Nat.min_le_left _ _))
 
 private theorem UnassignedEligibleBalance.ineligible {f : Fork} {s : BeaconState preset f}
@@ -1336,12 +1337,12 @@ private theorem ScheduledFree.withdrawals {f : Fork}
   refine ⟨later, located, ?_⟩
   exact UInt64.le_trans (by
       apply UInt64.le_iff_toNat_le.mpr
-      rw [Uint64.toNat_min]
+      rw [UInt64.toNat_min]
       exact Nat.le_min.mpr ⟨UInt64.le_iff_toNat_le.mp low,
         UInt64.le_iff_toNat_le.mp (capped v member)⟩)
     (UInt64.le_trans retained (by
       apply UInt64.le_iff_toNat_le.mpr
-      rw [Uint64.toNat_min]
+      rw [UInt64.toNat_min]
       exact Nat.min_le_left _ _))
 
 private theorem assigned_and_reached_of_active {v : Validator} {epoch : Epoch} {reached : Prop}
@@ -2000,7 +2001,7 @@ private theorem CapStep.slash {f : Fork} {s t : BeaconState preset f}
           rw [getCurrentEpoch, getCurrentEpoch, (frame_initiateValidatorExit exited).slot]
         change (getCurrentEpoch exitedState).toNat + _ ≤
           (max v.withdrawableEpoch withdrawal).toNat
-        rw [epoch, Base.Uint64.toNat_max]
+        rw [epoch, UInt64.toNat_max]
         omega⟩)
       (retired := by
         intro assigned flag withdrawn
@@ -2112,7 +2113,7 @@ private theorem preKeyCharge_add {f : Fork} {s t : BeaconState preset f}
     have funded : (getValidatorFromDeposit preset f key credentials amount).effectiveBalance.toNat ≤
         amount.toNat := by
       change (min (amount - amount % preset.EFFECTIVE_BALANCE_INCREMENT) _).toNat ≤ amount.toNat
-      rw [Uint64.toNat_min]
+      rw [UInt64.toNat_min]
       apply (Nat.min_le_left _ _).trans
       exact UInt64.le_iff_toNat_le.mp (UInt64.sub_le (Base.Uint64.mod_le _ _))
     simp only [preKeyCharge, validators, balances, Array.getElem?_push,
@@ -2162,7 +2163,7 @@ private theorem CapStep.add {f : Fork} {s t : BeaconState preset f}
     rcases member with old | rfl
     · exact capped v old
     · unfold getValidatorFromDeposit
-      exact UInt64.le_iff_toNat_le.mpr (by rw [Base.Uint64.toNat_min]; exact Nat.min_le_right _ _)
+      exact UInt64.le_iff_toNat_le.mpr (by rw [UInt64.toNat_min]; exact Nat.min_le_right _ _)
   · intro i v found
     have inside := (Array.getElem?_eq_some_iff.mp found).1
     refine ⟨v, ?_, UInt64.le_refl _⟩
@@ -3766,7 +3767,7 @@ private theorem pre_effective_le {largest balance effective result : Gwei}
   · have remainder : balance % preset.EFFECTIVE_BALANCE_INCREMENT ≤ balance :=
       Base.Uint64.mod_le _ _
     have rounded := UInt64.le_iff_toNat_le.mp (UInt64.sub_le remainder)
-    simp only [Uint64.toNat_min]
+    simp only [UInt64.toNat_min]
     omega
 
 private theorem preKeyCharge_effective {f : Fork} {s t : BeaconState preset f}
