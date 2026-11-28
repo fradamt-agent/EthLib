@@ -7860,8 +7860,6 @@ Points that remain open:
   The [sync protocol](https://github.com/ethereum/consensus-specs/blob/aa16bb4c156184e9548a997d53efaf2a228a6304/specs/altair/light-client/sync-protocol.md#validate_light_client_update) rejects an update whose signature period is more than one period after the period of the finalized header of the store.
   The period of an update is that of its attested header, which is at most its signature period.
   So a light client that applies the answer in order cannot use an update after a gap.
-- The source writes the context of an updates chunk as the digest of a fork version and the genesis validators root, the form before Fulu.
-  EthLib takes the digest of the epoch of the attested header, which from Fulu also depends on the blob schedule.
 - The source bounds the range of the updates answer by the period of the head; the answer leaves that bound to the updates that the caller gives.
 - Which update is the best of a period, and which update is the latest, depend on what the node has seen; the answers take them as input.
 - The source names no consensus version for Heze, so the answers on a Heze state carry no version, although the schemas list it as required.
