@@ -3722,12 +3722,12 @@ The caller gives the receipts root, the fork of the block and the eth version, a
 ### The block access lists and the cells of the eth protocol
 
 `accessListsResponse` (`Execution/Network/Message.lean`) checks a BlockAccessLists answer of eth/71 against the access list hashes of the requested blocks.
-It follows "BlockAccessLists (0x13)" in [`caps/eth.md`](https://github.com/ethereum/devp2p/blob/277ceb399c15df86efb17d51eb58200c26879784/caps/eth.md#blockaccesslists-0x13).
-`accessListsResponse_eq_true_iff` (`Execution/Proofs/Network/Message.lean`) states when an answer passes: it repeats the request ID and has one entry for each hash that the caller gives.
+It follows "BlockAccessLists (0x13)" in [`caps/eth.md`](https://github.com/ethereum/devp2p/blob/277ceb399c15df86efb17d51eb58200c26879784/caps/eth.md#blockaccesslists-0x13), and the response size limit of [EIP-8159](https://eips.ethereum.org/EIPS/eip-8159#response-size-limit).
+The soft limit there tells the peer when to stop appending entries, so a response may hold only the first entries that its request asks for.
+`accessListsResponse_eq_true_iff` (`Execution/Proofs/Network/Message.lean`) states when an answer passes: it repeats the request ID and has no more entries than the hashes that the caller gives.
 Each entry is the RLP empty string, or the bytes it was decoded from have that hash under Keccak-256.
 `Message.kept_of_decode` and `SnapMessage.kept_of_decode` state that those bytes are the RLP encoding of the entry.
 `accessListsAnswer_eq_true_iff` (`Execution/Proofs/Network/Snap.lean`) states the check of the entries alone, which snap/2 shares.
-There the peer may cut the list short, so that check asks only for no more entries than hashes.
 The caller gives the access list hash of each requested block, in the order of the request.
 The check trusts these hashes: it reads neither the block hashes of the request nor their number.
 

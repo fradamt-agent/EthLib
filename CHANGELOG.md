@@ -1389,6 +1389,11 @@ Not yet released.
 
 ### Changes that break callers
 
+- An eth/71 BlockAccessLists response may hold fewer lists than its request asked for, a prefix in the order of the request ([#5042](https://github.com/ethereum/EthLib/issues/5042)).
+  EIP-8159 lets the peer stop appending lists at its 2 MiB soft limit, so `Message.accessListsResponse` no longer refuses a response cut at the tail.
+  `Message.accessListsResponse_eq_true_iff` (`Execution/Proofs/Network/Message.lean`) asks for no more entries than expected hashes, in place of exactly one entry per hash.
+  The Python binding `execution.network.access_lists_answer` accepts such a response.
+
 - From Gloas, a proposer refuses a fetched bid whose block hash equals its parent hash, as the Builder API now requires ([#5025](https://github.com/ethereum/EthLib/issues/5025)).
   `BuilderApi.ValidateBidError` gains `repeatsParentHash`, which gives that hash, and `BuilderApi.validateBid` checks the rule after the parent hash.
   `BuilderApi.validateBid_ok_true_iff` (`Consensus/Proofs/BuilderApi/GloasBid.lean`) gains the conjunct that the block hash differs from the parent hash.

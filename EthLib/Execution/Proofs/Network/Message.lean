@@ -616,8 +616,8 @@ theorem accessListsResponse_eq_true_iff {expected : List Hash32} {request respon
       ∃ i hashes lists, request = getBlockAccessLists i hashes ∧
         -- The response is BlockAccessLists with its request ID.
         --
-        -- It has one entry for each expected hash.
-        response = blockAccessLists i lists ∧ lists.length = expected.length ∧
+        -- It has no more entries than expected hashes.
+        response = blockAccessLists i lists ∧ lists.length ≤ expected.length ∧
           -- Each entry is the empty string, or its bytes hash to the expected hash there.
           ∀ (k : Nat) (hk : k < lists.length) (he : k < expected.length),
             lists[k].item = .bytes .empty ∨
@@ -628,10 +628,10 @@ theorem accessListsResponse_eq_true_iff {expected : List Hash32} {request respon
     simp only [Bool.and_eq_true, beq_iff_eq, accessListsAnswer_eq_true_iff,
       getBlockAccessLists.injEq, blockAccessLists.injEq]
     constructor
-    · rintro ⟨⟨rfl, hlen⟩, -, H⟩
+    · rintro ⟨rfl, hlen, H⟩
       exact ⟨i, hashes, lists, ⟨rfl, rfl⟩, ⟨rfl, rfl⟩, hlen, H⟩
     · rintro ⟨_, _, _, ⟨rfl, rfl⟩, ⟨rfl, rfl⟩, hlen, H⟩
-      exact ⟨⟨rfl, hlen⟩, by omega, H⟩
+      exact ⟨rfl, hlen, H⟩
   · rename_i hne
     simp only [Bool.false_eq_true, false_iff, not_exists, not_and]
     rintro i hashes lists rfl rfl

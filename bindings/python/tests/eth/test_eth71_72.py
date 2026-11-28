@@ -77,9 +77,15 @@ def _bal(case) -> list:
     [
         ([_bal(c) for c in BALS], 3, True),
         ([_bal(BALS[0]), b"", _bal(BALS[2])], 3, True),
-        # Each requested block has its entry, so a response cut at the tail is refused.
-        ([_bal(BALS[0]), b""], 3, False),
+        # The peer may stop at its soft limit, so a response cut at the tail is accepted.
+        ([_bal(BALS[0]), b""], 3, True),
+        ([_bal(BALS[0])], 3, True),
+        ([], 3, True),
+        # A list in the wrong position.
         ([_bal(BALS[1])], 3, False),
+        # More lists than requested blocks.
+        ([_bal(c) for c in BALS] + [b""], 3, False),
+        # Another request ID.
         ([_bal(c) for c in BALS], 4, False),
     ],
 )
