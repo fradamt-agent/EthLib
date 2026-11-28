@@ -87,12 +87,12 @@ theorem Execution.confirmedWalk_end_on_honest_heads [DecidablePred (· ∈ J)]
     (terminal : HeldTerminalStakeFloor (e := e) horizon limit)
     -- An assumption on the run: the justification of each call's epoch is pinned.
     --
-    -- No theorem derives it before Fulu.
+    -- No endpoint derives it; from Fulu up to Gloas it follows only from further premises.
     (pinned : JustifiedPinned (e := e) anchor.justifiedCheckpoint.epoch 0 0 limit)
     -- An assumption on the run: Byzantine stake is under two thirds in each vote-counting state.
     (byzantine : ByzantineCountedStake (e := e) anchor.justifiedCheckpoint.epoch 0 limit)
     (included : TargetIncluded (e := e) limit) (stale : StaleHeadVotersInWindow (e := e) limit)
-    -- Some honest store is up to date at or after the limit, and its slot has a checked predecessor.
+    -- An honest store is up to date at or after the limit, and its slot has a checked predecessor.
     (reference : ∃ x ∈ J, ∃ m, ∃ ref finish : Slot, limit ≤ T m ∧ Ready m x ∧
       (S m x).getCurrentSlot config = .ok ref ∧ subChecked ref 1 = .ok finish)
     {u : ValidatorIndex} (caller : u ∈ J) {events : List ℕ} {firstSlot : Slot}

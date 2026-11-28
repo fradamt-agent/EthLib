@@ -1255,7 +1255,7 @@ theorem Execution.callInvariant_of_run [DecidablePred (· ∈ J)] {Δ : ℕ} {an
     (caps : CapOrder preset) (activation : ActivationWithinMaxEffective preset)
     (forkWindow : ∀ next ∈ config.nextFork fork, horizon.toNat < next.2.toNat)
     (included : TargetIncluded (e := e) limit) (stale : StaleHeadVotersInWindow (e := e) limit)
-    -- Some honest store is up to date at or after the limit, and its slot has a checked predecessor.
+    -- An honest store is up to date at or after the limit, and its slot has a checked predecessor.
     (reference : ∃ x ∈ J, ∃ m, ∃ referenceSlot finish : Slot, limit ≤ (e.world m).time ∧
       UpToDate config checks sources (e.world m).time ((e.world m).view x)
         ((e.world m).state x) ∧

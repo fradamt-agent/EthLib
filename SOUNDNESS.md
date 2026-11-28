@@ -4505,7 +4505,7 @@ The chain must contain the finalized block if the justified epoch is at least th
 The fork is from Fusaka and before Gloas, and the next fork is past the horizon.
 It derives the agreement of honest blocks, the held states before the next fork and the justified chain of each store itself.
 The endpoint above still assumes `JustifiedPinned`.
-Only the two preset theorems `justifiedPinned_of_setting.mainnet` and `.minimal` call `justifiedPinned_of_setting`, and no endpoint calls any of them.
+Only the two preset theorems `justifiedPinned_of_setting.mainnet` and `.minimal` and `Execution.justified_eq_currentTarget_of_noConflictingCheckpoint_of_setting` call `justifiedPinned_of_setting`, and no endpoint calls any of them.
 
 `Execution.confirmedWalk_end_on_honest_heads` in `Consensus/Proofs/ForkChoice/FastConfirmationSafety.lean` gives a bounded form of the confirming walk of [#2056](https://github.com/ethereum/EthLib/issues/2056) at every fork before Gloas, Phase 0 included.
 It is conditional on the premises below, and #2056 stays open.
@@ -4537,7 +4537,7 @@ It writes the BLS checks and the anchor epoch `anchor.justifiedCheckpoint.epoch`
 The invariant at earlier calls and the start facts of each call are derived, not assumed.
 The obligations of later calls are not read, so a caller may end the run at the call.
 
-Three premises of this endpoint have no proof on every fork it covers.
+Three premises of this endpoint lack a proof on some fork it covers.
 No theorem derives `CallObligations`.
 No endpoint derives `JustifiedPinned`; `justifiedPinned_of_setting` covers only Fulu up to Gloas.
 No theorem derives `QuorumDriftWithin` before Electra.

@@ -15,7 +15,7 @@ Not yet released.
   `Execution.confirmedWalk_end_on_honest_heads` (`Consensus/Proofs/ForkChoice/FastConfirmationSafety.lean`) assumes the obligations of each call of the run.
   It assumes a quorum drift within each call's reserve only before Electra, and derives it from Electra.
   That premise is itself a disjunction: the bound, or a collision of two honest stores.
-  No theorem yet derives the call obligations, `JustifiedPinned` before Fulu, or the drift premise before Electra.
+  No endpoint yet derives the call obligations, `JustifiedPinned`, or the drift premise before Electra.
   `Execution.callInvariant_of_run` (`Consensus/Proofs/ForkChoice/FastConfirmation/ConfirmedCallStep.lean`) gives the call invariant at each call by the limit, or that evidence; `Execution.confirmedRoot_covers` reads it.
 
 - In Lean, from Glamsterdam the block access list rebuilds the state after a mainnet block in which no creation lands on an account with nonce 0, no code and storage ([#4989](https://github.com/ethereum/EthLib/issues/4989)).
