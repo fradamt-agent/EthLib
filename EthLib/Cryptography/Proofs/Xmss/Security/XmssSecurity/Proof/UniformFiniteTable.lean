@@ -12,7 +12,7 @@ open OracleComp OracleSpec
 
 namespace XmssSecurity
 
-export EthLib.Cryptography.HashSig (finHeadTailEquiv evalDist_independent_uniform_pair)
+export EthLib.Cryptography.HashSig (finHeadTailEquiv)
 
 noncomputable def uniformSnocList
     (α : Type) [SampleableType α] : Nat → ProbComp (List α)
@@ -118,7 +118,7 @@ theorem evalDist_uniformSnocList_eq_uniformFunction
           simp [finInitLastEquiv]
         _ =ᵈ (List.ofFn <$> (finInitLastEquiv α count <$>
               ($ᵗ ((Fin count → α) × α)))) :=
-          (evalDist_independent_uniform_pair.map _).map _
+          ((EvalDistEq.of_eq (SampleableType.uniformSample_prod_eq_bind _ _).symm).map _).map _
         _ =ᵈ (List.ofFn <$> ($ᵗ (Fin (count + 1) → α))) :=
           (SampleableType.map_uniformSample_evalDistEq_of_bijective
             (finInitLastEquiv α count).bijective).map _
@@ -159,7 +159,7 @@ theorem evalDist_drawList_uniform_eq_uniformFunction
           simp [finHeadTailEquiv, map_eq_bind_pure_comp, bind_assoc]
         _ =ᵈ (List.ofFn <$> (finHeadTailEquiv α count <$>
               ($ᵗ (α × (Fin count → α))))) :=
-          (evalDist_independent_uniform_pair.map _).map _
+          ((EvalDistEq.of_eq (SampleableType.uniformSample_prod_eq_bind _ _).symm).map _).map _
         _ =ᵈ (List.ofFn <$> ($ᵗ (Fin (count + 1) → α))) :=
           (SampleableType.map_uniformSample_evalDistEq_of_bijective
             (finHeadTailEquiv α count).bijective).map _

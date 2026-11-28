@@ -131,18 +131,4 @@ theorem prEvent_logReply_and_not_bad_le
 
 end LogReply
 
-/-- A bound on each continuation holds after a common draw.
-
-Each continuation's event is bounded by another's plus a third event of the first. -/
-theorem prEvent_bind_le_add {α β γ : Type} (mx : ProbComp α) (f : α → ProbComp β)
-    (g : α → ProbComp γ) (p r : β → Prop) (q : γ → Prop)
-    (h : ∀ x, Pr{let y ← f x}[p y] ≤ Pr{let z ← g x}[q z] + Pr{let y ← f x}[r y]) :
-    Pr{let x ← mx; let y ← f x}[p y]
-      ≤ Pr{let x ← mx; let z ← g x}[q z] + Pr{let x ← mx; let y ← f x}[r y] := by
-  have hb := prEvent_bind_le_sum_add_of_support mx f p
-    ![fun x ↦ q <$> g x, fun x ↦ r <$> f x] 0 (by
-      intro x _
-      simpa [Fin.sum_univ_two, prEvent_map] using h x)
-  simpa [Fin.sum_univ_two, map_bind, prEvent_map, ← bind_assoc] using hb
-
 end EthLib.Cryptography

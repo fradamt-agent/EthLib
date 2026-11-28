@@ -31,11 +31,6 @@ theorem EvalDistEq.of_eq {m : Type → Type v} [Monad m] [EvalDistSemantics m] {
     {mx my : m α} (h : mx = my) : mx =ᵈ my :=
   h ▸ EvalDistEq.rfl
 
-/-- Every uniform sampler of a type is equal in distribution to every other. -/
-theorem SampleableType.uniformSample_evalDistEq_of_inst {A : Type} (i₁ i₂ : SampleableType A) :
-    (@uniformSample A i₁) =ᵈ (@uniformSample A i₂) :=
-  EvalDistEq.of_forall_prEvent_eq fun p => SampleableType.prEvent_uniformSample_inst_irrel i₁ i₂ p
-
 /-- Overwrite one cell of a uniform table with an independent uniform value.
 
 The table stays uniform, before any continuation. -/

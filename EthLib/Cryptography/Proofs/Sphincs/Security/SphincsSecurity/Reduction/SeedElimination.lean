@@ -226,7 +226,13 @@ theorem evalDist_table_split {β : Type} (prf : HashOutput) (parameter : PublicP
         let table ← ($ᵗ Eager.Table : ProbComp Eager.Table)
         let rnd ← ($ᵗ RTable : ProbComp RTable)
         F (plant prf parameter table rnd)) := by
-  have hpair := evalDist_independent_uniform_pair (α := Eager.Table) (β := RTable)
+  -- Two independent uniform draws form one uniform pair, under every sampler of the pair type.
+  have hpair : (do
+      let table ← ($ᵗ Eager.Table : ProbComp Eager.Table)
+      let rnd ← ($ᵗ RTable : ProbComp RTable)
+      pure (table, rnd)) =ᵈ ($ᵗ (Eager.Table × RTable) : ProbComp (Eager.Table × RTable)) :=
+    (EvalDistEq.of_eq (SampleableType.uniformSample_prod_eq_bind Eager.Table RTable).symm).trans
+      (EvalDistEq.of_forall_prEvent_eq (SampleableType.prEvent_uniformSample_inst_irrel _ _))
   have hfst : Prod.fst <$> ($ᵗ (Eager.Table × RTable) : ProbComp (Eager.Table × RTable)) =ᵈ
       ($ᵗ Eager.Table : ProbComp Eager.Table) := by
     refine (hpair.symm.map Prod.fst).trans ?_
@@ -297,7 +303,8 @@ theorem evalDist_rtable_split {β : Type} (F : RTable → ProbComp β) :
       let lows ← ($ᵗ LTable : ProbComp LTable)
       let highs ← ($ᵗ LTable : ProbComp LTable)
       pure (lows, highs)) =ᵈ ($ᵗ (LTable × LTable) : ProbComp (LTable × LTable)) :=
-    evalDist_independent_uniform_pair
+    (EvalDistEq.of_eq (SampleableType.uniformSample_prod_eq_bind LTable LTable).symm).trans
+      (EvalDistEq.of_forall_prEvent_eq (SampleableType.prEvent_uniformSample_inst_irrel _ _))
   calc
     _ =ᵈ ((fun pair : LTable × LTable => joinTable pair.1 pair.2) <$>
           ($ᵗ (LTable × LTable) : ProbComp (LTable × LTable))) >>= F := hjoin.symm.bind_left _

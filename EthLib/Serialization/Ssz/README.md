@@ -41,8 +41,9 @@ A type is described by a *declaration*, and the data it holds by a *value*; the 
 A declaration that comes from outside must be checked with `Desc.wellFormed` before it is used, because the low-level operations do not repeat that check at every recursive step.
 A successful encoding establishes that its value fits a well-formed declaration.
 
-Proof requests deliberately reject the root itself, empty requests, duplicate indices, and ancestor/descendant pairs.
-This is stricter than the generalized-index arithmetic in the reference proof helpers.
+Proof requests reject the root itself, empty requests, repeated indices, and ancestor/descendant pairs.
+Each of these either proves nothing or leaves part of the claim unchecked, so a sound verifier cannot accept it.
+The reference proof helpers refuse the same four cases, and its test vectors cover them.
 
 A progressive collection is one whose Merkle tree grows with its data instead of being sized in advance.
 It may declare a limit, which rules on its count alone.

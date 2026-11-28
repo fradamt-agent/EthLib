@@ -79,7 +79,15 @@ structure Header (fork : Fork) : Type where
   number : Nat
   /-- The most gas that the transactions of the block may use. -/
   gasLimit : Nat
-  /-- The gas that the transactions of the block use. -/
+  /-- The gas that the transactions of the block use.
+
+  Before Glamsterdam, it is the sum of the gas that each transaction uses after its refund.
+
+  From Glamsterdam, it is the larger of the execution gas and the state gas (EIP-8037).
+
+  Refunds do not lower it (EIP-7778).
+
+  So it need not equal the cumulative gas used of the last receipt. -/
   gasUsed : Nat
   /-- The time of the block, in seconds since the Unix epoch. -/
   timestamp : U256

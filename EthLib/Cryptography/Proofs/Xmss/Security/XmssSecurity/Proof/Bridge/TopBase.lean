@@ -266,7 +266,8 @@ theorem evalDist_freshRun_table_key (parameter : PublicParameter) (secret : Leaf
         _ =ᵈ ((($ᵗ Digest : ProbComp Digest) >>= fun d => pure (d, state) :
               ProbComp (Randomness × QueryCache HashSpec))) :=
           Rom.evalDist_truncate_uniformHashOutput.bind_left _
-        _ =ᵈ _ := (SampleableType.uniformSample_evalDistEq_of_inst (A := Digest) _ _).bind_left _
+        _ =ᵈ _ := (EvalDistEq.of_forall_prEvent_eq
+          (SampleableType.prEvent_uniformSample_inst_irrel (α := Digest) _ _)).bind_left _
 
 /-- Reading a uniform table at each key's own root is a uniform base per key. -/
 theorem evalDist_topBase (parameter : PublicParameter) (secret : LeafIndex → ChainIndex → Digest)
@@ -289,7 +290,8 @@ theorem evalDist_topBase (parameter : PublicParameter) (secret : LeafIndex → C
     refine EvalDistEq.trans ?_
       ((freshRequests_keygenKey parameter secret topSecret).evalDist_tableRun romImpl signKey ∅)
     unfold Concrete.sampleTopBase
-    exact (SampleableType.uniformSample_evalDistEq_of_inst _ _).bind_left _
+    exact (EvalDistEq.of_forall_prEvent_eq
+      (SampleableType.prEvent_uniformSample_inst_irrel _ _)).bind_left _
   calc _ =ᵈ ((sampleTopRnd >>= fun table =>
           (tableRun romImpl signTable table (keygenTable parameter secret topSecret)).run ∅) >>= k) := by
         rw [bind_assoc]

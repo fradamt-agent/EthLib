@@ -42,7 +42,7 @@ theorem swapKnown_involutive (parameter : PublicParameter) :
 omit [Params] in
 theorem uniform_map_fst {α β : Type} [SampleableType α] [SampleableType β] :
     Prod.fst <$> ($ᵗ (α × β) : ProbComp (α × β)) =ᵈ ($ᵗ α : ProbComp α) := by
-  refine (EthLib.Cryptography.HashSig.evalDist_independent_uniform_pair.symm.map Prod.fst).trans ?_
+  refine ((EvalDistEq.of_eq (SampleableType.uniformSample_prod_eq_bind _ _)).map Prod.fst).trans ?_
   simp only [map_bind, map_pure]
   calc (($ᵗ α : ProbComp α) >>= fun a => ($ᵗ β : ProbComp β) >>= fun _ => (pure a : ProbComp α))
       =ᵈ (($ᵗ α : ProbComp α) >>= fun a => (pure a : ProbComp α)) :=
@@ -68,17 +68,11 @@ theorem uniform_mix (parameter : PublicParameter) :
       (($ᵗ HiddenGraph.Table : ProbComp HiddenGraph.Table) >>= fun fixed =>
         mix parameter fixed <$> ($ᵗ HiddenGraph.Table : ProbComp HiddenGraph.Table)) := by
     rw [Functor.map_map]
-    refine (EthLib.Cryptography.HashSig.evalDist_independent_uniform_pair.symm.map _).trans ?_
+    refine ((EvalDistEq.of_eq (SampleableType.uniformSample_prod_eq_bind _ _)).map _).trans ?_
     simp only [map_eq_bind_pure_comp, bind_assoc, pure_bind, Function.comp_def, swapKnown,
       EvalDistEq.refl]
   exact hpair.symm.trans (((SampleableType.map_uniformSample_evalDistEq_of_bijective
     (swapKnown_involutive parameter).bijective).map Prod.fst).trans uniform_map_fst)
-
-omit [Params] in
-theorem evalDist_uniform_congr {α : Type} [Fintype α] [Nonempty α] (left right : SampleableType α) :
-    (@uniformSample α left : ProbComp α) =ᵈ (@uniformSample α right : ProbComp α) :=
-  EvalDistEq.of_forall_prEvent_eq fun p =>
-      SampleableType.prEvent_uniformSample_inst_irrel left right p
 
 theorem evalDist_mix (parameter : PublicParameter) :
     (($ᵗ HiddenGraph.Table) >>= fun fixed => mix parameter fixed <$> ($ᵗ HiddenGraph.Table)) =ᵈ
@@ -99,7 +93,8 @@ theorem evalDist_completion_bind {β : Type} (known : HiddenReveal.Knowledge Coo
       (($ᵗ HiddenGraph.Table) >>= fun fresh => next (tableExtending known fresh)) := by
   unfold HiddenReveal.completion
   refine (Eager.evalDist_map_bind' _ _ _).trans ?_
-  exact (evalDist_uniform_congr HiddenReveal.tableSampleable hiddenTableSampleable).bind_left _
+  exact (EvalDistEq.of_forall_prEvent_eq (SampleableType.prEvent_uniformSample_inst_irrel
+    HiddenReveal.tableSampleable hiddenTableSampleable)).bind_left _
 
 /-- The hidden-row run of one public and structural sample, at a given coordinate table. -/
 noncomputable def hiddenRun (adversary : Adversary) (q : Nat) (steps : Message → Randomness)

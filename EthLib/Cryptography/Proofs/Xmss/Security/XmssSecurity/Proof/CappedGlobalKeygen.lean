@@ -32,12 +32,6 @@ private theorem prod_seq_evalDistEq_left {A B : Type} {a a' : ProbComp A} (h : a
   rw [hseq, hseq]
   exact h.bind_left _
 
-/-- Every uniform sampler of a type is equal in distribution to every other. -/
-private theorem uniformSample_evalDistEq_inst {A : Type} (i₁ i₂ : SampleableType A) :
-    (@uniformSample A i₁) =ᵈ (@uniformSample A i₂) :=
-  EvalDistEq.of_forall_prEvent_eq fun p =>
-    SampleableType.prEvent_uniformSample_inst_irrel i₁ i₂ p
-
 abbrev GlobalChainValueIndex := ChainIndex × ChainValueIndex
 
 noncomputable def globalKeygenChainValueTable
@@ -273,12 +267,13 @@ theorem Concrete.evalDist_sampleChainStarts_eq_uniform :
     rw [← Concrete.sampleTopSecret_eq]
     simp [Concrete.sampleChainStarts, seq_eq_bind_map, map_eq_bind_pure_comp, bind_assoc]
   have hsecret : Concrete.sampleSecret =ᵈ ($ᵗ (LeafIndex → ChainIndex → Digest)) :=
-    (EvalDistEq.of_eq Concrete.sampleSecret_eq).trans (uniformSample_evalDistEq_inst _ _)
+    (EvalDistEq.of_eq Concrete.sampleSecret_eq).trans
+      (EvalDistEq.of_forall_prEvent_eq (SampleableType.prEvent_uniformSample_inst_irrel _ _))
   rw [hmap]
   exact ((((prod_seq_evalDistEq_left hsecret _).trans uniformSample_prod_evalDistEq_seq.symm).map
     _).trans (SampleableType.map_uniformSample_evalDistEq_of_bijective
       (Equiv.sumArrowEquivProdArrow LeafIndex TopIndex (ChainIndex → Digest)).symm.bijective)).trans
-    (uniformSample_evalDistEq_inst _ _)
+    (EvalDistEq.of_forall_prEvent_eq (SampleableType.prEvent_uniformSample_inst_irrel _ _))
 
 /-- The secret key of key generation with the given chain starts and top signatures. -/
 def startSecretKey (parameter : PublicParameter) (start : ChainKey → ChainIndex → Digest)
@@ -472,7 +467,7 @@ theorem evalDist_globalChainEdgeOutputTableOfOutputTape_uniformSnoc_eq_uniform :
     ($ᵗ GlobalChainEdgeOutputTable) :=
   (evalDist_finiteTableOfTape_uniformSnoc_eq_uniform globalOutputEdgeOrder
     globalOutputEdgeOrder_nodup mem_globalOutputEdgeOrder).trans
-    (uniformSample_evalDistEq_inst _ _)
+    (EvalDistEq.of_forall_prEvent_eq (SampleableType.prEvent_uniformSample_inst_irrel _ _))
 
 def trajectoryChainSteps : List ChainStep :=
   (List.ofFn (id : ChainStep → ChainStep)).reverse

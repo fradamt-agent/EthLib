@@ -2,6 +2,8 @@ module
 
 public import EthLib.Cryptography.Proofs.EvalDistEq
 public import EthLib.Cryptography.Proofs.HashSig
+public import EthLib.Cryptography.Proofs.HashSig.Oracle
+public import VCVio.EvalDist.IndepProductMeasure
 public import VCVio.OracleComp.QueryTracking.RandomOracle.Simulation
 
 /-!
@@ -37,45 +39,6 @@ def finHeadTailEquiv (α : Type) (count : Nat) :
   right_inv values := by
     funext index
     cases index using Fin.cases <;> simp
-
-/-- Two independent uniform draws form one uniform pair. -/
-theorem evalDist_independent_uniform_pair
-    {α β : Type} [SampleableType α] [SampleableType β] [SampleableType (α × β)] :
-    (do
-      let left ← $ᵗ α
-      let right ← $ᵗ β
-      pure (left, right) : ProbComp (α × β)) =ᵈ
-    ($ᵗ (α × β) : ProbComp (α × β)) := by
-  -- The draws form a uniform pair under the product sampler, and two samplers agree in law.
-  have h := @SampleableType.map_uniformSample_evalDistEq_of_bijective _ _
-    (instSampleableTypeProd α β) _ _ Function.bijective_id
-  rw [id_map, SampleableType.uniformSample_prod_eq_bind] at h
-  exact h
-
-/-- Independent uniform draws for `n` indices form one uniform table. -/
-theorem evalDist_sequenceFin_uniform {R : Type} [SampleableType R] [Fintype R] (n : Nat) :
-    sequenceFin (fun _ : Fin n => ($ᵗ R : ProbComp R)) =ᵈ
-      ($ᵗ (Fin n → R) : ProbComp (Fin n → R)) := by
-  classical
-  induction n with
-  | zero =>
-      refine evalDistEq_iff_forall_prEvent_eq_output.mpr fun values => ?_
-      have heq : values = Fin.elim0 := funext fun i => i.elim0
-      simp [sequenceFin, heq, Subsingleton.elim (default : Fin 0 → R) Fin.elim0,
-        Finset.filter_singleton]
-  | succ n ih =>
-      calc
-        _ =ᵈ (finHeadTailEquiv R n <$> (do
-            let head ← $ᵗ R
-            let tail ← $ᵗ (Fin n → R)
-            pure (head, tail))) := by
-          simp only [sequenceFin, map_bind, finHeadTailEquiv, Equiv.coe_fn_mk, bind_pure_comp]
-          refine EvalDistEq.bind_right _ fun head => (ih.map _).trans (.of_eq ?_)
-          rw [Functor.map_map]
-        _ =ᵈ (finHeadTailEquiv R n <$> ($ᵗ (R × (Fin n → R)))) :=
-          evalDist_independent_uniform_pair.map _
-        _ =ᵈ _ := SampleableType.map_uniformSample_evalDistEq_of_bijective
-          (finHeadTailEquiv R n).bijective
 
 section
 
@@ -196,8 +159,14 @@ theorem evalDist_queryTable_fresh [SampleableType R] [Fintype R] [SampleableType
   rw [queryTable, simulateQ_map, StateT.run_map,
     run_sequenceFin_fresh (fun i => inputs ((Fintype.equivFin J).symm i))
       (fun _ _ h => (Fintype.equivFin J).symm.injective (hinj h)) cache (fun _ => hfresh _)]
-  have h := (((evalDist_sequenceFin_uniform (R := R) (Fintype.card J)).map
-    (finTableEquiv J R)).trans (SampleableType.map_uniformSample_evalDistEq_of_bijective
+  -- Independent uniform draws for each index form one uniform table.
+  have hdraws : sequenceFin (fun _ : Fin (Fintype.card J) => ($ᵗ R : ProbComp R)) =ᵈ
+      ($ᵗ (Fin (Fintype.card J) → R) : ProbComp (Fin (Fintype.card J) → R)) := by
+    let : MeasurableSpace R := ⊤
+    refine EvalDistEq.of_evalDist_eq ?_
+    rw [sequenceFin_eq_mOfFn, evalDist_mOfFn_const_uniform _ _
+      SampleableType.evalDist_uniformSample, SampleableType.evalDist_uniformSample]
+  have h := ((hdraws.map (finTableEquiv J R)).trans (SampleableType.map_uniformSample_evalDistEq_of_bijective
       (finTableEquiv J R).bijective)).map
     (fun outputs => (outputs, cacheTable cache inputs outputs))
   simpa only [bind_pure_comp, Functor.map_map, id_map', Function.comp_def, cacheTable,
